@@ -48,3 +48,24 @@ First real feature. Guardrail #3 above ("no markdown-parsing dependency... in th
 3. **Argv-triggered and dialog-triggered opens must both funnel through the same `renderFile` → `FILE_RENDERED` path.** No separate ad hoc rendering logic for "the startup case" vs. "the dialog case" — that would be exactly the kind of drift the discriminated-union and single-path guarantees above exist to prevent.
 4. **No live-reload or file-watching.** Explicitly deferred to a future step; this task renders once per open action and stops.
 5. **The Task 1 invariants still hold unchanged**: `contextIsolation: true` / `nodeIntegration: false` are untouched by this task, and the bridge contract remains an explicit, enumerable surface (extended, not replaced by a raw-channel passthrough).
+
+---
+
+## Task 3: Live-Reload (Product Step 2)
+
+### Abstract Schema Contracts
+
+- **A raw filesystem-watcher event is not a domain concept — a `WatchAction` is.** Chokidar emits its own vocabulary (`add`, `addDir`, `change`, `unlink`, `unlinkDir`, `ready`, `raw`, `error`), most of which are irrelevant to a single-file watch. The domain only cares about three outcomes: `'render'` (content changed, re-render), `'error'` (the file is gone, show the error state), `'ignore'` (everything else — noise). This mapping is the abstraction; chokidar's specific event names are an implementation detail behind it.
+- **No new message shape.** Task 2's `FileRenderedMessage` (`FileRenderedOk` | `FileRenderedError`) already fully covers both outcomes a watch can produce. Live-reload does not introduce a new IPC message type — it's a new *trigger* for the exact same result type, same as dialog was a second trigger alongside argv in Task 2.
+
+### Pure Transformation Logic
+
+- **`classifyWatchEvent: string -> WatchAction`** is this task's one pure transformation — a raw chokidar event name in, a domain action out. No fs, no chokidar import, no Electron dependency.
+
+### Edge-Case Invariant Guardrails
+
+1. **Opening a watch must not re-render content that was already rendered by the open action that triggered it.** `ignoreInitial: true` is mandatory, not incidental — without it, chokidar's initial `add` event would produce a redundant second render immediately after the real one.
+2. **Exactly one watcher may be active at a time.** Opening a different file (via dialog, since argv only fires once at startup) must close the previous watcher *before* the new one starts — not after, not never. This must be verifiable by a test, not asserted by code review alone.
+3. **A deleted file must reuse Task 2's existing error path, not a new one.** `renderFile()` already produces the correct `FileRenderedError` for any unreadable file, regardless of *why* it's unreadable — a watch-triggered 'unlink' is just another call to the same function, not a hand-built error message that could drift from the original.
+4. **No manual debounce.** Chokidar's default `atomic: true` already collapses editor atomic-save sequences (temp-write + rename, or write + delete-original) into a single `change` event. Adding a debounce on top would be redundant complexity solving an already-solved problem, and risks *introducing* a staleness bug (a debounce window is a window where the renderer shows stale content on purpose).
+5. **Every watcher must eventually close.** On app quit, and on every file-switch (guardrail #2) — no leaked filesystem watch handles across the process's lifetime.
