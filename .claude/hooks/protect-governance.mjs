@@ -10,10 +10,15 @@
  * ~/.claude/settings.json because it contains ".claude/") with
  * project-relative prefix/exact matching.
  *
+ * v3 fix: functional_domain.md / initial_scaffold.md are authored by the
+ * Lead during Step 0/1, before any scope contract exists. They now freeze
+ * only once a current_scope.json is active — i.e. once they've been
+ * approved and task execution has actually started.
+ *
  * Exit 2 = block; stderr is fed back to Claude as the reason.
  */
-import { readFileSync } from "node:fs";
-import { relative, isAbsolute, resolve } from "node:path";
+import { readFileSync, existsSync } from "node:fs";
+import { relative, isAbsolute, resolve, join } from "node:path";
 
 let input;
 try {
@@ -41,12 +46,22 @@ const rel = relative(projectDir, absPath).replaceAll("\\", "/");
 if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) process.exit(0);
 
 // Trailing "/" = protected directory subtree; otherwise exact file match.
-const PROTECTED = [
-  "CLAUDE.md",
-  ".claude/",
+const ALWAYS_PROTECTED = ["CLAUDE.md", ".claude/"];
+
+// functional_domain.md / initial_scaffold.md are authored by the Lead
+// during Step 0/1, before any scope contract exists. They freeze only
+// once a current_scope.json is active — i.e. once they've been approved
+// and task execution has actually started.
+const SPECS_PROTECTED_DURING_EXECUTION = [
   ".agents/specs/functional_domain.md",
   ".agents/specs/initial_scaffold.md",
 ];
+const executionInProgress = existsSync(
+  join(projectDir, ".agents", "current_scope.json")
+);
+const PROTECTED = executionInProgress
+  ? [...ALWAYS_PROTECTED, ...SPECS_PROTECTED_DURING_EXECUTION]
+  : ALWAYS_PROTECTED;
 
 const hit = PROTECTED.find((p) =>
   p.endsWith("/") ? rel.startsWith(p) : rel === p
