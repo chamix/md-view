@@ -1,0 +1,17 @@
+node_modules
+dist
+release
+test-results
+playwright-report
+
+# editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+
+# OS
+.DS_Store
+Thumbs.db
+
+# logs
+npm-debug.log*

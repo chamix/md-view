@@ -1,0 +1,6 @@
+appId: com.mdview.app
+productName: md-view
+directories:
+  output: release
+files:
+  - dist/**/*
