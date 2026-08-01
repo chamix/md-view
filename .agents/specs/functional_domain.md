@@ -23,3 +23,28 @@ Constraints that must hold regardless of how the implementation evolves later:
 2. **The preload↔renderer contract must be an explicit, enumerable surface** (via `contextBridge.exposeInMainWorld`), never a passthrough of arbitrary IPC channels or raw Node primitives.
 3. **No markdown-parsing dependency, file-system business logic, or persisted document state may be introduced in this phase** — any such addition is out of scope by definition, even if added "just to make a test less trivial."
 4. **The test harness must stay honest.** Unit/integration tests in this phase assert structural existence (module exports, security-relevant config values) — never behavior that doesn't exist yet. A green suite must not create the illusion of tested business logic.
+
+---
+
+## Task 2: Open & Render Markdown (Product Step 1)
+
+First real feature. Guardrail #3 above ("no markdown-parsing dependency... in this phase") was explicitly phase-scoped to the Step 0 scaffold — it does not carry forward as a blanket ban; this task's entire purpose is to introduce exactly that dependency, deliberately and narrowly.
+
+### Abstract Schema Contracts
+
+- **The file-render result is a discriminated union, not two independent optional fields.** A render attempt either succeeds (`{ ok: true, filePath, html }`) or fails (`{ ok: false, filePath, error }`) — never both, never neither. Modeling it as a union (not `{ html?: string; error?: string }`) makes the impossible state (both present, both absent) unrepresentable at the type level, which is a domain guarantee, not a style preference.
+- **The IPC boundary is named, not stringly-typed.** Channel names (`open-file-dialog`, `file-rendered`) are a single shared source of truth, not independently-hardcoded string literals on the main and renderer sides — this is a direct extension of the "explicit, enumerable, versioned contract" principle from Task 1's Abstract Schema Contracts entry.
+- **There is exactly one path that produces a render result**, regardless of trigger (argv at startup, or dialog selection at any later point). Argv-triggered and dialog-triggered opens are two *triggers* for one *domain operation* (`renderFile: path -> RenderResult`), not two parallel implementations that could drift.
+
+### Pure Transformation Logic
+
+- **`markdownToHtml: string -> string`** is the one pure transformation this task introduces: Markdown source text in, HTML markup out. No file I/O, no Electron dependency, no side effects — a real domain function, finally, after Task 1 had none.
+- Reading the file from disk and dispatching the result over IPC are *not* part of this transformation — they're orchestration wrapping it (I/O at the edges, purity at the core).
+
+### Edge-Case Invariant Guardrails
+
+1. **Raw HTML embedded in Markdown source must never reach the renderer's `innerHTML` unescaped.** This is a security invariant, not a formatting choice: the renderer trusts the HTML it receives enough to inject it directly into the DOM, so the *only* thing making that safe is the converter refusing raw HTML passthrough. `html:false` must be passed explicitly at the `markdown-it` call site (not relied on as an implicit default that a future refactor could silently flip) and must be covered by a test that proves it, not just configures it.
+2. **A file that doesn't exist, isn't readable, or isn't a `.md` file must never crash the process or leave the renderer silently blank.** It must produce an `{ ok: false, error }` result that reaches the renderer and displays as a visible error state.
+3. **Argv-triggered and dialog-triggered opens must both funnel through the same `renderFile` → `FILE_RENDERED` path.** No separate ad hoc rendering logic for "the startup case" vs. "the dialog case" — that would be exactly the kind of drift the discriminated-union and single-path guarantees above exist to prevent.
+4. **No live-reload or file-watching.** Explicitly deferred to a future step; this task renders once per open action and stops.
+5. **The Task 1 invariants still hold unchanged**: `contextIsolation: true` / `nodeIntegration: false` are untouched by this task, and the bridge contract remains an explicit, enumerable surface (extended, not replaced by a raw-channel passthrough).
