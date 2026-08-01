@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as fs from 'node:fs/promises';
 import { defaultWindowOptions } from './windowConfig';
 import { markdownToHtml } from './markdown';
+import { baseUrlForFile } from './paths';
 import { watchFile } from './watcher';
 import type { FSWatcher } from 'chokidar';
 import { IPC_CHANNELS } from '../preload/api';
@@ -35,7 +36,7 @@ async function renderFile(filePath: string): Promise<FileRenderedMessage> {
 
   try {
     const source = await fs.readFile(filePath, 'utf8');
-    return { ok: true, filePath, html: markdownToHtml(source) };
+    return { ok: true, filePath, html: markdownToHtml(source), baseUrl: baseUrlForFile(filePath) };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return { ok: false, filePath, error: message };

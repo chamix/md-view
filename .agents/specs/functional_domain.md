@@ -69,3 +69,25 @@ First real feature. Guardrail #3 above ("no markdown-parsing dependency... in th
 3. **A deleted file must reuse Task 2's existing error path, not a new one.** `renderFile()` already produces the correct `FileRenderedError` for any unreadable file, regardless of *why* it's unreadable — a watch-triggered 'unlink' is just another call to the same function, not a hand-built error message that could drift from the original.
 4. **No manual debounce.** Chokidar's default `atomic: true` already collapses editor atomic-save sequences (temp-write + rename, or write + delete-original) into a single `change` event. Adding a debounce on top would be redundant complexity solving an already-solved problem, and risks *introducing* a staleness bug (a debounce window is a window where the renderer shows stale content on purpose).
 5. **Every watcher must eventually close.** On app quit, and on every file-switch (guardrail #2) — no leaked filesystem watch handles across the process's lifetime.
+
+---
+
+## Task 4: Base-URL Fix for Relative Image Paths (bug fix)
+
+Real bug found in manual testing: a Markdown source referencing an image by relative path (`./img/foo.png`) breaks, because the browser resolves that path against `dist/renderer/index.html`'s own location, not against the folder the open `.md` file actually lives in. Chosen fix: a dynamic `<base href>`, computed in main from the open file's directory, delivered over the existing `FILE_RENDERED` channel — no new channel, no new message type.
+
+### Abstract Schema Contracts
+
+- **`baseUrl` is a new field on the existing `ok:true` variant of `FileRenderedMessage`, not a new message shape.** This preserves Task 2/3's "one contract, one channel" principle — a base URL is just more information about a successful render, not a different kind of event.
+- **The asymmetry is deliberate.** `FileRenderedError` gains nothing — there's no HTML to resolve relative resources against when there's no content to show. Don't "balance" the two variants for its own sake later; the shapes should track what's actually needed, not mirror each other cosmetically.
+
+### Pure Transformation Logic
+
+- **`baseUrlForFile: string -> string`** — a filesystem path in, a `file://` base URL (for that path's containing directory) out. Zero I/O, zero fs access — `dirname` and `pathToFileURL` are both pure string/path transformations, they don't touch disk. This is the third pure function in the codebase, alongside `markdownToHtml` and `classifyWatchEvent`.
+- **`markdown.ts` stays completely unaware of this.** It converts Markdown source to HTML with zero knowledge of paths, URLs, or where the source came from — the base-href mechanism is layered on entirely in the renderer/DOM layer, external to the conversion itself. If `markdown.ts` ever needs a path-shaped argument to satisfy this fix, that would be the fix leaking into the wrong module.
+
+### Edge-Case Invariant Guardrails
+
+1. **The trailing path separator before URL conversion is not optional.** Its absence silently drops a directory level from *every* relative resource in the document (images, and anything else a future Markdown feature might reference relatively) — a correctness bug that produces a plausible-looking but wrong URL, not an obviously-broken one. A test must assert the literal trailing `/` in the output, not just that the result "looks like a file URL."
+2. **`markdown.ts`'s purity is untouched by this task, verified, not just declared** — zero diff expected on that file.
+3. **The order of `base.href` assignment before `innerHTML` assignment in the renderer is a functional requirement, not a style choice**, and must be proven by an e2e test that confirms an image *actually loaded* (`complete && naturalWidth > 0`), not merely that the `<img>` tag exists in the DOM with some `src` value — a wrong-order regression would still produce syntactically correct markup and pass any test that only checks structure, while the image itself silently fails to load. Checking real load success is the only honest test of this guardrail.

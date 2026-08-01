@@ -9,6 +9,7 @@ export interface FileRenderedOk {
   ok: true;
   filePath: string;
   html: string;
+  baseUrl: string;
 }
 
 export interface FileRenderedError {
