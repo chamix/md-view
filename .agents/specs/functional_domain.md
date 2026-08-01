@@ -91,3 +91,25 @@ Real bug found in manual testing: a Markdown source referencing an image by rela
 1. **The trailing path separator before URL conversion is not optional.** Its absence silently drops a directory level from *every* relative resource in the document (images, and anything else a future Markdown feature might reference relatively) — a correctness bug that produces a plausible-looking but wrong URL, not an obviously-broken one. A test must assert the literal trailing `/` in the output, not just that the result "looks like a file URL."
 2. **`markdown.ts`'s purity is untouched by this task, verified, not just declared** — zero diff expected on that file.
 3. **The order of `base.href` assignment before `innerHTML` assignment in the renderer is a functional requirement, not a style choice**, and must be proven by an e2e test that confirms an image *actually loaded* (`complete && naturalWidth > 0`), not merely that the `<img>` tag exists in the DOM with some `src` value — a wrong-order regression would still produce syntactically correct markup and pass any test that only checks structure, while the image itself silently fails to load. Checking real load success is the only honest test of this guardrail.
+
+---
+
+## Task 5: External Link Handling (bug fix)
+
+Real bug found in manual testing: clicking a link in the rendered Markdown makes Electron try to navigate the app's *own window* to that URL, instead of opening it in the system's default browser — the app goes blank and the in-window navigation fails. Fix: intercept navigation attempts in main before they ever reach the renderer, and hand off qualifying URLs to the OS via `shell.openExternal`.
+
+### Abstract Schema Contracts
+
+- **No new IPC message, no renderer involvement at all.** This is a pre-renderer interception at the `webContents` level in main — the app's own window must never be a valid navigation target for content-originated links, so there's nothing for the renderer to know about or opt into.
+- **The domain concept here is a classification, not a transformation**: `isExternalHttpUrl: string -> boolean` — "is this URL safe and appropriate to hand off to the OS browser," an explicit allowlist decision (http/https only), not a denylist of known-bad schemes (`javascript:`, `file:`, etc.). Allowlisting means an unanticipated future scheme defaults to *not* handed off, which is the safe default — a denylist would default the opposite way.
+
+### Pure Transformation Logic
+
+- **`isExternalHttpUrl: string -> boolean`** — the fourth pure function in the codebase (alongside `markdownToHtml`, `classifyWatchEvent`, `baseUrlForFile`). Uses the `URL` constructor to parse, never string-prefix heuristics (`.startsWith('http')` would admit a crafted string that merely starts with the right substring without being a well-formed URL of that scheme at all).
+
+### Edge-Case Invariant Guardrails
+
+1. **Malformed or unparseable input fails safe, not open.** `new URL()` throwing must be caught and produce `false` — never let a parse failure default to "allow." This is the same fail-safe-not-fail-open posture as `protect-governance.mjs`'s own "unparseable input → block" rule elsewhere in this repo's governance layer — a parse failure is not a green light.
+2. **The app's own window must never navigate away from rendered content, regardless of what a link resolves to.** `event.preventDefault()` on `will-navigate` must be unconditional and happen *before* any URL classification — a bug in `isExternalHttpUrl` must never be able to result in an in-app navigation, only (at worst) in a legitimate external URL failing to open. Block first, decide whether to hand off second.
+3. **Only `http:`/`https:` ever reaches `shell.openExternal`.** No scheme-specific special-casing beyond that allowlist — `javascript:`, `file:`, and anything else are all uniformly refused, not enumerated as a blocklist that could miss a future dangerous scheme.
+4. **`setWindowOpenHandler` is defense-in-depth for a currently-unreachable path.** `html:false` (Task 2's guardrail) already strips any raw HTML attribute including `target`, so no rendered link can currently trigger a `target="_blank"`/`window.open()` navigation for this handler to intercept. It must still be wired correctly (same classification, same fail-safe deny default), but no test should pretend to exercise a path that isn't currently reachable — state that honestly, the same harness-honesty standard established since Step 0.

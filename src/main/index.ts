@@ -1,10 +1,11 @@
-import { app, BrowserWindow, dialog, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import * as path from 'path';
 import * as fs from 'node:fs/promises';
 import { defaultWindowOptions } from './windowConfig';
 import { markdownToHtml } from './markdown';
 import { baseUrlForFile } from './paths';
 import { watchFile } from './watcher';
+import { isExternalHttpUrl } from './linkPolicy';
 import type { FSWatcher } from 'chokidar';
 import { IPC_CHANNELS } from '../preload/api';
 import type { FileRenderedMessage } from '../preload/api';
@@ -21,6 +22,20 @@ function createWindow(): void {
     },
   });
   mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    event.preventDefault(); // unconditional, before any URL classification — this is the load-bearing safety property
+    if (isExternalHttpUrl(url)) {
+      shell.openExternal(url);
+    }
+  });
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (isExternalHttpUrl(url)) {
+      shell.openExternal(url);
+    }
+    return { action: 'deny' };
+  });
 }
 
 function argvFilePath(): string | null {

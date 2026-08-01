@@ -401,3 +401,100 @@ New test: `tests/unit/renderer-order.test.ts` — `require('../../src/renderer/r
 **The existing `tests/e2e/relative-images.spec.ts` (`naturalWidth`-based) is kept as-is** — it's real, valuable coverage that the base-URL mechanism works end-to-end (a relative image genuinely resolves and loads against the open file's directory, not `dist/renderer/`), it's just not proof of the ordering guardrail specifically, and the file should carry a comment saying so plainly (already added during the investigation) so a future reader doesn't mistake it for stronger evidence than it is.
 
 **Scope amendment**: one new path added to the Task 4 scope contract — `tests/unit/renderer-order.test.ts`. No other file changes needed beyond what was already granted (`renderer.js` was already in scope).
+
+---
+
+## Task 5 Technical Specification — External Link Handling
+
+Maps `functional_domain.md`'s Task 5 analysis to concrete design.
+
+### The Inward Dependency Rule
+
+- `src/main/linkPolicy.ts` is a fourth pure leaf module, same tier as `markdown.ts`/`paths.ts`/`watcher.ts`'s classifier half — zero Electron import, zero fs, uses only the `URL` global. `index.ts` orchestrates by calling it from two `webContents` event handlers, same role it already plays for `markdownToHtml`/`baseUrlForFile`.
+- No renderer involvement, no preload involvement — this task's entire diff lives in main, which is itself informative: not every feature needs to touch the IPC boundary, and forcing one here (e.g. a "link clicked" message to the renderer) would be an invented indirection with no purpose.
+
+### SOLID Boundary Scan
+
+- **SRP** — `isExternalHttpUrl` classifies, it does not decide what to *do* with a URL (open it, ignore it) — that decision stays in `index.ts`'s two event handlers, which is where "call `shell.openExternal`" or "do nothing" actually belongs.
+- **OCP** — the allowlist (`http:`/`https:`) can grow (e.g. `mailto:` someday) by editing exactly one function, with zero changes to either call site.
+
+### Pattern note
+
+No new GoF pattern — `isExternalHttpUrl` is a Guard/Predicate in the same "pure wrapper around a built-in" family as `baseUrlForFile` (wraps `url.pathToFileURL`) and `markdownToHtml` (wraps `markdown-it`), here wrapping the `URL` constructor.
+
+### Exact signature (authoritative)
+
+```ts
+// src/main/linkPolicy.ts
+export function isExternalHttpUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+```
+
+### `index.ts` wiring
+
+Registered once, inside `createWindow()`, alongside the `BrowserWindow` construction — not inside `renderFile`/`renderAndWatch`/any per-render path, and not re-registered on every window (each call to `createWindow()` naturally scopes the listeners to that window's own `webContents`, which is correct — Task 3's `activate` handler already calls `createWindow()` again if all windows closed, so each new window gets its own pair of listeners exactly once):
+
+```ts
+mainWindow.webContents.on('will-navigate', (event, url) => {
+  event.preventDefault(); // unconditional, before any classification — guardrail #2
+  if (isExternalHttpUrl(url)) {
+    shell.openExternal(url);
+  }
+});
+
+mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  if (isExternalHttpUrl(url)) {
+    shell.openExternal(url);
+  }
+  return { action: 'deny' }; // always deny in-process handling, regardless of classification
+});
+```
+`shell` imported from `'electron'` alongside the existing `app`, `BrowserWindow`, `dialog`, `ipcMain` imports.
+
+### File tree — Task 5 additions/changes
+
+```
+md-view/
+├── src/main/
+│   ├── linkPolicy.ts                  # NEW — isExternalHttpUrl (pure)
+│   ├── index.ts                        # ~ will-navigate + setWindowOpenHandler in createWindow()
+│   ├── markdown.ts, watcher.ts,        # unchanged
+│   │   windowConfig.ts, paths.ts
+├── (no preload or renderer changes — interception happens before the renderer is involved)
+└── tests/
+    ├── unit/isExternalHttpUrl.test.ts             # NEW — case table, see below
+    └── e2e/
+        ├── external-links.spec.ts                  # NEW
+        └── fixtures/with-links/doc.md               # NEW — one valid https link + one
+                                                        #   malformed link (the exact
+                                                        #   real-bug pattern)
+```
+
+### Unit test — exact case table
+
+`tests/unit/isExternalHttpUrl.test.ts` must cover, at minimum: `'https://example.com'` → `true`; `'http://example.com'` → `true`; `'javascript:alert(1)'` → `false`; `'./relative.md'` → `false` (this one exercises the `catch` branch — `new URL()` throws on a bare relative path with no base); `'file:///etc/passwd'` → `false` (a *valid* URL, exercises the protocol-check-false branch, not the catch branch — worth having both kinds of `false` covered distinctly); and `'"https://google.com"'` (literal leading/trailing quote characters) → `false` — this exact string is the real string markdown-it produces from the real bug's source pattern (`[text]("url")`, no space before the quote, so markdown-it reads the quotes as part of the href itself rather than as a title) — this is not a synthetic edge case, it's the literal reproduction of the manually-found bug.
+
+### Fixture — `tests/e2e/fixtures/with-links/doc.md`
+
+```md
+# Link Fixture
+
+[External Example](https://example.com)
+
+[Malformed Link]("https://blocked.example.com")
+```
+Two links in one small fixture: the first exercises the "external URL correctly handed to the OS, app doesn't navigate" case; the second reproduces the real bug's exact markdown pattern and exercises "malformed href, nothing happens — no external open, no in-app navigation."
+
+### e2e test design
+
+Mock `shell.openExternal` via `electronApp.evaluate()` **before** the click, same established pattern as mocking `dialog.showOpenDialog` in earlier tasks — store received URLs in a `globalThis`-scoped array inside the main process so a second `evaluate()` call after the click can retrieve what was captured. Two separate test cases (not one test asserting both, for isolation): (1) click the valid link, assert the mock captured the URL (allow for Chromium's own URL normalization, e.g. a trailing slash — don't hardcode an assumption about exact string equality if the actual delivered value differs in a normalization-only way) and assert `#content`'s rendered text/HTML is unchanged before vs. after the click (the app didn't navigate); (2) click the malformed link, assert the mock captured *zero* calls and `#content` is equally unchanged.
+
+### Honest limitation, stated explicitly (same standard as Task 2's/Task 4's caveats)
+
+`setWindowOpenHandler` cannot be exercised by any test in this suite — `html:false` means no rendered link can carry `target="_blank"`, so `window.open()`/new-window navigation is not a reachable code path today. It is still correctly wired (same classification function, same fail-safe deny), but the delivered test suite should say so plainly rather than construct an artificial scenario (e.g. directly invoking the handler function outside its real trigger path) that would look like coverage without being drawn from anything a real user or real Markdown file can produce.
