@@ -1,8 +1,22 @@
 {
-  "name": "md-view",
-  "version": "0.0.0-scaffold",
-  "description": "Electron + TypeScript Markdown previewer desktop app (structural scaffold)",
+  "version": "0.1.0",
   "private": true,
+  "description": "A minimal desktop Markdown previewer built with Electron + TypeScript, with live-reload and syntax highlighting.",
+  "license": "MIT",
+  "author": {
+    "name": "Camilo Vera",
+    "url": "https://github.com/chamix"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chamix/md-view.git"
+  },
+  "homepage": "https://github.com/chamix/md-view#readme",
+  "bugs": {
+    "url": "https://github.com/chamix/md-view/issues"
+  },
+  "keywords": ["markdown", "electron", "desktop", "previewer", "typescript"],
+  "name": "md-view",
   "main": "dist/main/index.js",
   "scripts": {
     "dev": "npm run build && electron .",
