@@ -113,3 +113,26 @@ Real bug found in manual testing: clicking a link in the rendered Markdown makes
 2. **The app's own window must never navigate away from rendered content, regardless of what a link resolves to.** `event.preventDefault()` on `will-navigate` must be unconditional and happen *before* any URL classification — a bug in `isExternalHttpUrl` must never be able to result in an in-app navigation, only (at worst) in a legitimate external URL failing to open. Block first, decide whether to hand off second.
 3. **Only `http:`/`https:` ever reaches `shell.openExternal`.** No scheme-specific special-casing beyond that allowlist — `javascript:`, `file:`, and anything else are all uniformly refused, not enumerated as a blocklist that could miss a future dangerous scheme.
 4. **`setWindowOpenHandler` is defense-in-depth for a currently-unreachable path.** `html:false` (Task 2's guardrail) already strips any raw HTML attribute including `target`, so no rendered link can currently trigger a `target="_blank"`/`window.open()` navigation for this handler to intercept. It must still be wired correctly (same classification, same fail-safe deny default), but no test should pretend to exercise a path that isn't currently reachable — state that honestly, the same harness-honesty standard established since Step 0.
+
+---
+
+## Task 6: Syntax Highlighting for Code Blocks
+
+Feature request: fenced code blocks in rendered Markdown should get syntax highlighting when the fence declares a language, using `highlight.js`.
+
+### Abstract Schema Contracts
+
+- **A fenced code block carries two independent pieces of information: an optional declared-language token, and raw code content.** The output is a two-outcome model, not three: either the content renders as *highlighted markup* (language declared and recognized) or as *plain escaped text* (language absent, OR declared but unrecognized). "No language" and "unrecognized language" are the same output case at the schema level — both collapse to plain text — even though they're distinguishable at the input level. There is no third "error" output; an unrecognized language is not a failure state, it's a defined fallback.
+- **Highlighted markup and plain-escaped markup are both still just "the HTML for one code block"** — from the surrounding document's perspective (Task 2's `markdownToHtml: string -> string` contract) nothing changes. This task extends what happens *inside* a `<pre><code>` region; it does not introduce a new top-level output shape.
+
+### Pure Transformation Logic
+
+- **`code content + declared language -> HTML fragment`** is the one new transformation this task introduces, nested inside the existing `markdownToHtml` transformation. Given a language, if that language is recognized, the code's tokens map to marked-up spans; if not (or if no language was given at all), the code maps to itself, escaped, unchanged in meaning.
+- This transformation is a *refinement* of Task 2's existing invariant ("raw code text must never reach the DOM unescaped"), not a replacement of it — escaping still must hold in 100% of outcomes, highlighted or not.
+
+### Edge-Case Invariant Guardrails
+
+1. **No declared language → plain escaped text, always.** Auto-detection (guessing a language from content heuristics) must never run. Heuristic detection is non-deterministic across highlight.js versions/inputs and would silently break render reproducibility — a document rendered the same way twice (or on two machines) must always produce byte-identical output for an unlabeled fence.
+2. **A declared language that highlight.js does not recognize must degrade to plain escaped text — never throw, never abort the render of the rest of the document.** One bad fence must not take down the whole file's rendering, the same "don't crash the process" spirit as Task 2's guardrail for unreadable files, now scoped to a single fence within an otherwise-valid document.
+3. **Code fence content is always literal, escaped text — even when it looks like markup, even after passing through the new highlighting library.** This is Task 2's `html:false` invariant, re-verified at a new seam: previously the only thing standing between raw fence content and the DOM was markdown-it's own escaping; now a second library sits in that same path and must not reintroduce an escaping gap. A fence containing something like a `<script>` tag *as code text* must still reach the DOM as inert escaped text, regardless of whether that fence's language was recognized or not. This needs its own explicit test — "safe before, safe after" must be demonstrated, not assumed, same standard as the original `html:false` test.
+4. **Highlighting is a presentation-layer concern only.** It must not change what the document *means* — the same source Markdown must produce the same semantic content (same code text, same list items, same paragraphs) whether or not any given fence's language happens to be recognized. Nothing about this task's success or failure should be visible anywhere except inside `<pre><code>` regions.

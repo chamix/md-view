@@ -498,3 +498,96 @@ Mock `shell.openExternal` via `electronApp.evaluate()` **before** the click, sam
 ### Honest limitation, stated explicitly (same standard as Task 2's/Task 4's caveats)
 
 `setWindowOpenHandler` cannot be exercised by any test in this suite — `html:false` means no rendered link can carry `target="_blank"`, so `window.open()`/new-window navigation is not a reachable code path today. It is still correctly wired (same classification function, same fail-safe deny), but the delivered test suite should say so plainly rather than construct an artificial scenario (e.g. directly invoking the handler function outside its real trigger path) that would look like coverage without being drawn from anything a real user or real Markdown file can produce.
+
+---
+
+## Task 6 Technical Specification — Syntax Highlighting for Code Blocks
+
+Maps `functional_domain.md`'s Task 6 analysis to concrete design.
+
+### Visual baseline check (empirical, not assumed)
+
+Windows OS-level theme is set to dark (`AppsUseLightTheme=0`), but launching the built app (Playwright `_electron`, screenshot of the real window) shows the rendered `.markdown-body` in **light** colors regardless — the running BrowserWindow is not currently following the OS dark-mode signal. Confirmed by direct observation, not inferred from `github-markdown-css`'s CSS source (which does define a `prefers-color-scheme: dark` branch that theoretically could apply). Since the app *actually renders* light today, the highlight.js theme must match the light rendering a user actually sees, not a dark mode that exists in CSS but isn't currently reachable in this app's window.
+
+### The Inward Dependency Rule
+
+- `src/main/markdown.ts` remains the sole module importing `markdown-it` (Task 2's boundary) and becomes, additionally, the sole module importing `highlight.js` — both third-party libraries stay behind this one Adapter file. Nothing else in the codebase (main, preload, renderer) ever imports either library directly.
+- The new pure function `highlightCode(code, lang): string` is passed as the `highlight` option to MarkdownIt's constructor — this is dependency injection into a third-party library's extension point, not a new outward dependency of `markdown.ts` on anything beyond what it already had.
+
+### SOLID Boundary Scan
+
+- **SRP** — `highlightCode` does exactly one thing: given code text and a language token, decide highlighted-vs-plain and produce the resulting markup fragment. It has no knowledge of documents, fences, or MarkdownIt's rendering pipeline beyond the narrow callback contract it fulfills.
+- **OCP** — swapping the visual theme later is a zero-code-change operation (edit which CSS file `package.json`'s build script copies + which `<link>` `index.html` points at) — `highlightCode`'s logic is theme-agnostic, it only ever emits semantic `hljs-*` class names, never inline colors.
+- **DIP** — `markdown.ts` depends on `highlight.js`'s public API (`hljs.getLanguage`, `hljs.highlight`) exactly the way it already depends on `markdown-it`'s public API — both are peripheral libraries the domain-ish core wraps, not the reverse.
+
+### Pattern Application (GoF)
+
+- **Adapter** — `highlightCode` plays the exact same role for `highlight.js` that `markdownToHtml` already plays for `markdown-it`: the one narrow function wrapping a third-party library so nothing else in the codebase needs to know that library's API shape. This is the fifth pure/near-pure wrapper function in the codebase, alongside `markdownToHtml`, `classifyWatchEvent`, `baseUrlForFile`, `isExternalHttpUrl`.
+- No new pattern needed for the "recognized vs. unrecognized language" branch — it's a plain conditional inside one small function, not a variability point that justifies Strategy/Command.
+
+### Exact signature and wiring (authoritative)
+
+```ts
+// src/main/markdown.ts
+import MarkdownIt from 'markdown-it';
+import hljs from 'highlight.js';
+
+function highlightCode(code: string, lang: string): string {
+  if (lang && hljs.getLanguage(lang)) {
+    try {
+      return hljs.highlight(code, { language: lang }).value;
+    } catch {
+      return '';
+    }
+  }
+  return '';
+}
+
+const md = new MarkdownIt({ html: false, highlight: highlightCode });
+```
+
+**Why returning `''` is correct, not a shortcut.** MarkdownIt's fence renderer contract: if the `highlight` callback returns a truthy string, MarkdownIt uses it as-is (already-escaped HTML) inside `<pre><code class="hljs language-{lang}">`; if it returns a falsy value, MarkdownIt falls back to its own built-in escaping (`utils.escapeHtml`) and renders plain `<pre><code>` with no highlight classes. Returning `''` for both "no language" and "unrecognized language" delegates the plain-text-escaping guarantee to MarkdownIt's own already-tested default path, rather than reimplementing escaping a second time in `markdown.ts` — one less place the html-escaping invariant could drift. `hljs.highlight(...).value` itself HTML-escapes the source text as an intrinsic part of tokenizing it (this is fundamental to how highlight.js works — it never emits raw user text unescaped), which is what makes guardrail #3 (fence content always literal) hold in the highlighted branch too. The `try/catch` around `hljs.highlight` is defense-in-depth for guardrail #2 (never throw) — `getLanguage` already filters to registered languages before `highlight` is called, so the catch is expected to be dead code in practice, not a substitute for the `getLanguage` check.
+
+### Theme choice: `highlight.js`'s `github.css` (light)
+
+Chosen because (a) the app's actual running window renders light right now (confirmed above, not assumed), and (b) `github.css` is highlight.js's own GitHub-flavored light theme, sharing the same visual design language as `github-markdown-css` (same muted grays, same monospace treatment) already governing every other part of the rendered document — no other bundled highlight.js theme is purpose-built to sit next to GitHub's own markdown styling. A light/dark auto-switching pair is explicitly **not** attempted: the scope contract calls for a single `<link>` and a single copied CSS file (mirroring the existing `github-markdown-css` copy step), and `renderer.js`/`index.html`'s script wiring are otherwise off-limits this task — wiring a `prefers-color-scheme`-driven theme swap would need either JS logic (out of scope: "cero wiring nuevo en el renderer") or hand-authoring a custom CSS file gated by a media query (not "the theme's CSS file," a fabricated one) — both overreach what was asked. Flagged here, not fixed: if the app's window ever does start honoring OS dark mode, code blocks would go light-on-dark until a follow-up task pairs `github-dark.css` behind a media query — same "flag, don't silently fix out-of-scope" discipline as Task 3's packaging-files note.
+
+### File tree — Task 6 additions/changes
+
+```
+md-view/
+├── package.json                       # + dependency: highlight.js (runtime, not dev — main
+│                                       #   process requires it at render time, same reasoning
+│                                       #   as markdown-it/github-markdown-css in Task 2)
+│                                       # ~ build script: + copy
+│                                       #   node_modules/highlight.js/styles/github.css
+│                                       #   -> dist/renderer/github.css (same pattern as the
+│                                       #   existing github-markdown.css copy step)
+├── src/main/
+│   └── markdown.ts                    # ~ + highlightCode, MarkdownIt constructor gains
+│                                       #   `highlight: highlightCode`
+├── src/renderer/
+│   └── index.html                     # ~ + <link rel="stylesheet" href="./github.css">
+│                                       #   (renderer.js untouched — highlighted HTML flows
+│                                       #   through the existing innerHTML assignment)
+└── tests/
+    ├── unit/markdown.test.ts          # ~ extended, existing file — see cases below
+    └── e2e/
+        ├── (new spec, e.g. code-highlighting.spec.ts — engineer's call on filename)
+        └── fixtures/with-code/doc.md  # NEW — fence with a recognized language (e.g. ```js)
+```
+
+### Unit test cases — exact list (extends `tests/unit/markdown.test.ts`)
+
+1. Fence with a supported declared language (e.g. ` ```js `) → output contains real `hljs-*` token classes (e.g. `hljs-keyword`, `hljs-string`) — not just a `<pre><code>` wrapper with plain text. Asserting the wrapper alone would pass even if highlighting silently no-op'd; the test must look for actual `hljs-` class evidence.
+2. Fence with no declared language (` ``` ` alone) → output is escaped plain text, and contains **no** `hljs` or `language-` class anywhere — proving no auto-detection ran, not merely that *a* result was produced.
+3. Fence with a declared but unrecognized language (e.g. ` ```notarealtonguage `) → does not throw, output is escaped plain text (same shape as case 2).
+4. Security regression (guardrail #3): a fence containing literal `<script>alert(1)</script>` as code content — tested through **both** a recognized-language fence and a no-language fence — must appear as `&lt;script&gt;alert(1)&lt;/script&gt;` (or equivalent fully-escaped form) in the final HTML in both cases, never as a live tag. This is the explicit test the task calls for; it must not be inferred from cases 1–3 passing.
+
+### e2e test — exact shape
+
+`tests/e2e/fixtures/with-code/doc.md` contains at least one fence with a recognized language. The new spec launches the built app against that fixture (same `_electron.launch` + argv pattern as `open-file-argv.spec.ts`) and asserts, against the real DOM: an element matching `.hljs-keyword` (or whichever token class the chosen fixture's language/content actually produces — verify empirically during TDD rather than guessing the exact class) exists inside `#content`. This is the proof that (a) the HTML string truly contains highlight markup and (b) `dist/renderer/github.css` was actually copied and loaded by the running window — a CSS-only failure (classes present, stylesheet missing) wouldn't be caught by the unit tests above, which never load a stylesheet.
+
+### Addendum: `npm test` (bare command) validation — not part of this task's code scope
+
+The user manually added a `"test": "npm run test:all"` script to `package.json` after Task 5, to fix `run-tests-if-src.mjs` failing with "missing script" on every `src/**` edit since Task 1. Since this task edits `src/main/markdown.ts`, that hook fires again regardless. Per explicit user instruction, run bare `npm test` (not `npm run test:all`) once the implementation lands, and report in the closing summary whether it runs the full suite without the missing-script error — a validation step, not a deliverable of this task's scope contract.
