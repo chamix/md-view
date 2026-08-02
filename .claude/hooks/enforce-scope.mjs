@@ -8,6 +8,18 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join, relative, isAbsolute } from "node:path";
 
+// Trailing "/**" = recursive directory match (any depth, including the
+// directory's own direct children). Anything else = exact match.
+// Deliberately minimal — no minimatch/glob dependency, same philosophy
+// as protect-governance.mjs's own prefix/exact matcher.
+function matchesPattern(rel, pattern) {
+  if (pattern.endsWith("/**")) {
+    const prefix = pattern.slice(0, -3);
+    return rel === prefix || rel.startsWith(prefix + "/");
+  }
+  return rel === pattern;
+}
+
 const input = JSON.parse(readFileSync(0, "utf8"));
 const projectDir =
   process.env.CLAUDE_PROJECT_DIR ?? input.cwd ?? process.cwd();
@@ -33,7 +45,8 @@ try {
 }
 
 const inScope = Array.isArray(scope.in_scope) ? scope.in_scope : [];
-if (inScope.map((p) => p.replaceAll("\\", "/")).includes(rel)) process.exit(0);
+const normalizedScope = inScope.map((p) => p.replaceAll("\\", "/"));
+if (normalizedScope.some((p) => matchesPattern(rel, p))) process.exit(0);
 
 process.stderr.write(
   `BLOCKED: '${rel}' is not in the active task scope ` +
