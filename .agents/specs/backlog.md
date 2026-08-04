@@ -1,5 +1,27 @@
 ## Backlog
 
+- [Pending] Dark Mode: heading/paragraph text inside `.markdown-body` stays
+  dark (near-black) against the now-dark `body`/chrome background once Dark
+  Mode is on — screenshot shows "Arqueología de infraestructura..." nearly
+  unreadable, dark text on dark background. The background flips correctly
+  (app.css's `body.dark-mode` class is clearly applying), so the failure is
+  specifically in content text color, not the toggle itself. Hypothesis,
+  not yet verified: `applyDarkMode` (renderer.js) swaps the
+  `github-markdown-light.css`/`github-markdown-dark.css` `<link>` pair via
+  `.disabled` — either the light link isn't actually getting disabled, or
+  link order/specificity lets its `color: #1f2328` rule keep winning over
+  the dark variant's `color: #f0f6fc` specifically for text, while the
+  background happens to come from the `body` class instead and isn't
+  affected the same way. Needs checking against the live DOM (computed
+  `color` on a heading with Dark Mode on, and each link's actual `.disabled`
+  state) before assuming this is the cause — inferred from the screenshot
+  only, not confirmed.
+  Also visible in the same screenshot: a solid gray/blue rectangle above
+  the title, in the hero image's position — unclear if this is a related
+  dark-mode/image rendering issue or something unrelated (e.g. a relative
+  path problem). Confirm next session and split into its own entry if it's
+  a separate bug, don't fold it into the text-color fix by default.
+  
 - [Pending] Flaky e2e: `live-reload.spec.ts`'s primer test ("live-reloads rendered
   content...") falló intermitentemente bajo carga de 4 workers en
   paralelo durante el review de Task 6 — reproducido como verde en dos
