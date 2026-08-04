@@ -6,11 +6,12 @@
     <base id="content-base" href="" />
     <link rel="stylesheet" href="./github-markdown.css" />
     <link rel="stylesheet" href="./github.css" />
+    <link rel="stylesheet" href="./app.css" />
   </head>
   <body>
-    <h1>Hello, md-view</h1>
-    <button id="open-file-btn">Open File…</button>
+    <div id="empty-state">No file open. Use File &gt; Open… (Ctrl+O) to open a Markdown file.</div>
     <div id="content" class="markdown-body"></div>
+    <div id="status-bar">No file open</div>
     <script src="./renderer.js"></script>
   </body>
 </html>

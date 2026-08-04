@@ -591,3 +591,252 @@ md-view/
 ### Addendum: `npm test` (bare command) validation — not part of this task's code scope
 
 The user manually added a `"test": "npm run test:all"` script to `package.json` after Task 5, to fix `run-tests-if-src.mjs` failing with "missing script" on every `src/**` edit since Task 1. Since this task edits `src/main/markdown.ts`, that hook fires again regardless. Per explicit user instruction, run bare `npm test` (not `npm run test:all`) once the implementation lands, and report in the closing summary whether it runs the full suite without the missing-script error — a validation step, not a deliverable of this task's scope contract.
+
+---
+
+## Task 7 Technical Specification — UI Shell Polish
+
+Maps `functional_domain.md`'s Task 7 analysis to concrete design.
+
+### The Inward Dependency Rule
+
+- `src/main/menu.ts` is a new peripheral-boundary module, same tier as
+  `linkPolicy.ts`/`watcher.ts`/`paths.ts`: it exports one pure function
+  (`buildMenuTemplate`) that depends on nothing from Electron — it takes a plain
+  handler object in and returns a plain data structure (`MenuItemConstructorOptions[]`)
+  out. The impure calls that turn that data into a real OS menu
+  (`Menu.buildFromTemplate`, `Menu.setApplicationMenu`) stay in `src/main/index.ts`,
+  which is already the composition-root file wiring every other peripheral module
+  together (`markdown.ts`, `watcher.ts`, `paths.ts`, `linkPolicy.ts`).
+- The dialog → renderAndWatch orchestration currently inlined inside the
+  `ipcMain.on(OPEN_FILE_DIALOG, ...)` handler is extracted to a named function in
+  `index.ts` (e.g. `openFileViaDialog`). Both the removed IPC handler's old body and
+  the new menu's `click` handler become callers of this one function — this is the
+  concrete mechanism satisfying functional_domain.md guardrail #2 ("exactly one
+  shared code path"), not a promise kept only in prose.
+- `src/renderer/renderer.js` gains one new pure function (`statusBarText`) following
+  the exact module shape `applyRenderedContent` already established: a plain
+  function of its arguments, with the existing `typeof document` / `typeof module`
+  guard pattern keeping it importable under plain Node for unit tests with zero DOM.
+  No new outward dependency is introduced by the renderer at any point — it still
+  only ever consumes `window.mdview.onFileRendered`, never a new bridge method.
+
+### SOLID Boundary Scan
+
+- **SRP** — `buildMenuTemplate` does exactly one thing: describe menu structure
+  given a handler. It does not know how to open a dialog, render a file, or start
+  a watcher — those remain `index.ts`'s and `renderFile`/`watchFile`'s
+  responsibilities respectively. `statusBarText` does exactly one thing: map a
+  `FileRenderedMessage | null` to a display string — it does not touch the DOM
+  itself (that's `renderer.js`'s guarded top-level block, same division of labor
+  `applyRenderedContent` already models for rendered content).
+- **OCP** — Adding a future menu item (e.g. a "Recent Files" submenu) is a change
+  localized to `buildMenuTemplate`'s returned array; `index.ts`'s wiring
+  (`Menu.buildFromTemplate(buildMenuTemplate(...))`) does not need to change shape
+  to accommodate it.
+- **ISP** — `BridgeApi` shrinks, it does not grow: removing `openFileDialog()` is
+  the interface-segregation direction working correctly — the renderer no longer
+  needs to depend on a method it has no reason to call anymore. This is the same
+  discipline as Task 5's allowlist-not-denylist choice: an interface should expose
+  exactly what its consumer needs, no more.
+- **DIP** — `index.ts`'s menu wiring depends on `buildMenuTemplate`'s abstract
+  return shape (a plain template array), not on any concrete detail of *how* Open
+  or Exit are triggered internally. `buildMenuTemplate` itself depends on nothing
+  concrete — its only "dependency" is the `{ onOpen }` handler shape passed in,
+  which is the inversion: the peripheral (menu structure) depends on an abstraction
+  the composition root supplies, not the reverse.
+
+### Pattern Application (GoF)
+
+- **Adapter, again** — `buildMenuTemplate` plays the same role for Electron's
+  `Menu` API that `markdownToHtml`/`highlightCode`/`baseUrlForFile`/`isExternalHttpUrl`
+  already play for their respective libraries: a narrow, pure wrapper isolating a
+  third-party/platform API shape from the rest of the codebase, and made testable
+  without a real Electron runtime. This is the sixth such function, per the task's
+  own numbering.
+- **Command (implicit, not hand-rolled)** — `Menu.buildFromTemplate`'s `click`
+  handlers are themselves already Electron's built-in Command pattern (an object
+  encapsulating an action to invoke later); `buildMenuTemplate` supplies the
+  callback, it does not need to introduce a hand-rolled Command class on top of
+  what Electron already provides — that would be a redundant abstraction over an
+  abstraction.
+- No new pattern justified for the status bar or empty-state message — both are
+  plain conditional string/visibility derivations, not a variability point that
+  would justify Strategy/State/Observer machinery.
+
+### Exact signatures and wiring (authoritative)
+
+```ts
+// src/main/menu.ts
+import type { MenuItemConstructorOptions } from 'electron';
+
+export function buildMenuTemplate(handlers: { onOpen: () => void }): MenuItemConstructorOptions[] {
+  return [
+    {
+      label: 'File',
+      submenu: [
+        { id: 'menu-open', label: 'Open…', accelerator: 'CmdOrCtrl+O', click: handlers.onOpen },
+        { type: 'separator' },
+        { id: 'menu-exit', label: 'Exit', role: 'quit' },
+      ],
+    },
+  ];
+}
+```
+
+```ts
+// src/main/index.ts additions (illustrative, engineer owns exact placement/naming)
+import { Menu, ... } from 'electron';
+import { buildMenuTemplate } from './menu';
+
+async function openFileViaDialog(): Promise<void> {
+  const result = await dialog.showOpenDialog({
+    filters: [{ name: 'Markdown', extensions: ['md'] }],
+    properties: ['openFile'],
+  });
+  if (result.canceled || result.filePaths.length === 0) return;
+  await renderAndWatch(result.filePaths[0]);
+}
+
+// in app.whenReady().then(...) or createWindow():
+Menu.setApplicationMenu(Menu.buildFromTemplate(buildMenuTemplate({ onOpen: openFileViaDialog })));
+
+mainWindow.webContents.on('before-input-event', (event, input) => {
+  if (app.isPackaged) return;
+  const isDevToolsShortcut =
+    input.key === 'F12' || ((input.control || input.meta) && input.shift && input.key.toLowerCase() === 'i');
+  if (isDevToolsShortcut) {
+    mainWindow?.webContents.toggleDevTools();
+  }
+});
+```
+
+```js
+// src/renderer/renderer.js addition, alongside applyRenderedContent
+function statusBarText(message) {
+  if (!message || !message.filePath) return 'No file open';
+  return message.filePath;
+}
+```
+
+**Contract, not engineer discretion: the status bar element is updated exclusively
+via `statusBarEl.textContent = statusBarText(message)`, never `.innerHTML`.**
+`filePath` is an OS-provided filesystem path (dialog selection or argv), not
+Markdown-derived content, so there is no active exploit surface today — but
+`functional_domain.md`'s guardrail #4 calls this out as defense-in-depth
+regardless, and the whole point of stating it here, in the authoritative wiring
+example, is that it is fixed by this spec and not left as a judgment call the
+engineer could resolve either way while still satisfying the task description in
+prose.
+
+**Why `role: 'quit'` for Exit, not a hand-rolled `click: () => app.quit()`.** Electron's
+built-in `role` mechanism already implements "terminate the app" correctly across
+platforms (respecting `before-quit` hooks, which `stopWatching` is already registered
+against) — reimplementing it with an explicit `click` handler would be redundant
+code duplicating a platform-provided Command for no behavioral gain. `id: 'menu-exit'`
+is still supplied alongside the role, satisfying the e2e-lookup requirement without
+conflicting with it.
+
+**Why `before-input-event` on `webContents`, not a global shortcut or a hidden menu
+item.** A global `accelerator`-based shortcut would register at the OS/Electron
+Menu layer, which the app deliberately no longer has a hidden entry for (the task
+explicitly forbids a menu item under any condition); `before-input-event` intercepts
+key events scoped to this window's `webContents` only, which is the narrowest
+mechanism that satisfies "safety net for a lost default menu" without resurrecting
+any of the surface being removed.
+
+### File tree — Task 7 additions/changes
+
+```
+md-view/
+├── package.json                       # ~ build script: + copy src/renderer/app.css
+│                                       #   -> dist/renderer/app.css (same copyFileSync
+│                                       #   pattern as github.css/github-markdown.css)
+├── src/main/
+│   ├── menu.ts                        # NEW — buildMenuTemplate (pure)
+│   └── index.ts                       # ~ + Menu wiring, + openFileViaDialog extraction,
+│                                       #   + before-input-event DevTools listener,
+│                                       #   - ipcMain.on(OPEN_FILE_DIALOG, ...) removed
+├── src/preload/
+│   ├── api.ts                         # ~ - OPEN_FILE_DIALOG from IPC_CHANNELS,
+│                                       #   - openFileDialog from BridgeApi
+│   └── index.ts                       # ~ - openFileDialog implementation
+├── src/renderer/
+│   ├── index.html                     # ~ - <h1>, - #open-file-btn, + empty-state element,
+│                                       #   + status bar element, + <link app.css>
+│   ├── renderer.js                    # ~ + statusBarText, + empty-state hide-on-first-message
+│                                       #   wiring, + status bar update wiring,
+│                                       #   - open-file-btn click listener
+│   └── app.css                        # NEW — #content padding-inline, status bar fixed
+│                                       #   positioning, empty-state styling
+└── tests/
+    ├── integration/preload-api-contract.test.ts   # ~ - both OPEN_FILE_DIALOG assertions
+    ├── unit/
+    │   ├── menu.test.ts                # NEW
+    │   └── statusBarText.test.ts       # NEW
+    └── e2e/
+        ├── ui-shell.spec.ts            # NEW
+        ├── open-file-argv.spec.ts      # ~ non-.md dialog test: button click -> menu click
+        └── live-reload.spec.ts         # ~ watcher-handoff test: button click -> menu click
+```
+
+### Unit test cases — exact list
+
+`tests/unit/menu.test.ts`:
+1. Returns exactly one top-level item (`File`) whose `submenu` has exactly 3
+   entries: `menu-open`, a separator, `menu-exit`.
+2. `menu-open` has `label: 'Open…'` (or equivalent), `accelerator: 'CmdOrCtrl+O'`,
+   and its `click` is reference-equal to the `onOpen` handler passed in (proves
+   wiring without invoking real Electron `Menu`).
+3. The separator entry has `type: 'separator'`.
+4. `menu-exit` has `label: 'Exit'` and `role: 'quit'` (or is otherwise provably
+   wired to quit — engineer's call on exact assertion given `role`-based items
+   don't carry a `click`).
+
+`tests/unit/statusBarText.test.ts`:
+1. `null` → `'No file open'`.
+2. `{ ok: true, filePath: '/a/b.md', html: '', baseUrl: '' }` → `'/a/b.md'`.
+3. `{ ok: false, filePath: null, error: 'x' }` → `'No file open'`.
+4. `{ ok: false, filePath: '/a/b.md', error: 'x' }` → `'/a/b.md'`.
+
+### Integration test change
+
+`tests/integration/preload-api-contract.test.ts`: remove the two
+`IPC_CHANNELS.OPEN_FILE_DIALOG` assertions inside the "exposes non-empty string
+channel names" test (per functional_domain.md guardrail #1 — this is proof of
+complete, intentional removal, not a leftover red test). The `FILE_RENDERED`
+assertions and the distinct-channel-names test stay, adjusted only if removing one
+side of the distinctness check leaves it meaningless (engineer's call — if only one
+channel remains, that specific assertion has nothing left to prove and should be
+removed too, not contorted to keep a two-sided comparison alive artificially).
+
+### e2e test — exact shape
+
+`tests/e2e/ui-shell.spec.ts` (new):
+a) Launch with no argv file (`open-file-argv.spec.ts`'s pattern, no file path in
+   `args`). Assert `h1` and `#open-file-btn` are absent from the DOM, the
+   empty-state text is visible, and the status bar shows "No file open".
+b) Launch with `tests/e2e/fixtures/sample.md` via argv (`open-file-argv.spec.ts`'s
+   existing pattern). Assert the empty-state text is gone and the status bar's text
+   equals the fixture's real absolute path.
+c) After (b)'s render, assert `#content`'s computed `padding-inline` (or the
+   longhand `padding-left`/`padding-right` pair, whichever Playwright's
+   `getComputedStyle` access pattern makes cleaner) is non-zero.
+d) After (b)'s render, assert the status bar element's `innerHTML === textContent`
+   — cheap, direct proof that the element's content was set via `textContent`
+   (no HTML got parsed there), not merely that the visible string looks right.
+   This is the test-level enforcement of the `textContent`-only contract stated
+   above, not a redundant restatement of case (b)'s path-text assertion.
+
+`open-file-argv.spec.ts`'s "non-.md file selected via the dialog" test: replace
+`await window.click('#open-file-btn')` with driving the menu item directly, e.g.
+`await app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open')?.click())`.
+Same replacement in `live-reload.spec.ts`'s "closes the previous file's watcher on
+switch" test. Neither test's assertions, fixtures, or mocked `dialog.showOpenDialog`
+setup change — only the trigger line.
+
+### Addendum: `npm test` validation
+
+Same standing instruction as Task 6's addendum — run bare `npm test` after
+implementation lands and report whether it completes without the missing-script
+error, as a validation step outside this task's code scope.

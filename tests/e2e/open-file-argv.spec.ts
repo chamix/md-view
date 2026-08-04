@@ -55,8 +55,9 @@ test('shows a visible error state for a non-.md file selected via the dialog, an
   // OS file picker's extension filter is not a hard guarantee), so this test
   // exercises that branch by mocking dialog.showOpenDialog in the main
   // process (Playwright's electronApp.evaluate) to return a real,
-  // already-existing non-.md file, then driving the same #open-file-btn ->
-  // openFileDialog() -> ipcMain handler -> renderFile() path a user would.
+  // already-existing non-.md file, then driving the native File > Open…
+  // menu item (menu-open) -> openFileViaDialog() -> renderFile() path a
+  // user would, via app.evaluate() since there is no in-page button anymore.
   const app = await electron.launch({
     args: [path.join(process.cwd(), 'dist/main/index.js')],
     env: childEnv,
@@ -71,7 +72,7 @@ test('shows a visible error state for a non-.md file selected via the dialog, an
   }, nonMdPath);
 
   const window = await app.firstWindow();
-  await window.click('#open-file-btn');
+  await app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open')?.click());
 
   const content = window.locator('#content');
   await expect(content).toContainText('Could not open file', { timeout: 10000 });

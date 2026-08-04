@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, Menu, shell } from 'electron';
 import * as path from 'path';
 import * as fs from 'node:fs/promises';
 import { defaultWindowOptions } from './windowConfig';
@@ -6,6 +6,7 @@ import { markdownToHtml } from './markdown';
 import { baseUrlForFile } from './paths';
 import { watchFile } from './watcher';
 import { isExternalHttpUrl } from './linkPolicy';
+import { buildMenuTemplate } from './menu';
 import type { FSWatcher } from 'chokidar';
 import { IPC_CHANNELS } from '../preload/api';
 import type { FileRenderedMessage } from '../preload/api';
@@ -36,7 +37,36 @@ function createWindow(): void {
     }
     return { action: 'deny' };
   });
+
+  // Developer affordance only — never reachable in a shipped build, and
+  // never surfaced as a discoverable menu entry. Scoped to this window's
+  // webContents, not a global accelerator.
+  mainWindow.webContents.on('before-input-event', (_event, input) => {
+    if (shouldSkipDevToolsShortcut(app.isPackaged)) return;
+    const isDevToolsShortcut =
+      input.key === 'F12' || ((input.control || input.meta) && input.shift && input.key.toLowerCase() === 'i');
+    if (isDevToolsShortcut) {
+      mainWindow?.webContents.toggleDevTools();
+    }
+  });
 }
+
+// Pure predicate isolating the DevTools-shortcut guard's polarity so it can
+// be pinned by a test without having to drive real native keyboard input
+// through Electron's before-input-event pipeline. Must return true (skip /
+// unreachable) only when packaged, and false (reachable) only in dev builds.
+export function shouldSkipDevToolsShortcut(isPackaged: boolean): boolean {
+  return isPackaged;
+}
+
+// Test-only bridge: tests/e2e/ui-shell.spec.ts reads this via
+// electronApp.evaluate() to pin the guard's exact polarity. Synthetic native
+// keyboard input (F12) does not reliably reach Electron's before-input-event
+// hook via CDP in automated test runs, so this exposes the real, running
+// predicate for direct assertion instead of reimplementing it in the test
+// (which would only pin a copy, not the shipped behavior). Main-process-only
+// global; never reachable from renderer/web content.
+(globalThis as Record<string, unknown>).__mdViewDevToolsGuardForTests = shouldSkipDevToolsShortcut;
 
 function argvFilePath(): string | null {
   const args = app.isPackaged ? process.argv.slice(1) : process.argv.slice(2);
@@ -82,17 +112,19 @@ async function renderAndWatch(filePath: string): Promise<void> {
   }
 }
 
-ipcMain.on(IPC_CHANNELS.OPEN_FILE_DIALOG, async () => {
+async function openFileViaDialog(): Promise<void> {
   const result = await dialog.showOpenDialog({
     filters: [{ name: 'Markdown', extensions: ['md'] }],
     properties: ['openFile'],
   });
   if (result.canceled || result.filePaths.length === 0) return;
   await renderAndWatch(result.filePaths[0]);
-});
+}
 
 app.whenReady().then(() => {
   createWindow();
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(buildMenuTemplate({ onOpen: openFileViaDialog })));
 
   const filePath = argvFilePath();
   if (filePath !== null) {

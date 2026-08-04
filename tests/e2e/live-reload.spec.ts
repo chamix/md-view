@@ -59,14 +59,15 @@ test('closes the previous file\'s watcher on switch — edits to the abandoned f
 
     // Switch to File B via the dialog trigger, exactly like the non-.md
     // dialog test in open-file-argv.spec.ts: mock dialog.showOpenDialog in
-    // the main process and drive it through the real #open-file-btn path.
+    // the main process and drive it through the native File > Open… menu
+    // item (menu-open), since there is no in-page button anymore.
     await app.evaluate(({ dialog }, filePath) => {
       dialog.showOpenDialog = (async () => ({
         canceled: false,
         filePaths: [filePath],
       })) as typeof dialog.showOpenDialog;
     }, fileB);
-    await window.click('#open-file-btn');
+    await app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open')?.click());
 
     await expect(content).toContainText('File B Heading', { timeout: 10000 });
 

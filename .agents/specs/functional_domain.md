@@ -136,3 +136,96 @@ Feature request: fenced code blocks in rendered Markdown should get syntax highl
 2. **A declared language that highlight.js does not recognize must degrade to plain escaped text — never throw, never abort the render of the rest of the document.** One bad fence must not take down the whole file's rendering, the same "don't crash the process" spirit as Task 2's guardrail for unreadable files, now scoped to a single fence within an otherwise-valid document.
 3. **Code fence content is always literal, escaped text — even when it looks like markup, even after passing through the new highlighting library.** This is Task 2's `html:false` invariant, re-verified at a new seam: previously the only thing standing between raw fence content and the DOM was markdown-it's own escaping; now a second library sits in that same path and must not reintroduce an escaping gap. A fence containing something like a `<script>` tag *as code text* must still reach the DOM as inert escaped text, regardless of whether that fence's language was recognized or not. This needs its own explicit test — "safe before, safe after" must be demonstrated, not assumed, same standard as the original `html:false` test.
 4. **Highlighting is a presentation-layer concern only.** It must not change what the document *means* — the same source Markdown must produce the same semantic content (same code text, same list items, same paragraphs) whether or not any given fence's language happens to be recognized. Nothing about this task's success or failure should be visible anywhere except inside `<pre><code>` regions.
+
+---
+
+## Task 7: UI Shell Polish — Native Menu, Empty State, Content Margin, Status Bar
+
+Cosmetic/UX pass on the app shell. The rendering pipeline, security invariants, and
+live-reload behavior established in Tasks 2–6 are unchanged; this task is about how
+the *shell around* rendered content looks and how a user triggers the one action
+(open a file) that already exists.
+
+### Abstract Schema Contracts
+
+- **The "open a file" action is not gaining a new trigger mechanism at the domain
+  level — it's losing a redundant one.** Today there are two routes into the same
+  `renderAndWatch` orchestration: an argv path (startup) and a dialog path (button
+  click → IPC → main). This task replaces the dialog path's *entry point* (a
+  renderer-side button that round-trips through IPC to ask main to open a dialog)
+  with a main-process-native one (an OS menu item whose click handler runs directly
+  in main, no IPC needed to *initiate* it). The domain action itself — "ask the OS
+  for a file, then render+watch it" — is unchanged; only which process originates
+  the request changes, and it collapses from two hops (renderer click → IPC send →
+  main dialog) to one (menu click → main dialog).
+- **A file-open request originating from a native menu is not a new schema.** It
+  carries no payload of its own (no channel, no message shape) — it is a zero-argument
+  trigger, same as the button's `openFileDialog()` was a zero-argument trigger. The
+  *result* of that trigger is still exactly `FileRenderedMessage`, unchanged.
+- **The shell now surfaces two new read-only projections of state that already
+  exists, not new state.** A status line and an empty-state message are both pure
+  presentations of "is a file currently open, and if so what path" — a fact already
+  fully carried by whether a `FILE_RENDERED` message has arrived and which variant/
+  `filePath` it carried. No new fact is being tracked; two new views onto the same
+  fact are being added.
+  - Status line: always visible, shows the current file's path, or an explicit
+    "nothing is open" state.
+  - Empty-state message: visible only in the *original* pre-first-render condition,
+    and permanently gone the instant the first `FILE_RENDERED` message of the
+    session arrives, ok or error. It does not reappear if a later open fails — an
+    error state is not "no file", it's "a file was attempted and didn't work",
+    which is a distinct condition from "nothing has been attempted yet."
+- **The Exit menu item is a new domain action**: "terminate the application," with
+  no state to preserve and no confirmation step — a direct request to quit, same
+  as an OS window-close button would trigger.
+
+### Pure Transformation Logic
+
+- **Menu structure as data.** "Given a callback for what 'Open' should do, produce
+  the abstract structure of a two-item File menu (Open, Exit) with a separator
+  between them" is a pure transformation — input is a handler reference, output is
+  a description of menu structure. It does not need to talk to the OS to be
+  computed or tested; actually installing that structure as a real, visible native
+  menu is a separate, impure step layered on top.
+- **Status text derivation.** "Given the current file-rendered state (nothing yet,
+  a successful render, or a failed render), what single line of text describes the
+  open file" is a pure function of that state: no file yet or no path available →
+  a fixed "nothing open" phrase; any state carrying a real path → that path,
+  verbatim, with no transformation, truncation, or interpretation applied to it.
+
+### Edge-Case Invariant Guardrails
+
+1. **Removing the old dialog-trigger IPC surface must be a complete removal, not a
+   deprecation.** The old renderer-button-to-IPC-to-dialog trigger is fully retired,
+   not left dormant alongside the new one — two parallel ways to start the same
+   action would be duplicated logic with no domain justification, and the whole
+   point of this change is that the trigger now lives natively in main and needs no
+   IPC hop to originate.
+2. **The rendering/watching orchestration itself must not fork.** Whether the
+   trigger was argv (Task 2) or is now menu-native, exactly one shared code path
+   performs "ask for/receive a path, then render + watch it." A menu-specific
+   reimplementation of that orchestration would violate the same "one path, not
+   two" principle Task 2 established for argv vs. dialog and Task 3 preserved for
+   watch-triggered re-renders.
+3. **A developer affordance (inspecting the running app) is not a product feature
+   and must never be reachable in a shipped build.** Whatever safety net replaces
+   the previously-implicit access to developer tooling must be conditioned on the
+   build being a development build, not on an environment variable a packaged
+   build might accidentally still carry, and must never surface as a discoverable
+   menu entry a real user could click.
+4. **The status line's displayed path is exactly the path already known to be
+   true — it is never reconstructed, guessed, or partially shown.** No new
+   trust boundary is introduced: the value was already being carried safely
+   over the existing render-result channel, so displaying it introduces no
+   new escaping or interpretation surface beyond "put this exact known-safe
+   string where a user can see it."
+5. **The empty-state message is a one-way transition.** Once a real attempt to
+   open a file has resolved (successfully or not), "nothing has been tried yet"
+   is no longer true and must never be shown again for the rest of that window's
+   lifetime — not even if a later open fails, because failure is a different,
+   already-handled condition (existing error display), not a reversion to the
+   initial condition.
+6. **Visual/layout changes (content margin) carry no functional coupling** — they
+   must not alter what content is rendered or how, only how it is spaced on
+   screen. Same separation as Task 6's guardrail that highlighting is
+   presentation-only and must not change document meaning.
