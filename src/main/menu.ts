@@ -1,6 +1,20 @@
 import type { MenuItemConstructorOptions } from 'electron';
 
-export function buildMenuTemplate(handlers: { onOpen: () => void }): MenuItemConstructorOptions[] {
+export interface ViewSettings {
+  darkMode: boolean;
+  showFrontmatter: boolean;
+}
+
+export interface MenuHandlers {
+  onOpen: () => void;
+  onToggleDarkMode: (checked: boolean) => void;
+  onToggleShowFrontmatter: (checked: boolean) => void;
+}
+
+export function buildMenuTemplate(
+  handlers: MenuHandlers,
+  initialViewSettings: ViewSettings
+): MenuItemConstructorOptions[] {
   return [
     {
       label: 'File',
@@ -8,6 +22,25 @@ export function buildMenuTemplate(handlers: { onOpen: () => void }): MenuItemCon
         { id: 'menu-open', label: 'Open…', accelerator: 'CmdOrCtrl+O', click: handlers.onOpen },
         { type: 'separator' },
         { id: 'menu-exit', label: 'Exit', role: 'quit' },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        {
+          id: 'menu-dark-mode',
+          label: 'Dark Mode',
+          type: 'checkbox',
+          checked: initialViewSettings.darkMode,
+          click: (menuItem) => handlers.onToggleDarkMode(menuItem.checked),
+        },
+        {
+          id: 'menu-show-frontmatter',
+          label: 'Show Frontmatter',
+          type: 'checkbox',
+          checked: initialViewSettings.showFrontmatter,
+          click: (menuItem) => handlers.onToggleShowFrontmatter(menuItem.checked),
+        },
       ],
     },
   ];

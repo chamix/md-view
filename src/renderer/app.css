@@ -8,6 +8,10 @@ body {
 
 #content {
   padding-inline: 2rem;
+  /* Task 8: breathing room at the visual end of the rendered document
+     itself — a different concern from body's padding-bottom above (which
+     only reserves clearance for the fixed status bar). Both rules stay. */
+  padding-bottom: 2rem;
 }
 
 #empty-state {
@@ -30,4 +34,42 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Task 8: frontmatter block — literal, unprocessed text (functional_domain.md
+   guardrail #3), styled for legibility with each key: value line preserved. */
+#frontmatter {
+  margin: 0 2rem;
+  padding: 1rem;
+  background: #f6f8fa;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  color: #24292f;
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+/* Task 8: Dark Mode is app-driven, never OS-driven — an explicit class
+   toggled atomically alongside the theme-css <link> pairs, covering every
+   visually distinct chrome region together (never a partial light/dark mix). */
+body.dark-mode {
+  background: #0d1117;
+}
+
+body.dark-mode #status-bar {
+  background: #161b22;
+  border-top-color: #30363d;
+  color: #8b949e;
+}
+
+body.dark-mode #empty-state {
+  color: #8b949e;
+}
+
+body.dark-mode #frontmatter {
+  background: #161b22;
+  border-color: #30363d;
+  color: #c9d1d9;
 }

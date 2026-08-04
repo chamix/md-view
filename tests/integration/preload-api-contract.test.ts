@@ -6,6 +6,13 @@ describe('IPC_CHANNELS (preload/main contract)', () => {
   it('exposes non-empty string channel names', () => {
     expect(typeof IPC_CHANNELS.FILE_RENDERED).toBe('string');
     expect(IPC_CHANNELS.FILE_RENDERED.length).toBeGreaterThan(0);
+
+    expect(typeof IPC_CHANNELS.VIEW_SETTINGS).toBe('string');
+    expect(IPC_CHANNELS.VIEW_SETTINGS.length).toBeGreaterThan(0);
+  });
+
+  it('FILE_RENDERED and VIEW_SETTINGS are distinct channel names', () => {
+    expect(IPC_CHANNELS.VIEW_SETTINGS).not.toBe(IPC_CHANNELS.FILE_RENDERED);
   });
 });
 
@@ -24,6 +31,7 @@ describe('FileRenderedOk (Task 4: baseUrl field)', () => {
       filePath: '/some/dir/doc.md',
       html: '<h1>Hello</h1>',
       baseUrl: 'file:///some/dir/',
+      frontmatter: null,
     };
 
     expect(sample.baseUrl).toBe('file:///some/dir/');

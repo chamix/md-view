@@ -7,12 +7,33 @@ import { baseUrlForFile } from './paths';
 import { watchFile } from './watcher';
 import { isExternalHttpUrl } from './linkPolicy';
 import { buildMenuTemplate } from './menu';
+import type { ViewSettings } from './menu';
+import { extractFrontmatter } from './frontmatter';
 import type { FSWatcher } from 'chokidar';
 import { IPC_CHANNELS } from '../preload/api';
 import type { FileRenderedMessage } from '../preload/api';
 
 let mainWindow: BrowserWindow | null = null;
 let activeWatcher: FSWatcher | null = null;
+
+// Session-scoped, never persisted (functional_domain.md Task 8 guardrail #6):
+// resets to this exact default on every launch, regardless of a prior
+// session's choices.
+let viewSettings: ViewSettings = { darkMode: false, showFrontmatter: true };
+
+function broadcastViewSettings(): void {
+  mainWindow?.webContents.send(IPC_CHANNELS.VIEW_SETTINGS, viewSettings);
+}
+
+function setDarkMode(checked: boolean): void {
+  viewSettings = { ...viewSettings, darkMode: checked };
+  broadcastViewSettings();
+}
+
+function setShowFrontmatter(checked: boolean): void {
+  viewSettings = { ...viewSettings, showFrontmatter: checked };
+  broadcastViewSettings();
+}
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -81,7 +102,8 @@ async function renderFile(filePath: string): Promise<FileRenderedMessage> {
 
   try {
     const source = await fs.readFile(filePath, 'utf8');
-    return { ok: true, filePath, html: markdownToHtml(source), baseUrl: baseUrlForFile(filePath) };
+    const { frontmatter, body } = extractFrontmatter(source);
+    return { ok: true, filePath, html: markdownToHtml(body), baseUrl: baseUrlForFile(filePath), frontmatter };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return { ok: false, filePath, error: message };
@@ -124,7 +146,21 @@ async function openFileViaDialog(): Promise<void> {
 app.whenReady().then(() => {
   createWindow();
 
-  Menu.setApplicationMenu(Menu.buildFromTemplate(buildMenuTemplate({ onOpen: openFileViaDialog })));
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate(
+      buildMenuTemplate(
+        { onOpen: openFileViaDialog, onToggleDarkMode: setDarkMode, onToggleShowFrontmatter: setShowFrontmatter },
+        viewSettings
+      )
+    )
+  );
+
+  // Unconditional and separate from the argv-conditional listener below:
+  // ViewSettings is a session fact independent of whether any file was ever
+  // opened, so the renderer must learn it even when there is no argv file.
+  mainWindow?.webContents.once('did-finish-load', () => {
+    broadcastViewSettings();
+  });
 
   const filePath = argvFilePath();
   if (filePath !== null) {

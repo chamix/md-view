@@ -1,11 +1,24 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { buildMenuTemplate } from '../../src/main/menu';
+import type { MenuHandlers, ViewSettings } from '../../src/main/menu';
+
+function handlers(overrides: Partial<MenuHandlers> = {}): MenuHandlers {
+  return {
+    onOpen: () => {},
+    onToggleDarkMode: () => {},
+    onToggleShowFrontmatter: () => {},
+    ...overrides,
+  };
+}
+
+function viewSettings(overrides: Partial<ViewSettings> = {}): ViewSettings {
+  return { darkMode: false, showFrontmatter: true, ...overrides };
+}
 
 describe('buildMenuTemplate (pure menu structure)', () => {
   it('returns exactly one top-level item (File) whose submenu has exactly 3 entries', () => {
-    const template = buildMenuTemplate({ onOpen: () => {} });
+    const template = buildMenuTemplate(handlers(), viewSettings());
 
-    expect(template).toHaveLength(1);
     expect(template[0].label).toBe('File');
 
     const submenu = template[0].submenu as Array<Record<string, unknown>>;
@@ -17,7 +30,7 @@ describe('buildMenuTemplate (pure menu structure)', () => {
 
   it('menu-open has label, accelerator, and click reference-equal to the onOpen handler', () => {
     const onOpen = () => {};
-    const template = buildMenuTemplate({ onOpen });
+    const template = buildMenuTemplate(handlers({ onOpen }), viewSettings());
 
     const submenu = template[0].submenu as Array<Record<string, unknown>>;
     const openItem = submenu[0];
@@ -28,18 +41,77 @@ describe('buildMenuTemplate (pure menu structure)', () => {
   });
 
   it('the separator entry has type: separator', () => {
-    const template = buildMenuTemplate({ onOpen: () => {} });
+    const template = buildMenuTemplate(handlers(), viewSettings());
     const submenu = template[0].submenu as Array<Record<string, unknown>>;
 
     expect(submenu[1].type).toBe('separator');
   });
 
   it('menu-exit has label Exit and role quit', () => {
-    const template = buildMenuTemplate({ onOpen: () => {} });
+    const template = buildMenuTemplate(handlers(), viewSettings());
     const submenu = template[0].submenu as Array<Record<string, unknown>>;
     const exitItem = submenu[2];
 
     expect(exitItem.label).toBe('Exit');
     expect(exitItem.role).toBe('quit');
+  });
+
+  it('template now has 2 top-level items: File, View', () => {
+    const template = buildMenuTemplate(handlers(), viewSettings());
+
+    expect(template).toHaveLength(2);
+    expect(template[0].label).toBe('File');
+    expect(template[1].label).toBe('View');
+  });
+
+  it("View's submenu has exactly 2 entries: menu-dark-mode, menu-show-frontmatter", () => {
+    const template = buildMenuTemplate(handlers(), viewSettings());
+    const viewSubmenu = template[1].submenu as Array<Record<string, unknown>>;
+
+    expect(viewSubmenu).toHaveLength(2);
+    expect(viewSubmenu[0].id).toBe('menu-dark-mode');
+    expect(viewSubmenu[1].id).toBe('menu-show-frontmatter');
+  });
+
+  it.each([true, false])('menu-dark-mode reflects initialViewSettings.darkMode = %s', (darkMode) => {
+    const template = buildMenuTemplate(handlers(), viewSettings({ darkMode }));
+    const viewSubmenu = template[1].submenu as Array<Record<string, unknown>>;
+    const darkModeItem = viewSubmenu[0];
+
+    expect(darkModeItem.type).toBe('checkbox');
+    expect(darkModeItem.label).toBe('Dark Mode');
+    expect(darkModeItem.checked).toBe(darkMode);
+  });
+
+  it("menu-dark-mode's click invokes onToggleDarkMode with the mock menuItem's checked value", () => {
+    const onToggleDarkMode = vi.fn();
+    const template = buildMenuTemplate(handlers({ onToggleDarkMode }), viewSettings());
+    const viewSubmenu = template[1].submenu as Array<Record<string, unknown>>;
+    const darkModeItem = viewSubmenu[0] as { click: (menuItem: { checked: boolean }) => void };
+
+    darkModeItem.click({ checked: true });
+
+    expect(onToggleDarkMode).toHaveBeenCalledWith(true);
+  });
+
+  it.each([true, false])('menu-show-frontmatter reflects initialViewSettings.showFrontmatter = %s', (showFrontmatter) => {
+    const template = buildMenuTemplate(handlers(), viewSettings({ showFrontmatter }));
+    const viewSubmenu = template[1].submenu as Array<Record<string, unknown>>;
+    const showFrontmatterItem = viewSubmenu[1];
+
+    expect(showFrontmatterItem.type).toBe('checkbox');
+    expect(showFrontmatterItem.label).toBe('Show Frontmatter');
+    expect(showFrontmatterItem.checked).toBe(showFrontmatter);
+  });
+
+  it("menu-show-frontmatter's click invokes onToggleShowFrontmatter with the mock menuItem's checked value", () => {
+    const onToggleShowFrontmatter = vi.fn();
+    const template = buildMenuTemplate(handlers({ onToggleShowFrontmatter }), viewSettings());
+    const viewSubmenu = template[1].submenu as Array<Record<string, unknown>>;
+    const showFrontmatterItem = viewSubmenu[1] as { click: (menuItem: { checked: boolean }) => void };
+
+    showFrontmatterItem.click({ checked: false });
+
+    expect(onToggleShowFrontmatter).toHaveBeenCalledWith(false);
   });
 });

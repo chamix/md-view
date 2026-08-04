@@ -229,3 +229,131 @@ the *shell around* rendered content looks and how a user triggers the one action
    must not alter what content is rendered or how, only how it is spaced on
    screen. Same separation as Task 6's guardrail that highlighting is
    presentation-only and must not change document meaning.
+
+---
+
+## Task 8: Dark Mode, Frontmatter Visibility, Bottom Margin
+
+Real bug found via manual testing (same discovery style as Tasks 4/5): on an OS set
+to dark mode, `github-markdown-css`'s default build only auto-styles
+`.markdown-body` via `prefers-color-scheme`, leaving the surrounding app chrome
+(the window background, Task 7's status bar, Task 7's empty-state) light — a
+half-dark/half-light window. Feature request bundled alongside the fix: a View menu
+exposing an explicit, app-driven Dark Mode toggle (never OS-driven) and a
+Show/Hide Frontmatter toggle for YAML frontmatter blocks, which currently render as
+an unreadable run-on paragraph inside `.markdown-body` because `markdownToHtml`
+has no concept of frontmatter at all — it's just more Markdown text to it today.
+
+### Abstract Schema Contracts
+
+- **A rendered file carries two independent facts today (its content, and whether
+  it has a base URL); this task adds a third, `frontmatter`, that is more
+  information about the same successful render, not a new outcome.** Exactly the
+  precedent Task 4 set with `baseUrl`: an additional field on the existing
+  successful-render shape. A failed render still has nothing to extract
+  frontmatter from — the asymmetry between the two variants is deliberate and
+  stays deliberate, not "balanced" for symmetry's own sake.
+- **Frontmatter is domain-meaningful text that is not part of the document's
+  rendered body.** A Markdown source file conceptually has two regions: an
+  optional leading metadata block (author, tags, whatever the file's own
+  convention holds) and the actual content meant to become the rendered document.
+  These are different domain objects with different destinations — frontmatter is
+  displayed as literal, unprocessed text; the body is what already flows through
+  the existing Markdown-to-HTML transformation. Conflating them (letting
+  frontmatter flow into `markdownToHtml` too) would be a domain-boundary error,
+  not just a display quirk.
+- **View preferences are a fact about the session, not about any particular
+  file.** Whether dark mode is on, and whether frontmatter should be shown, are
+  true independent of which file (if any) is currently open — a user can toggle
+  Dark Mode before ever opening a file, and it must still be honored the moment a
+  file is opened. This is categorically different from `FileRenderedMessage`,
+  which only exists in response to a specific file being opened or re-rendered.
+  Two different facts, two different lifetimes — they must not be collapsed into
+  one schema just because they're both "state the renderer needs to know."
+- **Dark Mode is a boolean domain fact, not a description of which stylesheets
+  are loaded.** "The user wants a dark appearance" is the thing that's true or
+  false; "four `<link>` elements toggle their `disabled` attribute together" is
+  one possible mechanism for making that true fact visible, not the fact itself.
+  A future redesign of *how* theming is implemented must not require redefining
+  what `darkMode: boolean` means.
+- **The two View-menu toggles are two independent facts bundled into one session
+  state, not two unrelated settings that happen to share a menu.** Both are
+  "how should the currently-open (or not-yet-open) content be displayed," both
+  are decided by the same menu, both are consumed by the same "how do I paint the
+  screen" logic in the renderer — that shared nature is why they belong in one
+  schema together, the same reasoning that already justified keeping `baseUrl`
+  and the render outcome in one message instead of two.
+
+### Pure Transformation Logic
+
+- **Frontmatter extraction: raw file source in, an optional metadata block and
+  the remaining document body out.** This is a splitting operation, not a
+  parsing one — the task does not require understanding the *contents* of the
+  frontmatter block (no YAML parsing into structured fields), only recognizing
+  its boundary and separating it from the rest of the text. Whatever a file's
+  frontmatter block actually says is opaque to the domain here; only "does one
+  exist, and where does it end" matters.
+- **Deciding whether to display frontmatter: a display preference plus a fact
+  about the current render, combined into one boolean.** Showing frontmatter
+  requires two independent conditions to both hold — the user wants to see it,
+  AND the currently open file actually has some to show. Neither condition alone
+  is sufficient; a file with frontmatter but the toggle off shows nothing, and
+  the toggle on with a file that has no frontmatter also shows nothing (there's
+  nothing there to show) — these are two different reasons for the same
+  "don't show it" outcome, not the same reason twice.
+- **Menu structure remains a pure description, now parameterized by initial view
+  state.** The View menu's checkbox items must reflect whatever the session's
+  actual current preferences are at the moment the menu is built — describing
+  that structure is still a pure function of (handlers, current preferences) in,
+  menu structure out, extending Task 7's `buildMenuTemplate` precedent rather
+  than introducing a new kind of menu-description concept.
+
+### Edge-Case Invariant Guardrails
+
+1. **Frontmatter detection is a convention-based heuristic with a known,
+   accepted ambiguity — not a specification to perfect.** Any document that
+   happens to open with two `---`-delimited lines will be treated as having
+   frontmatter, whether or not that was the author's intent (e.g. a horizontal
+   rule immediately followed by more horizontal-rule-shaped Markdown). This is
+   the same convention every major static-site generator using this pattern
+   accepts, and this task inherits that same tradeoff deliberately rather than
+   attempting content-aware disambiguation that those tools themselves don't
+   attempt either.
+2. **An unterminated leading `---` must never be misread as frontmatter.** A
+   document starting with a horizontal rule that is never closed by a second
+   `---` fence is not frontmatter — it's just a document that starts with a
+   horizontal rule. The absence of a closing fence must fail closed (treat the
+   whole document as body, nothing extracted), not fail open (guess where it
+   "should" end).
+3. **Frontmatter's raw text must never be interpreted as Markdown or as live
+   markup.** It is metadata the user wrote in their own file, displayed exactly
+   as written — not converted, not escaped-then-reinterpreted, and never routed
+   through anything that could turn it into executable/renderable markup. Same
+   trust tier as Task 7's `filePath`: real data originating from something the
+   user already controls, displayed literally.
+4. **View preferences must never trigger new file I/O or a new render.** Toggling
+   Dark Mode or Show Frontmatter is purely "redraw what's already known using a
+   different preference" — it must not re-read the open file from disk, must not
+   restart or otherwise touch the live-reload watcher, and must have zero
+   interaction with the render pipeline beyond what's already been delivered.
+   Conflating a display-preference change with a content-refresh would blur two
+   categorically different actions this task's own schema contracts (above)
+   already establish as distinct.
+5. **Dark Mode must be visually whole or not at all — never a partial mix of
+   dark and light regions simultaneously.** This is the literal bug this task
+   exists to fix, restated as an invariant: whatever "dark mode is on" ends up
+   controlling, it must cover every visually distinct region of the window
+   together (document content, and the app chrome around it), not just the
+   region the original, unfixed default happened to cover.
+6. **Session-scoped, not persisted.** View preferences are true only for the
+   life of the running window — closing and relaunching the app is a fresh
+   session with no memory of the last session's choices. This is a deliberate
+   scope boundary (no config file, no stored user profile) for this task, not
+   an oversight to fix later without being asked.
+7. **Frontmatter visibility defaults to shown; Dark Mode defaults to off.** A
+   file with real frontmatter is visible without any menu interaction — the
+   toggle exists to hide it, not to opt into seeing it. Dark Mode defaults off
+   regardless of the OS's own theme, because the whole point of this task is
+   that the app's appearance is now app-controlled, not OS-inferred — inheriting
+   the OS default here would silently reintroduce the exact "reacts to the OS"
+   coupling this task removes.

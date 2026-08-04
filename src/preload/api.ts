@@ -2,6 +2,7 @@ export const bridgeApi = { version: '0.0.0-scaffold' } as const;
 
 export const IPC_CHANNELS = {
   FILE_RENDERED: 'md-view:file-rendered',
+  VIEW_SETTINGS: 'md-view:view-settings',
 } as const;
 
 export interface FileRenderedOk {
@@ -9,6 +10,7 @@ export interface FileRenderedOk {
   filePath: string;
   html: string;
   baseUrl: string;
+  frontmatter: string | null;
 }
 
 export interface FileRenderedError {
@@ -19,7 +21,13 @@ export interface FileRenderedError {
 
 export type FileRenderedMessage = FileRenderedOk | FileRenderedError;
 
+export interface ViewSettings {
+  darkMode: boolean;
+  showFrontmatter: boolean;
+}
+
 export interface BridgeApi {
   readonly version: string;
   onFileRendered(callback: (message: FileRenderedMessage) => void): void;
+  onViewSettings(callback: (settings: ViewSettings) => void): void;
 }

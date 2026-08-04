@@ -840,3 +840,402 @@ setup change — only the trigger line.
 Same standing instruction as Task 6's addendum — run bare `npm test` after
 implementation lands and report whether it completes without the missing-script
 error, as a validation step outside this task's code scope.
+
+---
+
+## Task 8 Technical Specification — Dark Mode, Frontmatter Visibility, Bottom Margin
+
+Maps `functional_domain.md`'s Task 8 analysis to concrete design.
+
+### Verification performed before committing to this design
+
+Confirmed by direct `ls` of the already-installed packages (not assumed from
+package names or changelogs): `node_modules/github-markdown-css/` ships
+`github-markdown-light.css` and `github-markdown-dark.css` alongside the
+existing `github-markdown.css`; `node_modules/highlight.js/styles/` ships
+`github-dark.css` alongside the existing `github.css`. No `package.json`
+dependency changes are needed — same empirical-verification discipline Task 6
+established for its theme choice.
+
+### The Inward Dependency Rule
+
+- `src/main/frontmatter.ts` joins `src/main/markdown.ts`'s tier as a sibling
+  leaf module — pure, zero Electron import, zero I/O, importable and testable
+  in complete isolation. Unlike `markdown.ts`/`menu.ts`'s prior five pure
+  functions, this one wraps no third-party library at all; it is plain domain
+  logic with no adapter role, and the spec says so explicitly rather than
+  forcing an Adapter framing where none applies.
+- `markdown.ts` remains completely unaware that frontmatter exists. `index.ts`
+  calls `extractFrontmatter` first and hands only the `body` half to
+  `markdownToHtml` — the split happens at the orchestration layer, one level
+  above both leaf modules, so neither leaf needs to know about the other.
+  Same discipline Task 4 used to keep `markdown.ts` unaware of paths/URLs.
+- `src/preload/api.ts` gains a second IPC message type (`ViewSettings`) and a
+  second channel (`VIEW_SETTINGS`), still the single shared abstraction both
+  `main/index.ts` and `preload/index.ts` depend on — neither side hardcodes
+  the other's channel string or payload shape, same DIP-at-the-process-boundary
+  established in Task 2 and extended in every task since.
+- `src/renderer/renderer.js` still only ever touches `window.mdview` — two
+  subscriptions now (`onFileRendered`, `onViewSettings`) instead of one, never
+  a new kind of outward dependency.
+
+### SOLID Boundary Scan
+
+- **SRP** — `extractFrontmatter` does exactly one thing: find the boundary and
+  split. It does not decide whether to *display* the result — that's
+  `shouldShowFrontmatter`'s job — and it does not touch the DOM — that's
+  `renderer.js`'s guarded block's job. Three separate responsibilities, three
+  separate places, matching the division of labor already established between
+  `markdownToHtml`, `statusBarText`, and the guarded DOM-wiring block.
+- **OCP** — Adding a third View-menu toggle later extends `ViewSettings`,
+  `buildMenuTemplate`'s submenu array, and one new `renderer.js` handler — it
+  does not require restructuring `extractFrontmatter`, `shouldShowFrontmatter`,
+  or the IPC contract's existing members.
+- **ISP** — `BridgeApi` grows by exactly one member (`onViewSettings`),
+  mirroring `onFileRendered`'s exact shape (a channel subscription taking a
+  typed callback). Nothing existing widens; `renderer.js` still only depends
+  on the two subscriptions it actually uses.
+- **DIP** — `index.ts`'s menu wiring depends on `buildMenuTemplate`'s abstract
+  template-array return and the `ViewSettings` shape, not on any concrete
+  detail of how dark mode is eventually painted. `renderer.js` depends on the
+  `ViewSettings`/`FileRenderedMessage` shapes delivered over the bridge, not
+  on how `index.ts` decided to construct them.
+
+### Pattern Application (GoF)
+
+- **No Adapter here — an honest limitation, stated rather than papered over.**
+  Every prior pure function in this codaebase (`markdownToHtml`,
+  `classifyWatchEvent`, `baseUrlForFile`, `isExternalHttpUrl`, `highlightCode`,
+  `buildMenuTemplate`) wraps a third-party or platform API. `extractFrontmatter`
+  wraps nothing — it is the project's first pure function that is plain domain
+  logic with no library being adapted. Forcing an "Adapter" label onto it would
+  misdescribe what it does; it is simply correctly-isolated business logic,
+  which is its own justification without needing a GoF label attached.
+- **Observer, applied a second time, not introduced new.** `ViewSettings` over
+  `VIEW_SETTINGS` is the same main-pushes/renderer-subscribes shape Task 2
+  already established for `FILE_RENDERED`. This task doesn't add a new
+  communication pattern to the codebase, it reuses the existing one for a
+  second, independent kind of fact — exactly what `functional_domain.md`'s
+  Abstract Schema Contracts section argues for keeping them on separate
+  channels rather than folding one into the other.
+- **`buildMenuTemplate`'s Adapter role (Task 7) is unchanged in kind, only
+  extended in surface** — still a pure wrapper isolating Electron's `Menu`
+  API shape, now describing two top-level menus and two checkbox items
+  instead of one.
+
+### Exact signatures and wiring (authoritative)
+
+```ts
+// src/main/frontmatter.ts
+export interface FrontmatterSplit {
+  frontmatter: string | null;
+  body: string;
+}
+
+const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
+
+export function extractFrontmatter(source: string): FrontmatterSplit {
+  const match = source.match(FRONTMATTER_PATTERN);
+  if (!match) {
+    return { frontmatter: null, body: source };
+  }
+  return { frontmatter: match[1], body: source.slice(match[0].length) };
+}
+```
+
+**Why the anchored regex, not a line-by-line scan.** `^---\r?\n` anchors the
+opening fence to the literal start of the string (not `multiline` mode, no
+`m` flag) — a `---` appearing anywhere else in the document (e.g. as a
+horizontal rule mid-document) can never be mistaken for the *opening* fence,
+only the two fence lines immediately bounding position 0 matter. The
+non-greedy `[\s\S]*?` before the mandatory `\r?\n---\r?\n?` closing fence means
+an unterminated leading `---` (no second `---` line anywhere in the document)
+simply fails to match at all — `match` is `null`, and the function returns
+`{ frontmatter: null, body: source }` unchanged, satisfying guardrail #2's
+fail-closed requirement structurally, not via a special-cased check.
+`frontmatter` is the raw text *between* the two fence lines (group 1) — the
+delimiters themselves are not included, since what's displayed to the user
+should be the metadata content, not the punctuation marking its boundaries.
+
+```ts
+// src/main/menu.ts — extended
+import type { MenuItemConstructorOptions } from 'electron';
+
+export interface ViewSettings {
+  darkMode: boolean;
+  showFrontmatter: boolean;
+}
+
+export interface MenuHandlers {
+  onOpen: () => void;
+  onToggleDarkMode: (checked: boolean) => void;
+  onToggleShowFrontmatter: (checked: boolean) => void;
+}
+
+export function buildMenuTemplate(
+  handlers: MenuHandlers,
+  initialViewSettings: ViewSettings
+): MenuItemConstructorOptions[] {
+  return [
+    {
+      label: 'File',
+      submenu: [
+        { id: 'menu-open', label: 'Open…', accelerator: 'CmdOrCtrl+O', click: handlers.onOpen },
+        { type: 'separator' },
+        { id: 'menu-exit', label: 'Exit', role: 'quit' },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        {
+          id: 'menu-dark-mode',
+          label: 'Dark Mode',
+          type: 'checkbox',
+          checked: initialViewSettings.darkMode,
+          click: (menuItem) => handlers.onToggleDarkMode(menuItem.checked),
+        },
+        {
+          id: 'menu-show-frontmatter',
+          label: 'Show Frontmatter',
+          type: 'checkbox',
+          checked: initialViewSettings.showFrontmatter,
+          click: (menuItem) => handlers.onToggleShowFrontmatter(menuItem.checked),
+        },
+      ],
+    },
+  ];
+}
+```
+
+`handlers` grows from one required member to three (`onOpen` unchanged in
+meaning); existing callers must supply all three or fail to compile —
+intentional, `MenuHandlers` is a named type specifically so this breaking
+change is caught by `tsc`, not discovered at runtime.
+
+```ts
+// src/main/index.ts additions (illustrative — engineer owns exact placement)
+import { extractFrontmatter } from './frontmatter';
+import { buildMenuTemplate } from './menu';
+import type { ViewSettings } from './menu';
+
+let viewSettings: ViewSettings = { darkMode: false, showFrontmatter: true };
+
+function broadcastViewSettings(): void {
+  mainWindow?.webContents.send(IPC_CHANNELS.VIEW_SETTINGS, viewSettings);
+}
+
+function setDarkMode(checked: boolean): void {
+  viewSettings = { ...viewSettings, darkMode: checked };
+  broadcastViewSettings();
+}
+
+function setShowFrontmatter(checked: boolean): void {
+  viewSettings = { ...viewSettings, showFrontmatter: checked };
+  broadcastViewSettings();
+}
+
+// renderFile() gains one line ahead of the existing markdownToHtml call:
+async function renderFile(filePath: string): Promise<FileRenderedMessage> {
+  if (!filePath.toLowerCase().endsWith('.md')) {
+    return { ok: false, filePath, error: 'Not a Markdown file: ' + filePath };
+  }
+  try {
+    const source = await fs.readFile(filePath, 'utf8');
+    const { frontmatter, body } = extractFrontmatter(source);
+    return { ok: true, filePath, html: markdownToHtml(body), baseUrl: baseUrlForFile(filePath), frontmatter };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, filePath, error: message };
+  }
+}
+
+// in createWindow(), after mainWindow is assigned — unconditional, so the
+// renderer learns the (always-default) current ViewSettings even if no file
+// is ever opened this session:
+mainWindow.webContents.once('did-finish-load', () => {
+  broadcastViewSettings();
+});
+
+// menu wiring (in app.whenReady().then(...)):
+Menu.setApplicationMenu(
+  Menu.buildFromTemplate(
+    buildMenuTemplate(
+      { onOpen: openFileViaDialog, onToggleDarkMode: setDarkMode, onToggleShowFrontmatter: setShowFrontmatter },
+      viewSettings
+    )
+  )
+);
+```
+
+**Why the `did-finish-load` broadcast is unconditional, separate from the
+existing argv-conditional one.** The existing `did-finish-load` listener
+(Task 2) only fires `renderAndWatch` when `argvFilePath()` returned a real
+path — it is correctly silent otherwise. `ViewSettings` is a session fact
+independent of whether any file was ever opened (per `functional_domain.md`'s
+Abstract Schema Contracts), so it needs its own listener that always fires
+once the page has loaded, regardless of the argv outcome. Folding it into the
+existing conditional block would silently mean "no file on launch" also means
+"renderer never learns the current view settings," which is wrong.
+
+```js
+// src/renderer/renderer.js addition, alongside statusBarText
+function shouldShowFrontmatter(message, viewSettings) {
+  if (!viewSettings || !viewSettings.showFrontmatter) return false;
+  if (!message || !message.ok) return false;
+  return message.frontmatter !== null && message.frontmatter !== undefined;
+}
+```
+
+### File tree — Task 8 additions/changes
+
+```
+md-view/
+├── package.json                       # ~ build script: - github-markdown.css copy,
+│                                       #   + github-markdown-light.css,
+│                                       #   + github-markdown-dark.css copies;
+│                                       #   + github-dark.css copy alongside existing
+│                                       #   github.css copy
+├── src/main/
+│   ├── frontmatter.ts                 # NEW — extractFrontmatter (pure)
+│   ├── menu.ts                        # ~ + View menu, ViewSettings/MenuHandlers types
+│   └── index.ts                       # ~ + viewSettings state, broadcastViewSettings,
+│                                       #   setDarkMode/setShowFrontmatter, + unconditional
+│                                       #   did-finish-load hook, + extractFrontmatter
+│                                       #   wired into renderFile()
+├── src/preload/
+│   ├── api.ts                         # ~ + VIEW_SETTINGS channel, + ViewSettings type,
+│                                       #   + frontmatter field on FileRenderedOk,
+│                                       #   + onViewSettings on BridgeApi
+│   └── index.ts                       # ~ + onViewSettings implementation
+├── src/renderer/
+│   ├── index.html                     # ~ 2 CSS links -> 4 (light/dark markdown +
+│                                       #   light/dark hljs pairs, dark ones start
+│                                       #   `disabled`), + <pre id="frontmatter" hidden>
+│   ├── renderer.js                    # ~ + shouldShowFrontmatter, + applyDarkMode,
+│                                       #   + onViewSettings wiring, + frontmatter
+│                                       #   display wiring (lastMessage/lastViewSettings
+│                                       #   local state, since the two channels arrive
+│                                       #   independently)
+│   └── app.css                        # ~ + padding-bottom on #content (2rem, matching
+│                                       #   the existing padding-inline value),
+│                                       #   + body.dark-mode rules (chrome/status-bar/
+│                                       #   empty-state/frontmatter block), + #frontmatter
+│                                       #   block styling (light + dark)
+└── tests/
+    ├── integration/preload-api-contract.test.ts   # ~ + VIEW_SETTINGS assertions
+    ├── unit/
+    │   ├── frontmatter.test.ts         # NEW
+    │   ├── shouldShowFrontmatter.test.ts   # NEW
+    │   └── menu.test.ts                # ~ extended for View menu / checkbox items
+    └── e2e/
+        ├── view-menu.spec.ts           # NEW
+        └── fixtures/with-frontmatter/doc.md   # NEW
+```
+
+**Note on `#content`'s new `padding-bottom` vs. `body`'s existing one.** Task
+7's `app.css` already sets `body { padding-bottom: 2rem; }` to reserve space
+so the fixed status bar never overlaps document content. This task's
+`#content { padding-bottom: 2rem; }` is a *different* concern — breathing room
+at the visual end of the rendered document itself, matching its own lateral
+`padding-inline`, independent of the status bar's clearance. Both rules stay;
+they are not redundant with each other, and the engineer should not collapse
+them into one.
+
+### Unit test cases — exact list
+
+`tests/unit/frontmatter.test.ts`:
+1. Valid frontmatter (`---\ntitle: X\n---\n\nBody text`) → `frontmatter` equals
+   the raw text between the fences (`'title: X'`), `body` equals the remaining
+   document text with the frontmatter block removed.
+2. No frontmatter at all (document starts with `# Heading`) → `frontmatter:
+   null`, `body` unchanged (`===` the original source).
+3. Unterminated leading `---` (a `---` line at the very start, but no second
+   `---` line anywhere later in the document) → `frontmatter: null`, `body`
+   unchanged — proves guardrail #2's fail-closed behavior.
+4. **Explicit, commented "accepted ambiguity" case (guardrail #1):** a document
+   that is not intended as frontmatter but matches the pattern anyway — e.g.
+   `---\n\nSome divider paragraph\n\n---\n\nMore text` (two horizontal rules
+   with a paragraph between them) — asserted to *still* extract the middle
+   text as `frontmatter`, with a comment stating this is intentional,
+   convention-inherited behavior, not a bug to fix.
+
+`tests/unit/shouldShowFrontmatter.test.ts` — all 4 boolean combinations, plus
+null inputs:
+1. `showFrontmatter: true`, message has frontmatter → `true`.
+2. `showFrontmatter: true`, message has `frontmatter: null` → `false`.
+3. `showFrontmatter: false`, message has frontmatter → `false`.
+4. `showFrontmatter: false`, message has `frontmatter: null` → `false`.
+5. `message: null` → `false` (regardless of `viewSettings`).
+6. `viewSettings: null` → `false` (regardless of `message`).
+7. `message.ok === false` (error variant) with any `viewSettings` → `false` —
+   an error render has no frontmatter to show, structurally, not just because
+   the field happens to be absent from that variant's type.
+
+`tests/unit/menu.test.ts` — extended, existing cases (File menu shape,
+`menu-open`/`menu-exit` wiring) unchanged, plus:
+1. Template now has 2 top-level items: `File`, `View`.
+2. `View`'s submenu has exactly 2 entries: `menu-dark-mode`, `menu-show-frontmatter`.
+3. `menu-dark-mode`: `type: 'checkbox'`, `label: 'Dark Mode'`, `checked` equals
+   `initialViewSettings.darkMode` (test both `true` and `false` inputs),
+   invoking `click` with a mock `menuItem: { checked: true }` calls
+   `handlers.onToggleDarkMode(true)`.
+4. `menu-show-frontmatter`: same shape, `checked` equals
+   `initialViewSettings.showFrontmatter`, `click` wiring calls
+   `handlers.onToggleShowFrontmatter` with the mock item's `checked` value.
+
+### Integration test change
+
+`tests/integration/preload-api-contract.test.ts`: add `VIEW_SETTINGS` to the
+non-empty-string-channel-names assertions (alongside the existing
+`FILE_RENDERED` check), and a distinctness assertion
+(`IPC_CHANNELS.VIEW_SETTINGS !== IPC_CHANNELS.FILE_RENDERED`) — restoring the
+two-channel distinctness test Task 7 had to remove for lack of a second
+channel to compare against.
+
+### e2e test — exact shape
+
+`tests/e2e/fixtures/with-frontmatter/doc.md` — a fixture with a real leading
+frontmatter block (e.g. `title`/`tags` on separate lines) followed by a
+Markdown heading and body, so case (a) below has real content to assert
+against.
+
+`tests/e2e/view-menu.spec.ts` (new), following `ui-shell.spec.ts`'s established
+`_electron.launch` + `childEnv` boilerplate:
+a) Launch with the new frontmatter fixture via argv. Assert `#frontmatter` is
+   visible and its text contains each frontmatter key on its own line (assert
+   line-separated content, e.g. via `textContent.split('\n')` containing both
+   keys as distinct entries — not collapsed into one run-on string, which is
+   the exact legibility bug this task fixes).
+b) Toggle `menu-show-frontmatter` off via
+   `app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-show-frontmatter')?.click())`.
+   Assert `#frontmatter` becomes hidden, and `#content`'s text is unchanged
+   before vs. after the toggle (proves guardrail #3: no re-render happened).
+c) Toggle `menu-dark-mode` on via the same `getMenuItemById('menu-dark-mode')`
+   pattern. Assert (i) the dark CSS `<link>` elements' `disabled` property is
+   `false` and the light ones' is `true` (query by the `id`s given to each
+   `<link>` in `index.html`), AND (ii) a real computed style actually changed
+   — e.g. `document.body`'s or `#content`'s computed `background-color` differs
+   from its value before the toggle — proving genuine visual effect, not just
+   attribute/class presence.
+d) Close the app (`await app.close()`), then launch a **second**,
+   independent `_electron.launch()` call (fresh process, same argv). Assert
+   `menu-dark-mode`'s `checked` state (via `Menu.getApplicationMenu()?.getMenuItemById('menu-dark-mode')?.checked`)
+   is back to `false` — proves guardrail #6 (no persistence) is real behavior,
+   not merely a default never exercised.
+e) After (a)'s render, assert `#content`'s computed `padding-bottom` is
+   non-zero (same `getComputedStyle` pattern `ui-shell.spec.ts` already uses
+   for `padding-left`/`padding-right`).
+
+### Backlog cleanup (Step 3, not part of the code diff)
+
+`.agents/specs/backlog.md`'s existing "Dark mode" entry (added after Task 6)
+bundles two concerns in one bullet: (1) the app not honoring OS dark mode, and
+(2) the highlight.js theme needing re-pairing if dark mode is ever addressed.
+This task resolves both — (1) directly (the app now has its own explicit,
+non-OS-driven dark mode), and (2) directly (the dark hljs theme is paired in
+this same task, not deferred). Remove that single bullet entirely once this
+lands; the task description's "two open backlog items" refers to these two
+bundled concerns within that one entry, not two separate bullets — confirmed
+by reading the actual current `backlog.md` content rather than assuming a
+second bullet exists.
