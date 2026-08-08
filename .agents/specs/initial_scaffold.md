@@ -1239,3 +1239,61 @@ lands; the task description's "two open backlog items" refers to these two
 bundled concerns within that one entry, not two separate bullets — confirmed
 by reading the actual current `backlog.md` content rather than assuming a
 second bullet exists.
+
+## Task 9 Technical Specification — Dark-Mode Theme Stylesheet Resolution Fix
+
+Maps `functional_domain.md`'s Task 9 analysis to concrete design.
+
+### The Inward Dependency Rule
+
+- The fix lives entirely at the peripheral boundary — browser DOM/CSS resource loading inside `src/renderer/renderer.js`'s imperative setup block. It does not touch any of the three pure functions already extracted from that file (`applyRenderedContent`, `statusBarText`, `shouldShowFrontmatter`); those keep zero diff. No dependency direction changes: this is a leaf-level correction to how an existing peripheral mechanism (theme `<link>` toggling, introduced ADR-003) addresses its resources, not a new abstraction.
+
+### SOLID Boundary Scan
+
+- **SRP** — `applyDarkMode` retains its single responsibility (atomically flip the four link `disabled` states + body class) and is untouched. The fix is isolated to a new, narrow setup step that runs once, before `applyDarkMode` or any message handler can be invoked.
+- **OCP** — no existing function's behavior is modified by adding a case; the four `href`s are corrected in place at the same point they're already looked up (`document.getElementById`), extending that existing lookup block rather than introducing a parallel mechanism.
+- **DIP** — not applicable at this granularity; this is direct use of a browser leaf API (`document.baseURI`, `link.href` assignment), not an abstraction requiring inversion.
+
+### Pattern note
+
+Not a new GoF pattern. This is a resource-resolution timing fix, same tier as Task 4's `baseUrlForFile` fix — correcting *what* a reference points to, not introducing new structure.
+
+### Decision (approved — Option A)
+
+Rewrite the four theme `<link>` `href`s to absolute URLs, computed against `document.baseURI` captured at the very top of the `typeof document !== 'undefined'` block in `renderer.js`, before `window.mdview.onFileRendered`/`onViewSettings` are registered. Absolute URLs are immune to any later `<base href>` change (Task 4's mechanism), so the fix holds regardless of fetch timing (deferred `disabled` links vs. eager enabled ones) or a future refactor that splits renderer setup across an async boundary.
+
+`index.html` is unchanged — its relative `href`s stay in the markup as authored; `renderer.js` resolves them to absolute URLs at setup time via `new URL(link.getAttribute('href'), initialBaseURI).href`, reading the *authored* attribute (not the live, possibly-already-rewritten `.href` property) to avoid double-resolution on any future re-entry.
+
+### Rejected alternative (recorded, not implemented)
+
+Drop `disabled` from all four `<link>`s in `index.html` so all four fetch eagerly at parse time (while `<base href>` is still correct), then call `applyDarkMode(false)` explicitly as the first line of setup to establish real initial state. Smaller diff, but correctness would depend on "no IPC message can be processed before this synchronous block finishes" — true today, not guaranteed to survive a future refactor that splits renderer setup across an async boundary (functional_domain.md Task 9 guardrail #1). Also touches `index.html`, which this task's scope excludes.
+
+### Renderer changes
+
+- `src/renderer/renderer.js`: at the very top of the `typeof document !== 'undefined'` block, before the existing `getElementById` lookups, capture `const initialBaseURI = document.baseURI;`. Immediately after the four theme-link `getElementById` calls, resolve and reassign each `.href` to its absolute form via `new URL(link.getAttribute('href'), initialBaseURI).href`, guarded per-link for `null` (matching this file's existing `if (x) x....` null-checks throughout).
+
+### File tree — Task 9 additions/changes
+
+```
+md-view/
+├── src/renderer/
+│   ├── index.html                      # unchanged — out of scope
+│   └── renderer.js                     # ~ absolute-URL resolution for 4 theme links, before IPC listener registration
+├── tests/e2e/
+│   └── view-menu.spec.ts               # ~ test (c) strengthened: computed #content color, resolved href anchoring, zero console/page errors
+└── .agents/specs/decisions/
+    └── ADR-004_md-view.md              # NEW — records this decision + rejected alternative
+```
+
+### Required test changes (TDD — RED first)
+
+Strengthen `view-menu.spec.ts` test (c), same toggle-after-file-is-open flow it already exercises:
+1. `getComputedStyle` on `#content` (or a heading inside it) for `color` equals the dark palette's actual value — not browser-default black, not the light value.
+2. Each theme `<link>`'s resolved `.href` after toggle stays anchored under the app's own renderer directory — assert it does NOT contain the fixture's directory segment (`tests/e2e/fixtures`).
+3. Zero console/page errors during the toggle — capture via `window.on('console', ...)` filtered to `type() === 'error'` (and/or `requestfailed`) across the whole flow, assert the array is empty.
+
+### Fault-injection proof (required)
+
+Before declaring done: temporarily revert the `renderer.js` fix to relative hrefs, rerun the strengthened test, confirm it fails with the *same failure signature* as the real bug (`net::ERR_FILE_NOT_FOUND`-shaped console error and/or wrong computed color), not just "some assertion failed." Then restore the fix and confirm green. Same practice as Task 4's addendum and Tasks 3/5.
+
+---

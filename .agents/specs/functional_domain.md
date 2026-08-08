@@ -357,3 +357,26 @@ has no concept of frontmatter at all — it's just more Markdown text to it toda
    that the app's appearance is now app-controlled, not OS-inferred — inheriting
    the OS default here would silently reintroduce the exact "reacts to the OS"
    coupling this task removes.
+
+## Task 9: Dark-Mode Theme Stylesheet Resolution Fix (bug fix)
+
+Real bug found via live DOM/console inspection: the four theme `<link>` `href`s in `index.html` are relative. The two `disabled`-by-default dark links are never fetched at parse time (Chromium defers fetching disabled stylesheets) — Task 4's dynamic `<base href>` retargets to the *open file's* directory as soon as a file is opened, so by the time Dark Mode is toggled, the deferred dark stylesheets resolve against the wrong directory and fail to load (`net::ERR_FILE_NOT_FOUND`), leaving `.markdown-body` with no color/background rule from either theme and falling back to browser-default black text. The light stylesheets never show this because they're `enabled` from parse time, fetched before `<base href>` is ever redirected.
+
+### Abstract Schema Contracts
+
+- **Two distinct location contexts exist and must never be conflated.** (1) The app's own bundled static-asset location (`dist/renderer/`) — fixed for the process lifetime, home to the four theme stylesheets. (2) The currently-open document's directory — changes per file, exists solely to resolve *content-relative* resources (Task 4's images) inside rendered Markdown. Both are expressed through the same DOM mechanism (`<base href>` resolution for relative URLs), but they are not the same thing, and a resource belonging to context (1) must never be left to resolve against context (2).
+- **No new message shape.** This is not a data-contract change — no IPC message, no new field. The bug is purely in how a static, load-time resource reference is expressed in markup/script, independent of any message ever received.
+
+### Pure Transformation Logic
+
+- **Theme stylesheet location must be resolved once, at a fixed point that precedes any possibility of context (2) ever being established**, and that resolution must be immune to *when* the browser actually chooses to fetch the resource (deferred for `disabled` links vs. immediate for enabled ones). An absolute URL, computed before any file can be opened, satisfies this: fetch timing becomes irrelevant because the reference never depends on whatever `<base href>` happens to hold at fetch time.
+- This is not a markdown-content transformation and does not touch `markdown.ts`, `paths.ts`, or the `FILE_RENDERED`/`VIEW_SETTINGS` contracts — it is a renderer-bootstrap-time concern only.
+
+### Edge-Case Invariant Guardrails
+
+1. **Correctness must not depend on execution order between renderer setup and IPC message arrival.** The rejected alternative (drop `disabled` from all four links, then call `applyDarkMode(false)` as the first line of setup) is correct *today* only because no IPC message can be processed before that synchronous block finishes — an invariant a future async refactor could silently break. The chosen fix must hold regardless of when `onFileRendered`/`onViewSettings` first fire relative to theme-link setup.
+2. **The four theme stylesheets must resolve to the app's own renderer directory regardless of which file is open, how many files have been opened in the session, or which directory that file lives in** — this is the literal bug restated as an invariant, and must be proven for the toggle-after-a-file-is-open flow specifically, since that is exactly the sequence in which the original bug was invisible until now.
+3. **Zero regression to Task 4's content-relative image resolution.** `<base href>` must continue to retarget to the open file's directory for content-relative resources — this task fixes theme-resource resolution without touching that mechanism or its guardrails.
+4. **A regression here must be provably catchable, not just plausibly fixed.** The existing e2e test (Task 8, case (c)) asserts only `.disabled` flags and `document.body`'s background — both are satisfiable even when the dark stylesheets 404, since `applyDarkMode` flips those independent of whether the CSS actually loaded. The test must be strengthened to assert `#content`'s actual computed color, each link's resolved (not authored) `href` stays anchored under the app's own directory, and that zero console/page errors fire during the toggle — otherwise this exact bug class can regress silently again.
+
+---

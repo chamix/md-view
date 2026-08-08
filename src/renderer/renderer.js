@@ -26,6 +26,13 @@ function shouldShowFrontmatter(message, viewSettings) {
 // above be imported and unit-tested with zero DOM, zero jsdom, and zero
 // bundler.
 if (typeof document !== 'undefined') {
+  // Captured before anything else in this block (in particular, before the
+  // theme-link resolution below and before any IPC listener is registered)
+  // so it always reflects the renderer's own directory, never a value a
+  // later <base href> retarget (Task 4, once a file is open) could have
+  // already changed. See ADR-004.
+  const initialBaseURI = document.baseURI;
+
   const container = document.getElementById('content');
   const baseElement = document.getElementById('content-base');
   const statusBarEl = document.getElementById('status-bar');
@@ -36,6 +43,20 @@ if (typeof document !== 'undefined') {
   const markdownDarkLink = document.getElementById('theme-markdown-dark');
   const hljsLightLink = document.getElementById('theme-hljs-light');
   const hljsDarkLink = document.getElementById('theme-hljs-dark');
+
+  // Resolve each theme link's authored (relative) href to an absolute URL
+  // now, against the renderer's own directory, rather than leaving
+  // resolution to happen implicitly whenever the browser actually fetches
+  // it. Chromium defers fetching a `disabled` stylesheet until it's
+  // enabled — by the time Dark Mode is toggled on an open file, <base
+  // href> has already been retargeted to that file's own directory, so an
+  // unresolved relative href would 404 against the wrong folder. Reading
+  // `getAttribute('href')` (the authored value) rather than the live
+  // `.href` property avoids double-resolving if this ever re-runs. See
+  // ADR-004.
+  [markdownLightLink, markdownDarkLink, hljsLightLink, hljsDarkLink].forEach((link) => {
+    if (link) link.href = new URL(link.getAttribute('href'), initialBaseURI).href;
+  });
 
   // The empty-state message is a one-way transition: hidden permanently on
   // the first FILE_RENDERED message of either variant (ok or error), and

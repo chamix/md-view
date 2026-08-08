@@ -68,6 +68,19 @@ test('(c) dark mode toggle flips link-disabled states and a real computed style'
 
   const bgBefore = await window.evaluate(() => window.getComputedStyle(document.body).backgroundColor);
 
+  // Collect page-level failures (console errors and failed network/file
+  // requests) from before the toggle click through the end of the
+  // assertions below — a stylesheet 404 caused by a wrongly-resolved
+  // theme-link href surfaces as exactly this kind of failure.
+  const consoleErrors: string[] = [];
+  window.on('console', (msg) => {
+    if (msg.type() === 'error') consoleErrors.push(msg.text());
+  });
+  const failedRequests: string[] = [];
+  window.on('requestfailed', (request) => {
+    failedRequests.push(`${request.url()} :: ${request.failure()?.errorText ?? 'unknown'}`);
+  });
+
   await app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-dark-mode')?.click());
 
   await window.waitForFunction(() => document.body.classList.contains('dark-mode'));
@@ -86,6 +99,34 @@ test('(c) dark mode toggle flips link-disabled states and a real computed style'
 
   const bgAfter = await window.evaluate(() => window.getComputedStyle(document.body).backgroundColor);
   expect(bgAfter).not.toBe(bgBefore);
+
+  // Real proof the dark stylesheet actually loaded and applied, not just
+  // that applyDarkMode() flipped independent .disabled flags: the
+  // dark-mode text color from github-markdown-dark.css's .markdown-body
+  // rule (#f0f6fc), never the light value (#1f2328) and never browser-
+  // default black (rgb(0, 0, 0)), which is what renders when the dark
+  // stylesheet 404s and no color rule applies at all.
+  const contentColor = await content.evaluate((el) => window.getComputedStyle(el).color);
+  expect(contentColor).toBe('rgb(240, 246, 252)');
+
+  // Each theme link's resolved href must stay anchored under the app's own
+  // renderer directory, immune to <base href> having been retargeted to
+  // the open file's own directory (Task 4). If resolution ever regresses
+  // back to relying on <base href> at fetch time, these hrefs would
+  // resolve under the fixture's directory instead.
+  const linkHrefs = await window.evaluate(() => ({
+    markdownLight: (document.getElementById('theme-markdown-light') as HTMLLinkElement).href,
+    markdownDark: (document.getElementById('theme-markdown-dark') as HTMLLinkElement).href,
+    hljsLight: (document.getElementById('theme-hljs-light') as HTMLLinkElement).href,
+    hljsDark: (document.getElementById('theme-hljs-dark') as HTMLLinkElement).href,
+  }));
+
+  for (const href of Object.values(linkHrefs)) {
+    expect(href).not.toContain('tests/e2e/fixtures');
+  }
+
+  expect(consoleErrors).toEqual([]);
+  expect(failedRequests).toEqual([]);
 
   await app.close();
 });

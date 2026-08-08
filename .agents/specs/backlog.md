@@ -1,27 +1,5 @@
 ## Backlog
 
-- [Pending] Dark Mode: heading/paragraph text inside `.markdown-body` stays
-  dark (near-black) against the now-dark `body`/chrome background once Dark
-  Mode is on — screenshot shows "Arqueología de infraestructura..." nearly
-  unreadable, dark text on dark background. The background flips correctly
-  (app.css's `body.dark-mode` class is clearly applying), so the failure is
-  specifically in content text color, not the toggle itself. Hypothesis,
-  not yet verified: `applyDarkMode` (renderer.js) swaps the
-  `github-markdown-light.css`/`github-markdown-dark.css` `<link>` pair via
-  `.disabled` — either the light link isn't actually getting disabled, or
-  link order/specificity lets its `color: #1f2328` rule keep winning over
-  the dark variant's `color: #f0f6fc` specifically for text, while the
-  background happens to come from the `body` class instead and isn't
-  affected the same way. Needs checking against the live DOM (computed
-  `color` on a heading with Dark Mode on, and each link's actual `.disabled`
-  state) before assuming this is the cause — inferred from the screenshot
-  only, not confirmed.
-  Also visible in the same screenshot: a solid gray/blue rectangle above
-  the title, in the hero image's position — unclear if this is a related
-  dark-mode/image rendering issue or something unrelated (e.g. a relative
-  path problem). Confirm next session and split into its own entry if it's
-  a separate bug, don't fold it into the text-color fix by default.
-  
 - [Pending] Flaky e2e: `live-reload.spec.ts`'s primer test ("live-reloads rendered
   content...") falló intermitentemente bajo carga de 4 workers en
   paralelo durante el review de Task 6 — reproducido como verde en dos
@@ -42,3 +20,37 @@
   calls) — matching the existing `menu.ts`/`linkPolicy.ts`/`paths.ts` pattern —
   so a plain unit test can import it directly and the `globalThis` bridge is
   removed entirely rather than conditioned. Low priority, non-blocking.
+
+- [Resolved 2026-08-08] Dark Mode: heading/paragraph text inside
+  `.markdown-body` stayed dark (near-black) against the now-dark
+  `body`/chrome background once Dark Mode was on — screenshot showed
+  "Arqueología de infraestructura..." nearly unreadable, dark text on dark
+  background. The background flipped correctly (app.css's `body.dark-mode`
+  class was clearly applying), so the failure was specifically in content
+  text color, not the toggle itself.
+  Original hypothesis (link-disabled/specificity race between the light
+  and dark `.markdown-body` rules) was checked via live DOM inspection and
+  was wrong — actual cause was a different mechanism entirely: Chromium
+  defers fetching `disabled` stylesheets until enabled, and by toggle time
+  Task 4's dynamic `<base href>` (scoped for image-path resolution) had
+  already retargeted to the open file's directory, so the dark CSS
+  `<link>`s 404'd against the wrong folder. Fixed in Task 9 by resolving
+  all four theme-link hrefs to absolute URLs, captured before any file can
+  open. See ADR-004 and `review_report_task9.md` for the full trail.
+
+- [Pending] Gray/blue rectangle in the hero image's position, visible in
+  the same original dark-mode screenshot — split out per that entry's own
+  note, since Task 9 only fixed the text-color bug and never touched
+  image rendering. Unconfirmed whether this is dark-mode-related, a
+  relative-path issue, or something else. Needs its own live-DOM check
+  next session, same discipline as Task 9 — don't assume the cause.
+
+- [Pending] `tests/e2e/view-menu.spec.ts` test (c)'s href-anchoring
+  assertion (`expect(href).not.toContain('tests/e2e/fixtures')`, added in
+  Task 9) is a negative check tied to an incidental fixture-path string,
+  not a positive check against the real invariant (href must resolve
+  under the app's own `dist/renderer` directory). Catches today's bug;
+  wouldn't catch a future regression that resolved hrefs to some other
+  wrong location not containing that substring. Low priority — worth
+  swapping for a `startsWith` check against the real absolute
+  `dist/renderer` path next time this test is touched.
