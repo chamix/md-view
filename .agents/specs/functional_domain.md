@@ -380,3 +380,127 @@ Real bug found via live DOM/console inspection: the four theme `<link>` `href`s 
 4. **A regression here must be provably catchable, not just plausibly fixed.** The existing e2e test (Task 8, case (c)) asserts only `.disabled` flags and `document.body`'s background — both are satisfiable even when the dark stylesheets 404, since `applyDarkMode` flips those independent of whether the CSS actually loaded. The test must be strengthened to assert `#content`'s actual computed color, each link's resolved (not authored) `href` stays anchored under the app's own directory, and that zero console/page errors fire during the toggle — otherwise this exact bug class can regress silently again.
 
 ---
+
+## Task 10: HTML Comments Rendering as Visible Text (bug fix)
+
+Real bug, root cause already diagnosed via direct inspection of `markdown-it`'s
+token stream: with `html: false` (the explicit, intentional security invariant
+established in Task 1 — never allow raw HTML passthrough from source), `markdown-it`
+never emits `html_block`/`html_inline` tokens at all. Any raw-HTML-shaped span of
+text, including `<!-- annotation comments -->`, is instead tokenized as an
+ordinary `text` token and rendered through the default text rule, which escapes
+it for literal, visible display. That escaping is exactly the desired, tested
+behavior for real raw HTML (the fixture's §12 security section, and Task 1's own
+security regression tests) — but an author's HTML comment carries no intent to
+be seen, and today it is caught by the same net regardless.
+
+### Abstract Schema Contracts
+
+- No new message shape, no IPC change. This is a transformation concern wholly
+  internal to `markdownToHtml`'s existing single input (raw markdown source) →
+  single output (HTML string) contract — same shape as Task 6's fence-highlighting
+  addition, which also added no new schema.
+- The distinction that matters is not "is this HTML-shaped" (a comment and a
+  `<script>`/`<div>` tag are both HTML-shaped) but "is this annotation metadata
+  never meant to render" vs. "is this literal markup the Task 1 security
+  invariant demands stay visible as inert, escaped text." A comment is always
+  the former; every other piece of raw-HTML-shaped text is always the latter —
+  these two categories must never be conflated by the fix.
+
+### Pure Transformation Logic
+
+- Strip `<!-- ... -->` comment spans out of plain-text content before that
+  content proceeds through the existing plain-text-escaping path — and only
+  from content that would otherwise travel that path. Content already inside a
+  fenced code block follows a completely different, already-correct rendering
+  path (the fence renderer, keyed off declared language + `highlight.js`,
+  added in Task 6) and must not be touched by this transformation.
+
+### Edge-Case Invariant Guardrails
+
+1. A standalone HTML comment, alone in its own paragraph, must produce no
+   output at all in the rendered HTML — not an empty escaped span, not a blank
+   paragraph carrying some other visible artifact, simply absent.
+2. Stripping a comment must never affect sibling paragraphs' content, order,
+   or spacing — surrounding real content renders exactly as if the comment
+   line were never in the source.
+3. **The `html: false` security invariant from Task 1 is untouched by this
+   fix.** Raw HTML tags that are not comments must continue to render as
+   literal, escaped, visible text outside of fences. This is documented,
+   tested, intentional behavior (fixture §12) — not a bug, and not something
+   this task may regress even incidentally.
+4. Content inside a fenced code block is a categorically different rendering
+   path and is entirely out of scope for this fix — an HTML comment written
+   inside a ```html fence is source code being displayed verbatim, not an
+   authoring annotation, and must remain visible, unchanged, exactly as today.
+5. **Known, accepted limitation — explicitly not fixed by this task.** A
+   comment whose `<!--`/`-->` delimiters are split across a Markdown soft line
+   break lands in separate `text` tokens by the time `markdown-it` hands them
+   to the renderer; a per-token stripping approach cannot see across that
+   token boundary and will not catch a comment split this way. This is a
+   deliberate scope boundary, to be recorded in the backlog at Step 3, not an
+   oversight to silently work around.
+
+---
+
+## Task 11: Document Card Chrome (rounded border, Preview/Code header)
+
+Purely presentational feature: wrap the existing frontmatter+content region in
+a bordered "card" (GitHub file-view style), with a header bar carrying two
+tab-shaped buttons ("Preview" / "Code"). No new interaction — the buttons are
+visual only, not wired to anything, in this task.
+
+### Abstract Schema Contracts
+
+- No new message shape, no new data. This task adds zero new inputs and zero
+  new outputs to any existing contract (`FILE_RENDERED`, `VIEW_SETTINGS`,
+  frontmatter extraction, dark-mode toggling) — it is a DOM/CSS-only
+  restructuring layered around content those contracts already produce.
+- **Presentation and content-production are different domains, and this task
+  stays entirely in the former.** What gets shown inside `#content`/
+  `#frontmatter` (Task 4, 7, 8, 10's territory) is untouched; only the DOM
+  wrapper *around* those two already-existing, already-populated elements
+  changes, plus a purely decorative header sitting above them.
+
+### Pure Transformation Logic
+
+- None. There is no data transformation in this task at all — it is static
+  markup (`index.html`) plus static styling (`app.css`). This is the same
+  tier as Task 7's `#status-bar`/`#empty-state` polish: presentation-only,
+  not a business-logic concern.
+
+### Edge-Case Invariant Guardrails
+
+1. **Every existing element id that `renderer.js`/`src/main/index.ts`
+   already depend on must resolve to the same kind of node, unchanged** —
+   `#content`, `#frontmatter`, `#content-base`, `#status-bar`,
+   `#empty-state`, and the four `#theme-*` `<link>`s. This task changes what
+   *wraps* `#frontmatter`/`#content`, never the elements themselves — the
+   main process and renderer script must need zero changes, because neither
+   is in this task's scope and both are load-bearing for prior tasks' fixes
+   (Task 4's `<base href>` targeting, Task 9's absolute theme-href
+   resolution, Task 8's dark-mode class toggling).
+2. **Task 8's lateral padding on `#content` (`padding-inline: 2rem`) and
+   Task 8's frontmatter margin (`margin: 0 2rem`) must survive exactly as
+   they are today** — the new card border/margin is an *additional*, outer
+   layer, not a replacement for either. `tests/e2e/ui-shell.spec.ts`'s
+   existing computed-padding assertion on `#content` is the literal, already
+   -written proof of this guardrail and must keep passing unmodified.
+3. **The two header buttons carry zero behavior in this task.** `type=
+   "button"` (never `submit`, so no accidental form semantics), no click
+   handlers, no ARIA state wiring beyond what's needed for the default-active
+   visual — this task is chrome only. Wiring an actual Preview/Code toggle is
+   explicitly a future task's concern, not this one's, and must not be
+   half-implemented here.
+4. **Dark Mode must cover the new chrome too, not just the pre-existing
+   regions.** Task 8's invariant ("Dark Mode must be visually whole... never
+   a partial mix") extends to this task's new elements: `#document-container`
+   and `#document-header` must have `body.dark-mode`-scoped variants
+   following the exact token pattern already used for `#frontmatter`/
+   `#status-bar`, not a new, parallel dark-mode mechanism.
+5. **The empty-state path is unaffected.** `#empty-state` stays a sibling
+   *outside* the new `#document-container`, exactly where it is today —
+   this task's new chrome only wraps the frontmatter/content pair, and must
+   not visually appear (card border, header, tabs) when no file is open.
+
+---

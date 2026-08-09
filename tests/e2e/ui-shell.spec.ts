@@ -80,13 +80,28 @@ test('argv launch: empty-state disappears, status bar shows the real absolute pa
   const statusBar = window.locator('#status-bar');
   await expect(statusBar).toHaveText(fixturePath, { timeout: 10000 });
 
-  // (c) #content's computed lateral padding is non-zero after render.
+  // (c) Task 11: document card chrome — bordered container + header bar
+  // with two inert tab-style buttons, mimicking GitHub's file-view chrome.
+  await expect(window.locator('#document-container')).toBeVisible();
+  await expect(window.locator('#document-header')).toBeVisible();
+
+  const tabPreview = window.locator('#tab-preview');
+  const tabCode = window.locator('#tab-code');
+  await expect(tabPreview).toBeVisible();
+  await expect(tabCode).toBeVisible();
+  await expect(tabPreview).toHaveText('Preview');
+  await expect(tabCode).toHaveText('Code');
+
+  await expect(tabPreview).toHaveClass(/active/);
+  await expect(tabCode).not.toHaveClass(/active/);
+
+  // (d) #content's computed lateral padding is non-zero after render.
   const paddingLeft = await content.evaluate((el) => window.getComputedStyle(el).paddingLeft);
   const paddingRight = await content.evaluate((el) => window.getComputedStyle(el).paddingRight);
   expect(parseFloat(paddingLeft)).toBeGreaterThan(0);
   expect(parseFloat(paddingRight)).toBeGreaterThan(0);
 
-  // (d) status bar content was set via textContent, never innerHTML — proof
+  // (e) status bar content was set via textContent, never innerHTML — proof
   // no HTML was parsed there.
   const isTextContentOnly = await statusBar.evaluate((el) => el.innerHTML === el.textContent);
   expect(isTextContentOnly).toBe(true);

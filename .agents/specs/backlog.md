@@ -45,6 +45,21 @@
   relative-path issue, or something else. Needs its own live-DOM check
   next session, same discipline as Task 9 — don't assume the cause.
 
+- [Pending] Task 10's HTML-comment stripping (`src/main/markdown.ts`'s
+  `strip_html_comments` core rule) operates per-`inline`-token. A comment
+  whose `<!--`/`-->` delimiters are split across a Markdown soft line break
+  lands in separate `text` tokens by the time the rule runs and is not
+  caught — the comment (or comment fragments) would render literally in
+  that case. Deliberate, documented scope boundary from Task 10's approved
+  spec (`functional_domain.md` guardrail #5), not an oversight. Also noted
+  during Task 10's re-review: a list item whose only content is a comment
+  (e.g. `- <!-- c1 -->`) resolves to an empty `<li></li>` rather than full
+  removal, since the rule only splices out paragraph wrappers, not
+  `list_item_open`/`_close` — outside guardrail #1's literal scope ("alone
+  in its own paragraph"), not a regression. Low priority — worth widening
+  guardrail #1's scope and/or handling soft-break-split comments next time
+  this file is touched, not urgent on its own.
+
 - [Pending] `tests/e2e/view-menu.spec.ts` test (c)'s href-anchoring
   assertion (`expect(href).not.toContain('tests/e2e/fixtures')`, added in
   Task 9) is a negative check tied to an incidental fixture-path string,

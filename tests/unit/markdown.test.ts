@@ -49,4 +49,36 @@ describe('markdownToHtml (pure conversion)', () => {
     expect(html).not.toContain('<script>alert(1)</script>');
     expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
   });
+
+  it('strips a bare HTML comment alone in its own paragraph, producing no output at all (no empty <p> wrapper)', () => {
+    const html = markdownToHtml('<!-- just a comment -->');
+    expect(html).not.toContain('just a comment');
+    expect(html).not.toContain('<p>');
+  });
+
+  it('strips a standalone HTML comment paragraph in the middle of a document, leaving surrounding text intact and no stray empty <p></p>', () => {
+    const html = markdownToHtml(
+      '# Heading\n\nBefore text.\n\n<!-- a comment -->\n\nAfter text.'
+    );
+    expect(html).not.toContain('a comment');
+    expect(html).toContain('Before text.');
+    expect(html).toContain('After text.');
+    expect(html).not.toContain('<p></p>');
+    expect((html.match(/<p>/g) || []).length).toBe(2);
+  });
+
+  it('strips a comment mixed with real text inside the same paragraph, keeping the paragraph and the surrounding text', () => {
+    const html = markdownToHtml('Some text <!-- inline comment --> more text.');
+    expect(html).not.toContain('inline comment');
+    expect(html).toContain('Some text');
+    expect(html).toContain('more text.');
+    expect((html.match(/<p>/g) || []).length).toBe(1);
+  });
+
+  it('leaves an HTML comment inside a fenced code block untouched as literal escaped text (regression guard)', () => {
+    const html = markdownToHtml('```html\n<!-- inside fence -->\n<div>x</div>\n```');
+    expect(html).toContain('&lt;!--');
+    expect(html).toContain('<pre>');
+    expect(html).toContain('<code');
+  });
 });

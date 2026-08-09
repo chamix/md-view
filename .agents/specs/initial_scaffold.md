@@ -1297,3 +1297,137 @@ Strengthen `view-menu.spec.ts` test (c), same toggle-after-file-is-open flow it 
 Before declaring done: temporarily revert the `renderer.js` fix to relative hrefs, rerun the strengthened test, confirm it fails with the *same failure signature* as the real bug (`net::ERR_FILE_NOT_FOUND`-shaped console error and/or wrong computed color), not just "some assertion failed." Then restore the fix and confirm green. Same practice as Task 4's addendum and Tasks 3/5.
 
 ---
+
+## Task 10 Technical Specification — HTML Comment Stripping Fix
+
+Maps `functional_domain.md`'s Task 10 analysis to concrete design.
+
+### The Inward Dependency Rule
+
+The fix lives entirely inside `src/main/markdown.ts`, at the same peripheral boundary already occupied by the existing `highlightCode` fence-rendering override (Task 6). It is a `markdown-it` `renderer.rules` override — the library's own designed extension seam — not a new abstraction layer, and it does not change what depends on what: `markdownToHtml` still exposes the same one-function, string-in/string-out boundary to its caller.
+
+### SOLID Boundary Scan
+
+- **SRP** — the new `renderer.rules.text` override has exactly one job: strip comment spans from plain-text token content before that content is escaped for display. Fence rendering (`highlightCode`) keeps its own, already-scoped responsibility and is untouched — the two rules are wired to different token types (`text` vs. `fence`) and never share code paths.
+- **OCP** — implemented by assigning `md.renderer.rules.text`, extending `markdown-it`'s behavior through its own rule-override mechanism rather than forking or monkey-patching its internals. Content that survives stripping still falls through to the library's own default text-rendering/escaping behavior (`renderer.renderToken`), so this task adds a case without modifying markdown-it's existing default rule.
+- **DIP** — the module already depends on the `markdown-it` abstraction (constructor options, `renderer.rules` extension points) rather than reaching past it; this fix uses that same seam, not a new dependency.
+
+### Pattern note
+
+Not a new GoF pattern. This is a Decorator-shaped use of `markdown-it`'s own rule-override extension point — the same tier of change as Task 6's `highlight` option — layering behavior onto an existing rendering step rather than introducing new structure.
+
+### Decision
+
+Override `md.renderer.rules.text = (tokens, idx, options, env, self) => { ... }`. Inside, strip `/<!--[\s\S]*?-->/g` from `tokens[idx].content`, then delegate to the default text-rendering behavior (`self.renderToken(tokens, idx, options)`, or equivalent escaping) for whatever content remains. The constructor's `html: false` and `highlight` options are unchanged — this is strictly additive at the renderer-rules layer, per the task's explicit instruction not to touch either.
+
+A one-line code comment in `markdown.ts`, at the override site, records the soft-break-split-comment limitation (functional_domain.md guardrail #5) as a deliberate, known scope boundary — not a TODO implying future work is expected here.
+
+### File tree — Task 10 additions/changes
+
+```
+md-view/
+├── src/main/
+│   └── markdown.ts                          # ~ renderer.rules.text override strips HTML comments; html:false and highlight option untouched
+├── tests/unit/
+│   └── markdown.test.ts                     # + cases: bare comment absent, mid-doc comment stripped (siblings untouched), fence-content regression guard, existing security tests re-verified unmodified
+└── tests/e2e/
+    ├── fixtures/with-html-comment/doc.md    # NEW — standalone comments, fenced comment, raw non-comment tag
+    └── html-comments.spec.ts                # NEW — launch via electron.launch, assert on #content per the code-highlighting.spec.ts pattern
+```
+
+### Required test changes (TDD)
+
+`tests/unit/markdown.test.ts`, extending the existing `describe('markdownToHtml (pure conversion)', ...)`:
+1. A bare HTML comment alone in its own paragraph → absent from output entirely (guardrail #1).
+2. A comment on its own paragraph mid-document, real content before and after → comment stripped, surrounding paragraphs' content unchanged (guardrail #2).
+3. Regression guard: an HTML comment inside a fenced code block (any language) still renders as literal escaped text inside `<pre><code>` — unchanged from pre-fix behavior (guardrail #4).
+4. Regression guard: the existing raw-HTML security tests already in this file continue to pass unmodified — a `<script>`/other raw tag outside a fence stays escaped and visible, never stripped (guardrail #3).
+
+`tests/e2e/html-comments.spec.ts` (new), following `code-highlighting.spec.ts`'s `electron.launch` + `childEnv`/`ELECTRON_RUN_AS_NODE`-stripping boilerplate exactly: launch with the new fixture, assert `#content` contains the heading and both non-comment paragraphs, and that its text does *not* contain either standalone comment's text while still containing the fenced comment's text and the raw non-comment tag's text.
+
+### Fault-injection proof (required)
+
+Same standing practice since Task 3/4: temporarily disable the `renderer.rules.text` override (or the regex within it), rerun unit test #1 above, confirm it fails (the comment reappears, escaped, in the output) — not a different, unrelated failure. Restore the override, confirm green again. Report the before/after in the close-out.
+
+### Backlog note (Step 3, not part of the code diff)
+
+Record functional_domain.md guardrail #5 (soft-line-break-split comments not caught by the per-token regex) as a new `[Pending]` backlog entry once this task lands — the Lead transcribes this, not the engineer; the engineer's job is limited to leaving the one-line in-code comment noting the boundary.
+
+---
+
+## Task 11 Technical Specification — Document Card Chrome
+
+Maps `functional_domain.md`'s Task 11 analysis to concrete design.
+
+### The Inward Dependency Rule
+
+Strictly peripheral: static markup (`index.html`) and static styling (`app.css`), the same outermost boundary layer as Task 7's status-bar/empty-state polish and Task 8's dark-mode CSS. No dependency direction changes — nothing in `src/main/**` or `renderer.js` is touched or needs to be, because this task adds a DOM wrapper and CSS around already-existing, already-populated elements rather than changing what populates them.
+
+### SOLID Boundary Scan
+
+- **SRP** — `#document-container`/`#document-header` are a pure layout/chrome concern, cleanly separable from content production (Task 4/7/8/10's territory) and from the `#status-bar`/`#empty-state` siblings, which stay untouched and outside the new wrapper.
+- **OCP** — extends the DOM by wrapping existing nodes in new parent elements (`#frontmatter`/`#content` keep their ids, types, and existing CSS rules unmodified) rather than modifying those nodes' own definitions. `app.css`'s existing rules for `#content`, `#frontmatter`, `body.dark-mode …` are additive-only from this task's side; nothing already there is edited, only new selectors are appended, following the file's own established per-task-comment-block convention.
+- **DIP** — not applicable at this granularity (no abstraction/interface boundary at play in static markup/CSS).
+
+### Pattern note
+
+No GoF pattern — this is presentation-layer chrome, same tier as Task 7. Worth noting only as a forward-looking design signal: `type="button"`, no click handlers, and no ARIA `aria-selected` state wiring today intentionally leaves room for a future task to wire real Preview/Code switching (e.g. a Strategy-shaped view-mode toggle) without this task pre-committing to that design — chrome now, behavior later, as separate, independently reviewable units of work.
+
+### Markup changes — `src/renderer/index.html`
+
+Replace:
+```html
+<pre id="frontmatter" hidden></pre>
+<div id="content" class="markdown-body"></div>
+```
+with:
+```html
+<div id="document-container">
+  <div id="document-header">
+    <button type="button" id="tab-preview" class="doc-tab active">Preview</button>
+    <button type="button" id="tab-code" class="doc-tab">Code</button>
+  </div>
+  <div id="document-main">
+    <pre id="frontmatter" hidden></pre>
+    <div id="content" class="markdown-body"></div>
+  </div>
+</div>
+```
+`#empty-state` stays exactly where it is today, as a sibling before `#document-container`, not inside it (guardrail #5). `#status-bar` stays exactly where it is today, after `#document-container`. No id, tag, or attribute on `#frontmatter`/`#content` changes — only their parent chain.
+
+### Styling changes — `src/renderer/app.css`
+
+New, additive-only block (own dated comment header, per the file's established convention):
+- `#document-container`: `margin: … 2rem` (outer layer, separate from `#content`'s own `padding-inline: 2rem` and `#frontmatter`'s own `margin: 0 2rem` — guardrail #2), `border: 1px solid #d0d7de`, `border-radius: 6–8px`, `overflow: hidden` (so the header's own background doesn't visually escape the rounded corners).
+- `#document-header`: `background: #f6f8fa`, `border-bottom: 1px solid #d0d7de`, flex row layout for the two tab buttons, horizontal padding.
+- `.doc-tab`: borderless/flat button reset (`background: none`, `border: none`, `padding`, `font: inherit`, `cursor: pointer` even though inert today — visually affords the future click target guardrail #3 defers), `border-bottom: 2px solid transparent` as the layout placeholder for the active indicator, hover state (subtle background or text-color shift).
+- `.doc-tab.active`: `border-bottom-color` set to an accent (GitHub uses its orange/black underline; pick the existing palette's nearest accent — engineer's call, document the choice), `font-weight: 600`.
+- `body.dark-mode #document-container`, `body.dark-mode #document-header`: `#30363d`/`#161b22` pair, following the exact token pattern already in the file for `body.dark-mode #frontmatter`/`#status-bar` (guardrail #4) — no new dark-mode mechanism.
+- `body.dark-mode .doc-tab`: text-color variant matching `#frontmatter`'s dark text color (`#c9d1d9`) for consistency.
+
+### File tree — Task 11 additions/changes
+
+```
+md-view/
+├── src/renderer/
+│   ├── index.html                      # ~ #frontmatter/#content wrapped in new #document-container > #document-header + #document-main
+│   └── app.css                         # + new dated block: #document-container, #document-header, .doc-tab (+ .active), dark-mode variants
+└── tests/e2e/
+    └── ui-shell.spec.ts                # ~ argv-launch test extended (or new test added): container/header visible, tabs present with correct text, #tab-preview active by default
+```
+
+### Required test changes
+
+Extend `tests/e2e/ui-shell.spec.ts`'s existing `'argv launch: …'` test (preferred, keeps one place asserting "a file is open" state) or add a narrowly-scoped new test in the same file:
+1. `#document-container` and `#document-header` are visible once the fixture file is open.
+2. `#tab-preview` and `#tab-code` exist, with visible text `Preview` and `Code` respectively.
+3. `#tab-preview` carries the active-state class (`.active`) by default; `#tab-code` does not.
+4. Do **not** modify the existing computed-padding assertion on `#content` (guardrail #2) — it must keep passing exactly as written, proving the new wrapper didn't absorb or replace `#content`'s own padding.
+
+No unit tests required — this task has zero pure-transformation logic (functional_domain.md's Task 11 "Pure Transformation Logic" section is explicitly empty), consistent with Task 7's precedent of e2e-only coverage for pure presentation work.
+
+### Fault-injection proof
+
+Not applicable in the standing "disable the fix, confirm RED" sense used for Tasks 3–10 — there is no logic to fault-inject, only markup/CSS. Substitute: the engineer should confirm the *existing* `#content` padding assertion in `ui-shell.spec.ts` would fail if `#document-container`'s margin were used to replace rather than wrap `#content`'s own `padding-inline` (i.e. briefly try the wrong approach — margin on the container instead of preserving `#content`'s padding — confirm the existing test still passes only because `#content`'s own CSS is untouched, not because the new wrapper happens to compensate). Report this check in the close-out.
+
+---
