@@ -1,5 +1,6 @@
-/* Task 7: UI shell polish — lateral content margin, status bar, empty state.
-   Deliberately simple: no centered max-width reading column (out of scope). */
+/* Task 12: layout breathing room + centered max-width reading column.
+   Reverses Task 7's prior "out of scope" note below — bringing it into
+   scope deliberately, not as an oversight. */
 
 body {
   margin: 0;
@@ -80,10 +81,16 @@ body.dark-mode #frontmatter {
    whole card, distinct from #content's own padding-inline (Task 7/8),
    which must stay untouched. */
 #document-container {
-  margin: 1.5rem 2rem 0;
+  width: calc(100% - 4rem);
+  max-width: 54rem;
+  margin: 1.5rem auto 1.5rem;
   border: 1px solid #d0d7de;
   border-radius: 6px;
   overflow: hidden;
+}
+
+#document-main {
+  padding-top: 1.5rem;
 }
 
 #document-header {

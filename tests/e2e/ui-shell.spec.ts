@@ -106,5 +106,86 @@ test('argv launch: empty-state disappears, status bar shows the real absolute pa
   const isTextContentOnly = await statusBar.evaluate((el) => el.innerHTML === el.textContent);
   expect(isTextContentOnly).toBe(true);
 
+  // (f) Task 12: window min-size clamp. Attempt to shrink the live
+  // BrowserWindow below the configured minimum and confirm the OS/Electron
+  // clamps the resulting bounds rather than honoring the smaller request —
+  // a config-value-only assertion would not actually prove the clamp takes
+  // effect at runtime.
+  const clampedBounds = await app.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    win.setBounds({ width: 100, height: 100 });
+    const bounds = win.getBounds();
+    return { width: bounds.width, height: bounds.height };
+  });
+  expect(clampedBounds.width).toBeGreaterThanOrEqual(480);
+  expect(clampedBounds.height).toBeGreaterThanOrEqual(320);
+
+  const documentContainer = window.locator('#document-container');
+
+  // (g) Task 12: default-width discrimination check. At the app's own
+  // default window width (900x640, from windowConfig.ts's
+  // defaultWindowOptions), the shipped CSS form (explicit
+  // `width: calc(100% - 4rem)`) and the forbidden alternate form (bare
+  // `max-width: 54rem; margin: auto` with no explicit width) produce
+  // identical computed margins at 1600px wide but diverge sharply here:
+  // the correct form keeps the mandated 2rem (32px) side gutters, while
+  // the forbidden form degrades to ~18px. Explicitly re-assert the window
+  // bounds first, since the clamp check above (f) already moved the live
+  // window to its clamped 480x320 size.
+  await app.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    win.setBounds({ width: 900, height: 640 });
+  });
+  await window.waitForTimeout(100);
+
+  const defaultWidthBox = await documentContainer.evaluate((el) => {
+    const style = window.getComputedStyle(el);
+    return {
+      marginLeft: parseFloat(style.marginLeft),
+      marginRight: parseFloat(style.marginRight),
+    };
+  });
+  // toBeCloseTo(32, 0)'s < 0.5 tolerance is tighter than real sub-pixel
+  // rendering allows here (observed ~0.8px drift) — use an explicit 1px
+  // band instead, per this task's documented fallback.
+  expect(defaultWidthBox.marginLeft).toBeGreaterThanOrEqual(31);
+  expect(defaultWidthBox.marginLeft).toBeLessThanOrEqual(33);
+  expect(defaultWidthBox.marginRight).toBeGreaterThanOrEqual(31);
+  expect(defaultWidthBox.marginRight).toBeLessThanOrEqual(33);
+
+  // (h) Task 12: centered max-width reading column. Resize wide and confirm
+  // #document-container caps its width well below the viewport and stays
+  // centered (equal left/right margins, both above the 2rem baseline gutter).
+  await app.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    win.setBounds({ width: 1600, height: 900 });
+  });
+  await window.waitForTimeout(100);
+
+  const containerBox = await documentContainer.evaluate((el) => {
+    const style = window.getComputedStyle(el);
+    return {
+      width: parseFloat(style.width),
+      marginLeft: parseFloat(style.marginLeft),
+      marginRight: parseFloat(style.marginRight),
+    };
+  });
+  expect(containerBox.width).toBeLessThan(900);
+  expect(containerBox.width).toBeGreaterThan(800);
+  expect(containerBox.marginLeft).toBeCloseTo(containerBox.marginRight, 0);
+  expect(containerBox.marginLeft).toBeGreaterThan(32);
+  expect(containerBox.marginRight).toBeGreaterThan(32);
+
+  // (i) Task 12: breathing-room spacing around the card, tightened to the
+  // mandated 1.5rem (24px at the default 16px root font-size) rather than
+  // just a non-zero check.
+  const documentMain = window.locator('#document-main');
+  const mainPaddingTop = await documentMain.evaluate((el) => window.getComputedStyle(el).paddingTop);
+  const containerMarginBottom = await documentContainer.evaluate(
+    (el) => window.getComputedStyle(el).marginBottom,
+  );
+  expect(parseFloat(mainPaddingTop)).toBeCloseTo(24, 0);
+  expect(parseFloat(containerMarginBottom)).toBeCloseTo(24, 0);
+
   await app.close();
 });

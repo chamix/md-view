@@ -504,3 +504,68 @@ visual only, not wired to anything, in this task.
    not visually appear (card border, header, tabs) when no file is open.
 
 ---
+
+## Task 12: Layout Breathing Room, Centered Max-Width Reading Column, Window Minimum Size
+
+Purely presentational + config feature: adds top/bottom breathing room around
+the document card, centers it with a max-width beyond which side margins
+grow, and gives the BrowserWindow a usable floor size. No new interaction,
+no new data.
+
+### Abstract Schema Contracts
+
+- No new message shape, no new data — DOM/CSS restructuring plus one
+  additive change to `defaultWindowOptions`'s shape (two new optional keys).
+  Same tier as Task 11.
+- `windowConfig.ts`'s existing keys (`width`, `height`, `webPreferences.*`)
+  are untouched; `minWidth`/`minHeight` are added alongside them, not
+  replacing anything.
+
+### Pure Transformation Logic
+
+None — same tier as Task 7/11: presentation and window config only, no
+business logic.
+
+### Edge-Case Invariant Guardrails
+
+1. `#content`'s existing `padding-inline: 2rem`/`padding-bottom: 2rem`,
+   `#frontmatter`'s `margin: 0 2rem`, and all Task 7/8/11 dark-mode variants
+   must survive unchanged — this task adds new spacing, it doesn't touch or
+   replace any existing rule. `ui-shell.spec.ts`'s current padding
+   assertions must keep passing unmodified.
+2. `#document-container` must keep its current 2rem minimum lateral gutter
+   at every width below the max-width threshold. Implement as
+   `width: calc(100% - 4rem); max-width: 54rem; margin-inline: auto;` — NOT
+   a bare `max-width` + `margin: auto` with no explicit width, which
+   collapses the gutter to 0 right at the threshold (a visible regression
+   at today's typical window sizes, not just an addition).
+3. The new top gap (`#document-main`'s `padding-top`) and bottom gap
+   (`#document-container`'s `margin-bottom`) must both be `1.5rem` —
+   matching the container's existing `margin-top: 1.5rem`, not a new
+   arbitrary value. Keeps the app's spacing rhythm at two numbers
+   (1.5rem outer / 2rem lateral), not three.
+4. Task 7's `app.css` header comment — "Deliberately simple: no centered
+   max-width reading column (out of scope)" — must be removed or rewritten
+   as part of this diff. This task is a deliberate reversal of that prior
+   scope decision; leaving the stale comment in place would mislead the
+   next reader.
+5. `windowConfig.ts`'s three security invariants (`contextIsolation: true`,
+   `nodeIntegration: false`, `sandbox: true`) must be untouched — this task
+   only adds `minWidth`/`minHeight`, nothing in `webPreferences`.
+6. `minWidth`/`minHeight` must be proven to actually clamp resize at the
+   Electron/OS level, not just be present as config values. A test that
+   only checks `defaultWindowOptions.minWidth === 480` proves the config
+   exists, not that Electron obeys it — same shape of false-proof the
+   reviewer has rejected before (Task 4). Needs a live e2e check: attempt
+   to resize the real window below the minimum, confirm the actual
+   resulting bounds clamp.
+7. The max-width constraint applies to `#document-container` as a single
+   unit (header bar + content together), not to `#content` alone —
+   `#document-header` must resize in lockstep with `#content` so the tabs
+   bar and the card border stay visually one card, consistent with Task
+   11's GitHub-file-view intent.
+8. `#empty-state` is unaffected — stays a sibling outside
+   `#document-container` (Task 11 guardrail #5), must not be pulled into
+   the new width constraint or spacing rules.
+
+---

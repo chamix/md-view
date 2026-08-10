@@ -9,4 +9,12 @@ describe('defaultWindowOptions (window security invariants)', () => {
   it('enforces nodeIntegration: false', () => {
     expect(defaultWindowOptions.webPreferences?.nodeIntegration).toBe(false);
   });
+
+  it('sets minWidth: 480', () => {
+    expect(defaultWindowOptions.minWidth).toBe(480);
+  });
+
+  it('sets minHeight: 320', () => {
+    expect(defaultWindowOptions.minHeight).toBe(320);
+  });
 });
