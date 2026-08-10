@@ -34,8 +34,6 @@ const rel = (isAbsolute(rawPath) ? relative(projectDir, rawPath) : rawPath)
   .replaceAll("\\", "/");
 
 // Self-exemption: the manifest itself is always editable, active contract
-// Self-exemption: the manifest itself is always editable, active contract
-// Self-exemption: the manifest itself is always editable, active contract
 // or not. Amending scope IS the Lead-approved amendment flow CLAUDE.md
 // describes — blocking it forces deleting the whole manifest instead,
 // which disables enforcement for every file, not just this one. A narrow
@@ -44,6 +42,19 @@ const rel = (isAbsolute(rawPath) ? relative(projectDir, rawPath) : rawPath)
 // + the reviewer's git-status check, same backstop as the documented
 // Bash gap (ADR-002) — this doesn't change that.
 if (rel === ".agents/current_scope.json") process.exit(0);
+
+// Self-exemption: review-report paths are always writable too. A first-
+// pass Blocking verdict must be persisted before the fix-and-reverify
+// cycle closes the contract — deleting the manifest early (the pre-
+// ADR-003 workaround) would prematurely signal a task still in flight
+// is done. Same actor and same backstop as the exemption above (ADR-003
+// / ADR-004): review reports are produced only by the Lead persisting
+// the read-only code-reviewer's findings, never by a scoped subagent,
+// and any anomalous content is still caught by the reviewer's own
+// independent git-status/diff check on every task.
+const isReviewReport =
+  rel.startsWith(".agents/specs/review_report") && rel.endsWith(".md");
+if (isReviewReport) process.exit(0);
 
 let scope;
 try {
