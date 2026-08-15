@@ -569,3 +569,67 @@ business logic.
    the new width constraint or spacing rules.
 
 ---
+
+## Task 13: App Icon — Dev-Mode Window/Taskbar/Dock Parity
+
+Packaged builds already get the correct app icon for free, purely from
+electron-builder's convention-based discovery of `build/icon.png` /
+`build/icons/` — no packaging config exists to change. The gap is dev mode
+only: `npm run dev` launches a raw `electron .` process with no packaging
+step in front of it, so `BrowserWindow` falls back to Electron's default
+icon on Windows/Linux, and the Dock (macOS) never gets told about the app
+icon at all outside a bundled `.app`.
+
+### Abstract Schema Contracts
+
+No message-shape or IPC change — this task has no renderer-facing surface.
+The only new "data" is a build-time file (an icon PNG) that must exist at a
+known path relative to the main process's compiled output before
+`BrowserWindow`/`app.dock` construction reads it. Abstractly: one static
+asset, copied from a build-owned source location into the dist output
+alongside the other already-copied static assets (renderer HTML/CSS today).
+
+### Pure Transformation Logic
+
+One pure predicate: given `(isPackaged: boolean, platform: NodeJS.Platform)`,
+decide whether the dev-mode Dock-icon call should run. `true` only when
+`!isPackaged && platform === 'darwin'`. No traversal, no data mutation —
+same tier as `shouldSkipDevToolsShortcut`/`shouldShowFrontmatter`: a boolean
+gate over environment facts, trivially unit-testable without any Electron
+runtime.
+
+### Edge-Case Invariant Guardrails
+
+1. Packaged/production icon behavior must not change at all — this task
+   only adds a dev-time copy step and a dev-time Dock call gated so it
+   never fires when `app.isPackaged` is true. `electron-builder.yml` is
+   untouched; the existing convention-based icon discovery is the single
+   source of truth for packaged builds.
+2. `windowConfig.ts`'s `defaultWindowOptions` stays free of any
+   `__dirname`-dependent value (icon path included) — that object's
+   testability without a running Electron instance is a standing invariant
+   from prior tasks (its three `webPreferences` security flags are
+   unit-tested directly against the plain object). The icon path is
+   resolved only at the `createWindow()` callsite, the same treatment
+   `preload`'s path already gets.
+3. The Dock-icon call must be main-process-only, called exactly once at
+   startup (inside the existing `app.whenReady().then(...)` block), never
+   per-window — Dock icon is a single OS-level singleton, not a
+   per-`BrowserWindow` property, so repeating it per window would be
+   redundant work disguised as correctness.
+4. `app.dock` is `undefined` on non-macOS platforms. The platform branch of
+   the predicate is load-bearing — it must be an explicit
+   `platform === 'darwin'` check, not something that relies on optional
+   chaining (`app.dock?.setIcon(...)`) to silently no-op elsewhere. A
+   silent no-op from `?.` would pass today's tests by accident and mask a
+   real logic error if the guard clause were ever refactored away.
+5. The new pure predicate must not be exposed through the
+   `globalThis.__mdViewDevToolsGuardForTests`-style bridge. That bridge is
+   already flagged in `backlog.md` as debt slated for removal (Task 7's
+   entry), not a pattern to extend to new predicates. The predicate must
+   instead live in its own leaf module with no top-level Electron calls,
+   so a plain Vitest unit test can import and call it directly — the fix
+   backlog.md already recommends for the *existing* debt, applied here
+   from the start instead of accruing more of it.
+
+---

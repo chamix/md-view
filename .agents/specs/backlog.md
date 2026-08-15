@@ -1,5 +1,33 @@
 ## Backlog
 
+- [Pending] Task 13's fault-injection check (renaming `build/icon.png` around a
+  packaging run) revealed that electron-builder's Windows target never picks
+  up a custom app icon via convention at all: no `build/icon.ico` exists in
+  the repo (only `build/icon.png` and the `build/icons/*.png` set, which
+  cover macOS/Linux conventions but not win32's `.ico` requirement).
+  Confirmed empirically — packaging with and without `build/icon.png`
+  present produced byte-identical `.exe` output (same SHA-256) and no
+  "application icon is not set" warning either way on this machine's
+  electron-builder 25.1.8. Packaged/production icon behavior was explicitly
+  out of scope for Task 13 (dev-mode parity only), so this was logged
+  rather than fixed. Needs a `build/icon.ico` generated from the same
+  source art (`assets/branding/md-view-icon.svg` or the existing PNG set)
+  before a real Windows installer/packaged build will show the correct
+  icon. Also unconfirmed whether `build/icon.icns` exists for macOS
+  packaging — worth checking in the same pass, not assumed fixed just
+  because `.icns` wasn't the platform under test here.
+
+- [Resolved 2026-08-15] `build/`, `assets/branding/`, and the root-level
+  `md-view-icon-assets.zip` are present in the working tree but were never
+  `git add`-ed — confirmed via `git log --diff-filter=A -- build assets`
+  returning nothing, and `.gitignore` does not exclude either directory.
+  A fresh clone or CI checkout would be missing these files entirely,
+  which would break both Task 13's new dev-mode copy step and any future
+  packaging run. Whether to commit them (and delete the now-redundant
+  source zip once `build/`/`assets/` are populated from it) is a
+  repo-tracking decision, not a code change — flagged to the user directly
+  at Task 13 close-out rather than resolved unilaterally.
+
 - [Pending] Flaky e2e: `live-reload.spec.ts`'s primer test ("live-reloads rendered
   content...") falló intermitentemente bajo carga de 4 workers en
   paralelo durante el review de Task 6 — reproducido como verde en dos

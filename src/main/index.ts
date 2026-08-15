@@ -9,6 +9,7 @@ import { isExternalHttpUrl } from './linkPolicy';
 import { buildMenuTemplate } from './menu';
 import type { ViewSettings } from './menu';
 import { extractFrontmatter } from './frontmatter';
+import { shouldSetDockIcon } from './dockIcon';
 import type { FSWatcher } from 'chokidar';
 import { IPC_CHANNELS } from '../preload/api';
 import type { FileRenderedMessage } from '../preload/api';
@@ -38,6 +39,7 @@ function setShowFrontmatter(checked: boolean): void {
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     ...defaultWindowOptions,
+    icon: path.join(__dirname, 'icon.png'),
     webPreferences: {
       ...defaultWindowOptions.webPreferences,
       preload: path.join(__dirname, '../preload/index.js'),
@@ -145,6 +147,10 @@ async function openFileViaDialog(): Promise<void> {
 
 app.whenReady().then(() => {
   createWindow();
+
+  if (shouldSetDockIcon(app.isPackaged, process.platform)) {
+    app.dock.setIcon(path.join(__dirname, 'icon.png'));
+  }
 
   Menu.setApplicationMenu(
     Menu.buildFromTemplate(

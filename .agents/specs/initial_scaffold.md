@@ -1431,3 +1431,176 @@ No unit tests required — this task has zero pure-transformation logic (functio
 Not applicable in the standing "disable the fix, confirm RED" sense used for Tasks 3–10 — there is no logic to fault-inject, only markup/CSS. Substitute: the engineer should confirm the *existing* `#content` padding assertion in `ui-shell.spec.ts` would fail if `#document-container`'s margin were used to replace rather than wrap `#content`'s own `padding-inline` (i.e. briefly try the wrong approach — margin on the container instead of preserving `#content`'s padding — confirm the existing test still passes only because `#content`'s own CSS is untouched, not because the new wrapper happens to compensate). Report this check in the close-out.
 
 ---
+
+## Task 13 Technical Specification — App Icon Dev-Mode Parity
+
+Maps `functional_domain.md`'s Task 13 analysis to concrete design.
+
+### The Inward Dependency Rule
+
+Strictly peripheral, and unusually shallow even by this project's standard:
+one build-script copy step (outermost I/O boundary, same tier as the
+existing renderer-asset copies already inline in `package.json`), one
+`__dirname`-resolved constructor argument added at the `createWindow()`
+callsite (outer mechanism composing an inner, still-pure config object —
+same treatment already given to `preload`), and one new leaf predicate
+module with zero Electron imports. Nothing in this task reaches inward
+past the main-process entrypoint; no domain logic exists to protect.
+
+### SOLID Boundary Scan
+
+- **SRP** — `dockIcon.ts` has exactly one reason to change: the rule for
+  *when* the dev Dock icon should be set. It does not decide *how* (no
+  `app.dock.setIcon` call inside it) and does not know about icon paths —
+  that composition stays at the `index.ts` callsite, mirroring how
+  `shouldSkipDevToolsShortcut` decides only the boolean, never touches
+  `webContents` itself.
+- **OCP** — `windowConfig.ts`'s `defaultWindowOptions` is extended by
+  spreading additional keys in at the callsite (`icon: path.join(...)`,
+  same pattern as `preload`), not by modifying the object's own
+  definition. The object itself is closed to this change; the callsite is
+  open to composing more onto it.
+- **DIP** — `dockIcon.ts`'s predicate depends on nothing but two primitive
+  inputs (`boolean`, `NodeJS.Platform`) passed in by the caller, rather
+  than reaching into `app.isPackaged`/`process.platform` itself. This is
+  what makes it importable and testable with zero Electron runtime,
+  consistent with the project's existing pure-predicate modules
+  (`isExternalHttpUrl`, `shouldShowFrontmatter`).
+
+### Pattern note
+
+No GoF pattern warranted — this is a single boolean guard clause, not a
+family of interchangeable behaviors (no Strategy justified for one
+predicate with one caller). Keeping it a plain exported function, not a
+class or registry, is the correct-weight choice here.
+
+### Build-script change — `package.json`
+
+Append one more `require('fs').copyFileSync(...)` call to the existing
+inline chain inside the `"build"` script's `node -e "..."` string — same
+statement-per-asset pattern already used for the six renderer assets in
+that chain. New line, in sequence, after the existing copies:
+
+```js
+require('fs').copyFileSync('build/icons/512x512.png','dist/main/icon.png')
+```
+
+`dist/main/` already exists as the `tsc` output directory for
+`src/main/**`.ts by the time this line runs (the `tsc -p tsconfig.json`
+step precedes it in the `&&` chain), so no `mkdirSync` is needed here
+(unlike `dist/renderer`, created fresh by this same script). No new
+tooling, no restructuring of the existing chain — one appended statement.
+
+### Main-process changes — `src/main/index.ts`
+
+In `createWindow()`, add `icon` to the `BrowserWindow` constructor options,
+spread alongside `...defaultWindowOptions`, sibling to the existing
+`webPreferences.preload` composition:
+
+```ts
+mainWindow = new BrowserWindow({
+  ...defaultWindowOptions,
+  icon: path.join(__dirname, 'icon.png'),
+  webPreferences: {
+    ...defaultWindowOptions.webPreferences,
+    preload: path.join(__dirname, '../preload/index.js'),
+  },
+});
+```
+
+Inside the existing `app.whenReady().then(() => { ... })` block, after
+`createWindow()`, call the Dock guard once:
+
+```ts
+if (shouldSetDockIcon(app.isPackaged, process.platform)) {
+  app.dock.setIcon(path.join(__dirname, 'icon.png'));
+}
+```
+
+Import `shouldSetDockIcon` from the new `./dockIcon` module. No change to
+`windowConfig.ts`'s object shape (functional_domain.md guardrail #2).
+
+### New module — `src/main/dockIcon.ts`
+
+```ts
+export function shouldSetDockIcon(isPackaged: boolean, platform: NodeJS.Platform): boolean {
+  return !isPackaged && platform === 'darwin';
+}
+```
+
+No Electron imports, no top-level side effects — a leaf module in the same
+family as `linkPolicy.ts`/`paths.ts`, importable directly by a unit test.
+Deliberately *not* wired through the `globalThis.__mdViewDevToolsGuardForTests`
+bridge pattern (functional_domain.md guardrail #5) — that bridge exists
+only because `shouldSkipDevToolsShortcut` currently lives inside
+`index.ts`, a module with top-level `app.whenReady()` side effects that
+make direct import unsafe in a Vitest unit test. `dockIcon.ts` has no such
+side effects, so the bridge's entire reason for existing doesn't apply
+here; a normal `import` + direct call is strictly correct, not a
+shortcut.
+
+### File tree — Task 13 additions/changes
+
+```
+md-view/
+├── package.json                        # ~ one appended copyFileSync line in the "build" script's inline chain
+├── src/main/
+│   ├── index.ts                        # ~ createWindow(): + icon path at callsite; app.whenReady(): + guarded app.dock.setIcon call; + import shouldSetDockIcon
+│   └── dockIcon.ts                     # NEW — pure shouldSetDockIcon(isPackaged, platform) predicate, no Electron imports
+└── tests/unit/
+    └── shouldSetDockIcon.test.ts       # NEW — direct import + call, both isPackaged/platform permutations
+```
+
+`windowConfig.ts` is explicitly **not** in this tree — no change, per
+functional_domain.md guardrail #2.
+
+### Required test changes (TDD)
+
+`tests/unit/shouldSetDockIcon.test.ts`, following `shouldShowFrontmatter.test.ts`'s
+direct-import-and-call style (no Electron instance, no mocking):
+1. `isPackaged: false, platform: 'darwin'` → `true`.
+2. `isPackaged: true, platform: 'darwin'` → `false` (packaged builds get
+   the icon from the `.icns` bundle instead; this predicate must not
+   double-set it).
+3. `isPackaged: false, platform: 'win32'` → `false`.
+4. `isPackaged: false, platform: 'linux'` → `false`.
+
+No integration or e2e test is required for the predicate itself (it's
+fully covered by direct unit tests, same tier as `shouldShowFrontmatter`).
+The window/taskbar icon and the Dock icon are both verified manually per
+the fault-injection section below — Playwright's Electron driver has no
+reliable cross-platform way to assert on OS-chrome icon pixels or Dock
+state, so this is not a gap the test suite is expected to close.
+
+### Fault-injection proof (required)
+
+Two independent checks, both already described in the task brief and
+repeated here as the binding spec:
+
+1. **Packaging wiring** — temporarily rename `build/icon.png` aside, run
+   the buildable packaging target, confirm electron-builder logs its
+   "application icon is not set" default-icon warning; restore the file,
+   rerun, confirm the warning is gone. This proves `build/icon.png`
+   actually exists where electron-builder's convention expects it — it is
+   a pre-existing invariant this task depends on but does not create, so
+   the check is expected to already pass; report the before/after anyway
+   since this is the first task to touch icon plumbing at all.
+2. **Predicate polarity** — with the real `npm run dev` running on
+   whatever platform is available, confirm the taskbar/window icon is the
+   md-view icon, not Electron's default. On macOS specifically, additionally
+   confirm the Dock icon updates, then temporarily flip
+   `shouldSetDockIcon`'s platform branch (e.g. hardcode a non-darwin
+   return) and confirm the Dock call correctly stops firing — proving the
+   guard is load-bearing, not coincidentally always-true.
+
+### Governance note
+
+No `.agents/decisions/` ADR is anticipated for this task — the one
+deliberate divergence worth flagging (skipping the `globalThis` test
+bridge in favor of a plain leaf-module import) is a *non*-extension of
+existing debt rather than a new architectural decision, and is called out
+above under "New module" instead. Lead's call at close-out whether a
+DEVLOG entry is still warranted to make that reasoning discoverable
+without re-reading this spec.
+
+---
