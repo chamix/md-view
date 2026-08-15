@@ -1,21 +1,19 @@
 ## Backlog
 
-- [Pending] Task 13's fault-injection check (renaming `build/icon.png` around a
-  packaging run) revealed that electron-builder's Windows target never picks
-  up a custom app icon via convention at all: no `build/icon.ico` exists in
-  the repo (only `build/icon.png` and the `build/icons/*.png` set, which
-  cover macOS/Linux conventions but not win32's `.ico` requirement).
-  Confirmed empirically — packaging with and without `build/icon.png`
-  present produced byte-identical `.exe` output (same SHA-256) and no
-  "application icon is not set" warning either way on this machine's
-  electron-builder 25.1.8. Packaged/production icon behavior was explicitly
-  out of scope for Task 13 (dev-mode parity only), so this was logged
-  rather than fixed. Needs a `build/icon.ico` generated from the same
-  source art (`assets/branding/md-view-icon.svg` or the existing PNG set)
-  before a real Windows installer/packaged build will show the correct
-  icon. Also unconfirmed whether `build/icon.icns` exists for macOS
-  packaging — worth checking in the same pass, not assumed fixed just
-  because `.icns` wasn't the platform under test here.
+- [Resolved 2026-08-15] Task 13's original fault-injection check (renaming
+`build/icon.png` around a `--dir --win` run) read a byte-identical `.exe`
+output as evidence that Windows needs a pre-made `build/icon.ico` and
+won't convert `.png`. That reading was wrong. Direct testing of the
+pinned `electron-builder@25.1.8` icon-conversion tool confirmed
+`build/icon.png` alone produces a valid, non-fallback `.ico`, and a real
+`npm run package` + installer deploy on Windows (2026-08-15) showed the
+correct icon in Explorer, taskbar, and the installed app — no `.ico`
+file needed. The original byte-identical result was most likely a stale
+`release/`/`dist/` not cleaned between the two fault-injection runs, not
+a real gap; not investigated further now that the actual question
+(does packaging show the right icon) is settled by the real deploy.
+Still unconfirmed: whether `build/icon.icns` is needed for macOS
+packaging — not assumed fine just because Windows was.
 
 - [Resolved 2026-08-15] `build/`, `assets/branding/`, and the root-level
   `md-view-icon-assets.zip` are present in the working tree but were never
