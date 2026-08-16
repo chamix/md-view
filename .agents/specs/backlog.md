@@ -86,6 +86,16 @@ packaging — not assumed fine just because Windows was.
   guardrail #1's scope and/or handling soft-break-split comments next time
   this file is touched, not urgent on its own.
 
+- [Pending] Task 14's `tests/e2e/help-menu.spec.ts` test (d) (close Help
+  window, reopen, confirm content) needed a fixed ~150ms settle delay plus
+  sequential click/wait (instead of a racy `Promise.all`) to stabilize an
+  intermittent Playwright/Electron-on-Windows CDP-session race on rapid
+  close-then-reopen. Verified stable across 14 consecutive runs after the
+  fix, and the independent reviewer confirmed it separately, but it's a
+  timing-based workaround rather than an event-based wait — worth
+  revisiting for a deterministic wait condition next time this spec is
+  touched. Non-blocking per the review report.
+
 - [Pending] `tests/e2e/view-menu.spec.ts` test (c)'s href-anchoring
   assertion (`expect(href).not.toContain('tests/e2e/fixtures')`, added in
   Task 9) is a negative check tied to an incidental fixture-path string,
@@ -95,3 +105,25 @@ packaging — not assumed fine just because Windows was.
   wrong location not containing that substring. Low priority — worth
   swapping for a `startsWith` check against the real absolute
   `dist/renderer` path next time this test is touched.
+
+  - [Pending] `code-reviewer`'s frontmatter grants bare `Bash` alongside
+  its "no Edit/Write, by design" read-only framing — Bash trivially
+  achieves the same write effect (confirmed: `sed -i`, heredocs, `git
+  apply` all used directly in Task 14's review), and neither existing
+  hook (`enforce-scope.mjs`, `protect-governance.mjs`) can see Bash calls
+  at all — both match only `Edit|Write` and key off `tool_input.file_path`.
+  Surfaced when the reviewer's own `git checkout -- src/main/index.ts`,
+  meant to revert its one-line fault-injection edit, discarded the real
+  58-line Task 14 diff on that file instead (self-detected and correctly
+  recovered, verified by the Lead — see review_report_task14.md's
+  independent-reviewer section for the transcript). See ADR-005
+  (claude-blueprints, `docs/decisions/adr-005-reviewer-bash-write-access.md`)
+  for the proposed fix: a narrow, diff-aware PreToolUse hook
+  (`claude/hooks/guard-destructive-git.mjs`) that blocks whole-file/whole-
+  tree git reverts only when the target actually has uncommitted changes.
+  Blueprint-first per usual — implement and test in claude-blueprints as
+  its own Task (TDD + fault-injection proof) before porting to md-view.
+  Also flags a related, separate, not-yet-decided question: the reviewer
+  wrote directly to review_report_task14.md via Bash rather than
+  returning its report as a final message per code-reviewer.md's Output
+  section — left open in the ADR, not resolved.
