@@ -1604,3 +1604,176 @@ DEVLOG entry is still warranted to make that reasoning discoverable
 without re-reading this spec.
 
 ---
+
+## Task 14: Help feature — Technical Specification
+
+### The Inward Dependency Rule
+
+The Help window is a peripheral mechanism (BrowserWindow, file I/O for
+help.md, CSS asset paths) wrapping two pure, dependency-free core
+functions (`shouldCreateHelpWindow`, `buildHelpHtml`) in the new
+`helpWindow.ts` leaf module. Neither function imports Electron; both are
+directly unit-testable, same tier as `dockIcon.ts`'s `shouldSetDockIcon`
+and `linkPolicy.ts`'s `isExternalHttpUrl`. Orchestration (reading
+help.md, constructing the window, wiring navigation interception) lives
+at the `index.ts` callsite, outside the core, exactly where Task 13
+placed the Dock-icon orchestration around its own pure predicate.
+
+### SOLID Boundary Scan
+
+- **SRP**: `helpWindow.ts` has exactly two responsibilities, split into
+  two functions — window-identity decision, and HTML templating. Neither
+  touches the filesystem, Electron APIs, or menu wiring.
+- **DIP**: `shouldCreateHelpWindow` depends on the abstract
+  `DestroyableWindow` structural interface (`{ isDestroyed(): boolean }`),
+  not on Electron's concrete `BrowserWindow` class — the real
+  `BrowserWindow` satisfies it structurally, but the unit test can pass a
+  plain object literal with no Electron runtime involved at all.
+- **ISP**: `DestroyableWindow` exposes only the one method the predicate
+  actually needs, not the full `BrowserWindow` surface.
+- **OCP**: External-link handling is not reimplemented for this window —
+  `linkPolicy.ts`'s existing `isExternalHttpUrl` is imported and reused
+  verbatim, extending its existing consumer set rather than modifying or
+  duplicating it.
+
+### Pattern Application
+
+- **Singleton (module-scoped, not classic GoF class-based)**: exactly one
+  Help window reference (`let helpWindow: BrowserWindow | null`) at
+  module scope in `index.ts`, guarded by `shouldCreateHelpWindow` —
+  mirrors the existing single-`mainWindow`/single-watcher precedent
+  already established by Task 3's "exactly one active watcher" invariant.
+- **Template Method (via pure function, not inheritance)**: `buildHelpHtml`
+  is a fixed HTML-document skeleton with one varying region (content) and
+  one varying list (stylesheet links) — composition over structural
+  inheritance, per CLAUDE.md's stated GoF preference.
+
+### File tree — Task 14 additions/changes
+
+```
+md-view/
+├── package.json                 # ~ append help.md to the build script's inline copy chain
+├── src/main/
+│   ├── help/
+│   │   └── help.md              # NEW — Lead-authored content, verbatim per functional_domain.md §Task 14
+│   ├── helpWindow.ts            # NEW — shouldCreateHelpWindow(), buildHelpHtml(); no Electron imports
+│   ├── menu.ts                  # ~ + Help top-level item (id: menu-help, label: 'md-view Help', accelerator: 'F1'); MenuHandlers += onOpenHelp
+│   └── index.ts                 # ~ + module-level let helpWindow, onOpenHelp handler, external-link interception wired onto the Help window
+└── tests/
+    ├── unit/
+    │   ├── shouldCreateHelpWindow.test.ts   # NEW
+    │   ├── buildHelpHtml.test.ts            # NEW
+    │   └── menu.test.ts                     # ~ extend: 3rd top-level item, its submenu, accelerator, click ref
+    └── e2e/
+        └── help-menu.spec.ts    # NEW
+```
+
+`windowConfig.ts` is NOT in this tree — the Help window's options are
+built at the index.ts callsite (spread defaultWindowOptions, omit
+preload), same treatment icon path already gets for the main window.
+`preload/api.ts` and `preload/index.ts` are NOT in this tree — no new
+BridgeApi surface.
+
+`helpWindow.ts` shape:
+
+```ts
+export interface DestroyableWindow {
+  isDestroyed(): boolean;
+}
+
+export function shouldCreateHelpWindow(existing: DestroyableWindow | null): boolean {
+  return existing === null || existing.isDestroyed();
+}
+
+export function buildHelpHtml(contentHtml: string, cssHrefs: string[]): string {
+  const links = cssHrefs.map((href) => `<link rel="stylesheet" href="${href}">`).join('\n    ');
+  return `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>md-view Help</title>
+    ${links}
+  </head>
+  <body>
+    <div class="markdown-body" style="max-width: 44rem; margin: 2rem auto; padding: 0 1.5rem 3rem;">
+      ${contentHtml}
+    </div>
+  </body>
+</html>`;
+}
+```
+
+`index.ts` wiring notes:
+- Read help.md once per click (not at startup) via
+  `fs.readFile(path.join(__dirname, 'help', 'help.md'), 'utf8')`, run
+  through the existing `markdownToHtml()`.
+- Build cssHrefs using `pathToFileURL` from 'node:url' (same import
+  paths.ts already uses for baseUrlForFile) against
+  `path.join(__dirname, '../renderer/app.css')` and
+  `path.join(__dirname, '../renderer/github-markdown-light.css')` and
+  `path.join(__dirname, '../renderer/github.css')` — light-theme CSS
+  only, per functional_domain.md guardrail #5.
+- `helpWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))`.
+- Wire the same will-navigate / setWindowOpenHandler pattern
+  createWindow() already has, scoped to helpWindow.webContents — reusing
+  `isExternalHttpUrl` from linkPolicy.ts, per functional_domain.md
+  guardrail #4.
+- On `helpWindow.on('closed', ...)`, set the module-level reference back
+  to null (mirrors mainWindow's lifecycle handling elsewhere).
+
+### Required test changes (TDD)
+
+`tests/unit/shouldCreateHelpWindow.test.ts`:
+1. `null` → `true`.
+2. `{ isDestroyed: () => true }` → `true`.
+3. `{ isDestroyed: () => false }` → `false`.
+
+`tests/unit/buildHelpHtml.test.ts`:
+1. Output contains a `<link rel="stylesheet" href="...">` for each entry
+   in cssHrefs, in order.
+2. Output contains the given contentHtml inside a `.markdown-body`
+   element.
+3. Output starts with `<!DOCTYPE html>`.
+
+`tests/unit/menu.test.ts` — extend following the existing style exactly
+(see the View-menu tests already in the file):
+1. Template now has 3 top-level items: File, View, Help.
+2. Help's submenu has exactly 1 entry: id `menu-help`.
+3. `menu-help` has label 'md-view Help', accelerator 'F1', and click
+   reference-equal to the onOpenHelp handler.
+
+`tests/e2e/help-menu.spec.ts` (new, follow view-menu.spec.ts's launch
+pattern — strip ELECTRON_RUN_AS_NODE, use `_electron`):
+(a) Triggering `menu-help` via `app.evaluate` opens a second window
+    (`app.waitForEvent('window')`) whose text content contains a known
+    phrase from help.md (e.g. "minimal desktop Markdown previewer").
+(b) Triggering `menu-help` twice still yields exactly 2 total windows
+    (`app.windows().length === 2`), not 3.
+(c) The Help window's `window.mdview` evaluates to `undefined` — proves
+    no preload leaked onto this window.
+(d) Closing the Help window and triggering `menu-help` again
+    successfully reopens it (still 2 total windows, new content visible).
+
+### Fault-injection proof (required)
+
+1. **Singleton guard** — temporarily hardcode `shouldCreateHelpWindow` to
+   always `return true`. Confirm test (b) goes RED (3 windows). Restore.
+   Confirm GREEN.
+2. **Preload leak** — temporarily add
+   `preload: path.join(__dirname, '../preload/index.js')` to the Help
+   window's webPreferences. Confirm test (c) goes RED (`mdview` becomes
+   defined). Remove it. Confirm GREEN.
+3. No fault-injection test is added for html:false — it's inherited,
+   unchanged coverage from markdown.test.ts; state this explicitly in
+   the review report rather than silently omitting a check.
+
+### Governance note
+
+No ADR expected — the "no preload, stricter webPreferences than the
+main window" choice is an application of the existing security
+invariants (functional_domain.md Task 1 guardrails #1–2), not a new
+architectural decision. Worth one DEVLOG.md sentence at close-out
+noting *why* this window has no BridgeApi, so it's discoverable later
+rather than looking like an oversight.
+
+---

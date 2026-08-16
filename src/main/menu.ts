@@ -9,6 +9,7 @@ export interface MenuHandlers {
   onOpen: () => void;
   onToggleDarkMode: (checked: boolean) => void;
   onToggleShowFrontmatter: (checked: boolean) => void;
+  onOpenHelp: () => void;
 }
 
 export function buildMenuTemplate(
@@ -42,6 +43,10 @@ export function buildMenuTemplate(
           click: (menuItem) => handlers.onToggleShowFrontmatter(menuItem.checked),
         },
       ],
+    },
+    {
+      label: 'Help',
+      submenu: [{ id: 'menu-help', label: 'md-view Help', accelerator: 'F1', click: handlers.onOpenHelp }],
     },
   ];
 }

@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, Menu, shell } from 'electron';
 import * as path from 'path';
 import * as fs from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
 import { defaultWindowOptions } from './windowConfig';
 import { markdownToHtml } from './markdown';
 import { baseUrlForFile } from './paths';
@@ -10,12 +11,14 @@ import { buildMenuTemplate } from './menu';
 import type { ViewSettings } from './menu';
 import { extractFrontmatter } from './frontmatter';
 import { shouldSetDockIcon } from './dockIcon';
+import { shouldCreateHelpWindow, buildHelpHtml } from './helpWindow';
 import type { FSWatcher } from 'chokidar';
 import { IPC_CHANNELS } from '../preload/api';
 import type { FileRenderedMessage } from '../preload/api';
 
 let mainWindow: BrowserWindow | null = null;
 let activeWatcher: FSWatcher | null = null;
+let helpWindow: BrowserWindow | null = null;
 
 // Session-scoped, never persisted (functional_domain.md Task 8 guardrail #6):
 // resets to this exact default on every launch, regardless of a prior
@@ -145,6 +148,55 @@ async function openFileViaDialog(): Promise<void> {
   await renderAndWatch(result.filePaths[0]);
 }
 
+async function onOpenHelp(): Promise<void> {
+  if (!shouldCreateHelpWindow(helpWindow)) {
+    helpWindow?.focus();
+    return;
+  }
+
+  const source = await fs.readFile(path.join(__dirname, 'help', 'help.md'), 'utf8');
+  const contentHtml = markdownToHtml(source);
+  const cssHrefs = [
+    pathToFileURL(path.join(__dirname, '../renderer/app.css')).href,
+    pathToFileURL(path.join(__dirname, '../renderer/github-markdown-light.css')).href,
+    pathToFileURL(path.join(__dirname, '../renderer/github.css')).href,
+  ];
+  const html = buildHelpHtml(contentHtml, cssHrefs);
+
+  helpWindow = new BrowserWindow({
+    ...defaultWindowOptions,
+    webPreferences: {
+      ...defaultWindowOptions.webPreferences,
+    },
+  });
+
+  helpWindow.webContents.on('will-navigate', (event, url) => {
+    event.preventDefault(); // unconditional, before any URL classification — same safety property as the main window
+    if (isExternalHttpUrl(url)) {
+      shell.openExternal(url);
+    }
+  });
+
+  helpWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (isExternalHttpUrl(url)) {
+      shell.openExternal(url);
+    }
+    return { action: 'deny' };
+  });
+
+  helpWindow.on('closed', () => {
+    helpWindow = null;
+  });
+
+  try {
+    await helpWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+  } catch {
+    // Navigation can be aborted (ERR_FAILED) if the window is closed while
+    // the data: URL is still loading — not a real failure to surface, just
+    // a race between window teardown and an in-flight load.
+  }
+}
+
 app.whenReady().then(() => {
   createWindow();
 
@@ -155,7 +207,12 @@ app.whenReady().then(() => {
   Menu.setApplicationMenu(
     Menu.buildFromTemplate(
       buildMenuTemplate(
-        { onOpen: openFileViaDialog, onToggleDarkMode: setDarkMode, onToggleShowFrontmatter: setShowFrontmatter },
+        {
+          onOpen: openFileViaDialog,
+          onToggleDarkMode: setDarkMode,
+          onToggleShowFrontmatter: setShowFrontmatter,
+          onOpenHelp,
+        },
         viewSettings
       )
     )

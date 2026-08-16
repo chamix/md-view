@@ -7,6 +7,7 @@ function handlers(overrides: Partial<MenuHandlers> = {}): MenuHandlers {
     onOpen: () => {},
     onToggleDarkMode: () => {},
     onToggleShowFrontmatter: () => {},
+    onOpenHelp: () => {},
     ...overrides,
   };
 }
@@ -56,12 +57,13 @@ describe('buildMenuTemplate (pure menu structure)', () => {
     expect(exitItem.role).toBe('quit');
   });
 
-  it('template now has 2 top-level items: File, View', () => {
+  it('template now has 3 top-level items: File, View, Help', () => {
     const template = buildMenuTemplate(handlers(), viewSettings());
 
-    expect(template).toHaveLength(2);
+    expect(template).toHaveLength(3);
     expect(template[0].label).toBe('File');
     expect(template[1].label).toBe('View');
+    expect(template[2].label).toBe('Help');
   });
 
   it("View's submenu has exactly 2 entries: menu-dark-mode, menu-show-frontmatter", () => {
@@ -113,5 +115,24 @@ describe('buildMenuTemplate (pure menu structure)', () => {
     showFrontmatterItem.click({ checked: false });
 
     expect(onToggleShowFrontmatter).toHaveBeenCalledWith(false);
+  });
+
+  it("Help's submenu has exactly 1 entry: menu-help", () => {
+    const template = buildMenuTemplate(handlers(), viewSettings());
+    const helpSubmenu = template[2].submenu as Array<Record<string, unknown>>;
+
+    expect(helpSubmenu).toHaveLength(1);
+    expect(helpSubmenu[0].id).toBe('menu-help');
+  });
+
+  it('menu-help has label, F1 accelerator, and click reference-equal to the onOpenHelp handler', () => {
+    const onOpenHelp = () => {};
+    const template = buildMenuTemplate(handlers({ onOpenHelp }), viewSettings());
+    const helpSubmenu = template[2].submenu as Array<Record<string, unknown>>;
+    const helpItem = helpSubmenu[0];
+
+    expect(helpItem.label).toBe('md-view Help');
+    expect(helpItem.accelerator).toBe('F1');
+    expect(helpItem.click).toBe(onOpenHelp);
   });
 });

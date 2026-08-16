@@ -633,3 +633,67 @@ runtime.
    from the start instead of accruing more of it.
 
 ---
+
+## Task 14: Help feature
+
+md-view gets a third top-level menu item, "Help", with the classic F1
+accelerator, opening a dedicated window that displays bundled help
+content. This is read-only, static, app-authored content — not a
+user-opened file, so none of the existing file-open/live-reload/
+frontmatter machinery applies.
+
+### Abstract Schema Contracts
+
+No IPC/message-shape change to the existing FILE_RENDERED / VIEW_SETTINGS
+channels. One new static asset (a Markdown file, Lead-authored, not
+user-supplied) copied at build time into dist/ alongside the other
+already-copied static assets, same tier as icon.png / the renderer CSS
+files.
+
+### Pure Transformation Logic
+
+Two pure functions, no Electron runtime required to test either:
+1. `shouldCreateHelpWindow(existing)` — given the current Help window
+   reference (or a stand-in with an `isDestroyed()` method, or null),
+   decide whether a new BrowserWindow must be created vs. an existing one
+   focused. `true` when `existing === null || existing.isDestroyed()`.
+2. `buildHelpHtml(contentHtml, cssHrefs)` — pure string templating: wraps
+   already-rendered HTML in a minimal `<html>` document, `.markdown-body`
+   wrapper, and a `<link>` tag per href in cssHrefs. No file I/O, no
+   Electron types beyond structural ones.
+
+### Edge-Case Invariant Guardrails
+
+1. The Help window's webPreferences MUST match `defaultWindowOptions`'s
+   three security flags (contextIsolation: true, nodeIntegration: false,
+   sandbox: true) AND must NOT set a `preload` key at all — this window
+   has no need for window.mdview, so it gets none. This is a stricter
+   posture than the main window, deliberately.
+2. Help content renders through the existing single `markdownToHtml()`
+   function in markdown.ts (html:false, already tested) — this task
+   introduces no new HTML-injection surface and needs no new
+   security-regression test on that front; say so explicitly in the
+   review-report close-out rather than silently skipping it.
+3. Exactly one Help window may exist at a time. Triggering Help again
+   while one is already open must focus the existing window, never open
+   a second one. Closing it and triggering Help again must successfully
+   reopen it (this is why the predicate checks isDestroyed(), not just
+   null — a closed BrowserWindow reference is non-null but unusable).
+4. External links inside help.md must route through the exact same
+   isExternalHttpUrl / shell.openExternal policy as the main window
+   (reuse linkPolicy.ts's isExternalHttpUrl directly — do not
+   reimplement).
+5. v1 scope is deliberately narrow: the Help window renders in light
+   theme only, does not react to the main window's Dark Mode toggle, has
+   no live-reload, and its size/position is not persisted (matches the
+   existing ViewSettings "session-scoped, never persisted" precedent from
+   Task 8 guardrail #6). This is not built toward — these are explicitly
+   out of scope, not deferred hooks left stubbed.
+6. F1 is a real, Electron-supported accelerator (F1–F24 are valid
+   accelerator key names) but on most Mac laptops the physical F1 key is
+   bound to a system function by default (brightness) unless the user
+   holds Fn or has changed a system preference. This is a known,
+   documented platform limitation, not a bug to work around — no
+   Fn-detection logic is added.
+
+---
