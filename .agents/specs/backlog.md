@@ -106,6 +106,17 @@ packaging — not assumed fine just because Windows was.
   swapping for a `startsWith` check against the real absolute
   `dist/renderer` path next time this test is touched.
 
+- [Pending] Task 15's `tests/e2e/help-menu.spec.ts` test (e) (Help window
+  must not inherit the app menu) uses two fixed `waitForTimeout(300)` calls
+  to let a dispatched `CmdOrCtrl+O` key event and a stubbed
+  `dialog.showOpenDialog` settle before reading a call counter — same
+  fragility class already flagged for test (d)'s close-then-reopen delay in
+  Task 14. Passed cleanly across roughly a dozen rebuild/rerun cycles during
+  Task 15's implementation and both review passes, but a fixed sleep is
+  inherently less robust than polling the counter with a timeout. Worth
+  hardening next time this spec file is touched, alongside Task 14's
+  already-open note on test (d). Non-blocking per `review_report_task15.md`.
+
   - [Pending] `code-reviewer`'s frontmatter grants bare `Bash` alongside
   its "no Edit/Write, by design" read-only framing — Bash trivially
   achieves the same write effect (confirmed: `sed -i`, heredocs, `git

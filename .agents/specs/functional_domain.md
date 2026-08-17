@@ -697,3 +697,53 @@ Two pure functions, no Electron runtime required to test either:
    Fn-detection logic is added.
 
 ---
+
+## Task 15: Help Window Must Not Inherit the Application Menu (bug fix)
+
+Escaped Task 14 spec gap, not a new feature: `Menu.setApplicationMenu()`
+(installed once in `app.whenReady()`, per Task 7) becomes the default
+menu for *every* `BrowserWindow` on Windows/Linux unless that window's
+menu is explicitly cleared. The Help window never opted out, so it
+currently shows the full File/View/Help bar — including live handlers
+(`openFileViaDialog`, `setDarkMode`, `setShowFrontmatter`, even
+`onOpenHelp` itself) on a window meant to be static, read-only,
+app-authored content. This lets a user drive main-window state (open a
+different file, toggle dark mode) from behind a window whose whole
+purpose is Task 14 guardrail #5's "deliberately narrow, read-only" v1
+scope.
+
+### Abstract Schema Contracts
+
+No new message shape, no IPC change. This is a window-chrome fact only —
+whether one specific `BrowserWindow` instance carries a menu — not a
+data contract.
+
+### Pure Transformation Logic
+
+None. Same tier as Task 13's dock-icon call: a single imperative Electron
+API call made at window-construction time, not a computed decision that
+needs its own pure predicate (unlike Task 13's `shouldSetDockIcon`,
+there's no platform/packaged branching here — the call is unconditional
+for the Help window, every time).
+
+### Edge-Case Invariant Guardrails
+
+1. The Help window must have no menu bar at all — `helpWindow.getMenu()`
+   must return `null`, verified against an actual running window (a live
+   e2e assertion), not inferred from reading the source.
+2. `win.removeMenu()` is the correct call for this — documented by
+   Electron as a no-op on macOS (menu bar is process-wide there via
+   `Menu.setApplicationMenu`, not per-window). This must be confirmed
+   empirically during implementation (actually running on this
+   Windows dev machine), not assumed from the docs alone.
+3. The main window's File/View/Help menu bar must remain completely
+   unaffected — this fix touches only the Help window's own
+   `BrowserWindow` instance. `menu.ts`, `buildMenuTemplate`, and the
+   main window's `Menu.setApplicationMenu` call are out of scope and
+   must show zero diff.
+4. No other Help-window behavior established in Task 14 (singleton
+   reopen via `shouldCreateHelpWindow`, no-preload posture, external
+   link policy via `isExternalHttpUrl`) may regress — this is a pure
+   addition (suppress the menu), not a rewrite of `onOpenHelp`.
+
+---

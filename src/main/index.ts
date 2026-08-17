@@ -170,6 +170,17 @@ async function onOpenHelp(): Promise<void> {
     },
   });
 
+  // The Help window is static, read-only, app-authored content. On
+  // Windows/Linux, Menu.setApplicationMenu() becomes the default menu for
+  // every BrowserWindow unless that window explicitly clears it — without
+  // this, the Help window would expose the full File/View/Help bar and its
+  // live handlers (openFileViaDialog, setDarkMode, setShowFrontmatter, even
+  // onOpenHelp itself) behind what should be a static help screen.
+  // Unconditional: removeMenu() is a documented no-op on macOS (menu bar
+  // there is process-wide via Menu.setApplicationMenu, not per-window), so
+  // no platform branch is needed.
+  helpWindow.removeMenu();
+
   helpWindow.webContents.on('will-navigate', (event, url) => {
     event.preventDefault(); // unconditional, before any URL classification — same safety property as the main window
     if (isExternalHttpUrl(url)) {

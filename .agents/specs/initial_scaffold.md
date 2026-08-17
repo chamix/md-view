@@ -1777,3 +1777,75 @@ noting *why* this window has no BridgeApi, so it's discoverable later
 rather than looking like an oversight.
 
 ---
+
+## Task 15 Technical Specification — Help Window Menu Suppression
+
+Maps `functional_domain.md`'s Task 15 analysis to concrete design.
+
+### The Inward Dependency Rule
+
+No new module. `src/main/index.ts`'s `onOpenHelp` (the same composition-
+root function Task 14 already added) is the only call site — same
+placement discipline as Task 13's dock-icon call: a single imperative
+Electron API invocation, made once, right where the object it acts on is
+constructed, with no new abstraction layer introduced for a single call.
+
+### SOLID Boundary Scan / Pattern Application
+
+Not applicable at this scale — a one-line, unconditional API call on an
+already-owned object is below the threshold where SRP/OCP/DIP or a GoF
+pattern says anything not already said by Task 14's own spec. Forcing a
+pattern here would be exactly the "hypothetical future requirement"
+CLAUDE.md warns against.
+
+### Exact change (authoritative)
+
+In `onOpenHelp`, immediately after `helpWindow = new BrowserWindow({...})`
+and before `loadURL`:
+
+```ts
+helpWindow = new BrowserWindow({
+  ...defaultWindowOptions,
+  webPreferences: {
+    ...defaultWindowOptions.webPreferences,
+  },
+});
+helpWindow.removeMenu();
+```
+
+No conditional, no platform branch — `removeMenu()` is documented as a
+no-op on macOS (menu bar there is process-wide, not per-window), so
+calling it unconditionally is correct on every platform without an
+`if (process.platform !== 'darwin')` guard that would just be dead
+weight. The engineer must confirm this empirically on the Windows dev
+machine (`getMenu()` returns `null` after the call) rather than trusting
+the doc claim alone — per functional_domain.md guardrail #2.
+
+Nothing else in `onOpenHelp`, `menu.ts`, or the main window's
+`Menu.setApplicationMenu(...)` wiring changes.
+
+### Required test changes (TDD)
+
+Extend `tests/e2e/help-menu.spec.ts` with one new case:
+(e) After triggering `menu-help` (reusing case (a)'s open pattern),
+`app.evaluate` against the Help `BrowserWindow` instance asserts
+`win.getMenu() === null`, **and**, in the same test, asserts the main
+window's `getMenu()` is still non-null (proves the fix is scoped to the
+Help window only, not a global menu removal that happens to also affect
+the main window).
+
+### Fault-injection proof (required)
+
+Temporarily comment out the new `helpWindow.removeMenu()` line, rebuild,
+run case (e), confirm it goes RED (`getMenu()` returns the inherited
+application menu object, not `null`). Restore the line, rebuild, confirm
+GREEN. This is the live proof the guardrail's own wording demands
+("verified via an actual running window, not a code read").
+
+### Governance note
+
+No ADR — this is a one-line bug fix closing a Task 14 spec gap, not a
+new architectural decision. A `backlog.md` "Resolved" entry at close-out
+is sufficient.
+
+---

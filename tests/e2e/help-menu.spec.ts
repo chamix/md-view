@@ -95,3 +95,73 @@ test('(d) closing the Help window and reopening it succeeds', async () => {
 
   await app.close();
 });
+
+test('(e) the Help window has no menu: its inherited CmdOrCtrl+O accelerator cannot reach the file-open handler', async () => {
+  const app = await electron.launch({
+    args: [path.join(process.cwd(), 'dist/main/index.js')],
+    env: childEnv,
+  });
+
+  const mainWindow = await app.firstWindow();
+
+  const [helpWindow] = await Promise.all([app.waitForEvent('window'), clickHelpMenu(app)]);
+  await expect(helpWindow.locator('body')).toContainText('minimal desktop Markdown previewer', { timeout: 10000 });
+
+  // Rationale (review_report_task15.md B-1): isMenuBarVisible() only proves
+  // the bar isn't rendered — it returns false under setMenuBarVisibility(false)
+  // too, which leaves the menu (and its local accelerators, per Electron's
+  // own autoHideMenuBar docs) fully attached. A genuinely detached menu
+  // (removeMenu()) has no local accelerator table at all, so its window's
+  // CmdOrCtrl+O can never reach menu.ts's 'menu-open' click handler
+  // (openFileViaDialog -> dialog.showOpenDialog). We stub showOpenDialog to a
+  // counter so firing is observable without a blocking native dialog, and
+  // dispatch the accelerator via webContents.sendInputEvent from the main
+  // process (Playwright's CDP-level page.keyboard.press was tried first and
+  // never reached Electron's native accelerator table on either window, even
+  // the main one — sendInputEvent does, confirmed empirically). We prove the
+  // mechanism can detect "accelerator fired" at all by exercising it on the
+  // focused main window first — otherwise a "the counter never moves" test
+  // would trivially pass regardless of the fix and prove nothing.
+  await app.evaluate(({ dialog }) => {
+    const bag = globalThis as unknown as { __mdViewOpenDialogCalls: number };
+    bag.__mdViewOpenDialogCalls = 0;
+    dialog.showOpenDialog = () => {
+      bag.__mdViewOpenDialogCalls += 1;
+      return Promise.resolve({ canceled: true, filePaths: [] });
+    };
+  });
+
+  async function sendCtrlOAndReadCount(isHelpTarget: boolean): Promise<number> {
+    await app.evaluate(
+      ({ BrowserWindow }, wantHelp) => {
+        const target = BrowserWindow.getAllWindows().find(
+          (w) => w.webContents.getURL().startsWith('data:text/html') === wantHelp
+        );
+        target?.focus();
+        target?.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'O', modifiers: ['control'] });
+        target?.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'O', modifiers: ['control'] });
+      },
+      isHelpTarget
+    );
+    await mainWindow.waitForTimeout(300);
+    return app.evaluate(() => (globalThis as unknown as { __mdViewOpenDialogCalls: number }).__mdViewOpenDialogCalls);
+  }
+
+  // Sanity check: the main window still carries the real application menu,
+  // so its local CmdOrCtrl+O accelerator must reach the handler — this
+  // proves the observable can actually detect "accelerator fired".
+  const afterMain = await sendCtrlOAndReadCount(false);
+  expect(afterMain).toBeGreaterThan(0);
+
+  await app.evaluate(() => {
+    (globalThis as unknown as { __mdViewOpenDialogCalls: number }).__mdViewOpenDialogCalls = 0;
+  });
+
+  // The actual guardrail: focused on the Help window, the same accelerator
+  // must NOT reach openFileViaDialog, because the Help window's menu is
+  // genuinely detached (not merely hidden).
+  const afterHelp = await sendCtrlOAndReadCount(true);
+  expect(afterHelp).toBe(0);
+
+  await app.close();
+});
