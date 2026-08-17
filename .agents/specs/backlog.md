@@ -117,7 +117,7 @@ packaging — not assumed fine just because Windows was.
   hardening next time this spec file is touched, alongside Task 14's
   already-open note on test (d). Non-blocking per `review_report_task15.md`.
 
-  - [Pending] `code-reviewer`'s frontmatter grants bare `Bash` alongside
+  - [Resolved 2026-08-17] `code-reviewer`'s frontmatter grants bare `Bash` alongside
   its "no Edit/Write, by design" read-only framing — Bash trivially
   achieves the same write effect (confirmed: `sed -i`, heredocs, `git
   apply` all used directly in Task 14's review), and neither existing
