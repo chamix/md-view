@@ -2396,4 +2396,126 @@ own verdict. `current_scope.json`'s `in_scope` list includes
 precedent), avoiding the recurring `enforce-scope.mjs` self-exemption
 gap hit in Tasks 6, 7, 9, 10, 12.
 
+## Task 18 Technical Specification — File Tree Tree-Root Path-Casing Fix
+
+Maps `functional_domain.md`'s Task 18 analysis to concrete design.
+
+### The Inward Dependency Rule
+
+No new module. `establishTreeRoot` (added in Task 17, inside
+`src/main/index.ts`) is the only call site touched — same placement
+discipline as Task 15's `removeMenu()` fix and Task 13's dock-icon
+call: a targeted change inside the one function that already owns this
+decision, no new abstraction layer introduced for it.
+
+### SOLID Boundary Scan / Pattern Application
+
+Not applicable at this scale — swapping a raw comparison for a
+canonicalized one inside an already-owned function is below the
+threshold where SRP/OCP/DIP or a GoF pattern says anything Task 17's
+own spec hasn't already said. `establishTreeRoot` keeps its existing
+single responsibility (decide whether the tree root actually changed,
+and broadcast if so); this fix only changes what value that decision
+is made against.
+
+### Exact change (authoritative)
+
+Two Node APIs can resolve a canonical on-disk path:
+`fs.promises.realpath(path)` and the native-binding variant
+`fs.realpath.native` (callback-based only — there is no documented
+`fs.promises.realpath.native`, so using it requires wrapping it, e.g.
+via `util.promisify`). These are **not** guaranteed interchangeable
+regarding case-preservation on Windows across Node versions. The
+engineer must empirically verify which one actually returns the
+real on-disk casing on this machine (e.g. call each against a path
+typed in the wrong case and inspect the result) before committing to
+one — per this project's standing "verify, don't assume" practice
+(Task 15's `removeMenu()` confirmation, Task 6's theme-CSS-existence
+check) — and state which was chosen and why in the review report.
+
+```ts
+async function establishTreeRoot(rawRootPath: string): Promise<void> {
+  let resolvedRootPath: string;
+  try {
+    resolvedRootPath = await <chosen realpath call>(rawRootPath);
+  } catch {
+    // Canonicalization failed (e.g. ENOENT — directory deleted between
+    // the open action and this call). Fall back to the raw path;
+    // listDirectoryEntries below will independently hit the same
+    // failure and correctly resolve {ok:false}, same as any other
+    // unreadable-directory case (functional_domain.md Task 17
+    // guardrail #3, unchanged by this fix).
+    resolvedRootPath = rawRootPath;
+  }
+  if (resolvedRootPath === currentTreeRoot) return;
+  const result = await listDirectoryEntries(resolvedRootPath);
+  currentTreeRoot = resolvedRootPath;
+  const message: FolderTreeRootMessage = result.ok
+    ? { ok: true, rootPath: resolvedRootPath, entries: result.entries }
+    : { ok: false, rootPath: resolvedRootPath, error: result.error };
+  mainWindow?.webContents.send(IPC_CHANNELS.FOLDER_TREE_ROOT, message);
+}
+```
+`currentTreeRoot` continues to be set unconditionally regardless of
+`result.ok` — Task 17's existing, already-reviewed behavior, unchanged
+here. The broadcast payload's `rootPath` is always `resolvedRootPath`,
+never `rawRootPath` — every future comparison and every
+`FOLDER_TREE_ROOT` payload stays consistent from this point forward.
+
+`renderAndWatch` and `openFolderViaDialog` need zero changes — both
+already call `establishTreeRoot(path.dirname(filePath))` /
+`establishTreeRoot(result.filePaths[0])` with a raw path; resolution
+is fully internal to `establishTreeRoot`.
+
+`listDirectory`/`listDirectoryEntries`'s general lazy-expand path
+(listing an arbitrary subfolder, not the root) is deliberately
+untouched — this fix is scoped narrowly to the root-comparison bug
+that was actually reported, not extended speculatively to every
+directory-listing call site.
+
+### Required test changes (TDD)
+
+Extend `tests/e2e/file-tree.spec.ts` with one new case: open the tree
+root once via the existing fixture path, then again via the same path
+with `.toUpperCase()` applied, and assert exactly one `FOLDER_TREE_ROOT`
+broadcast total (not two). This case is only meaningful on a
+case-insensitive filesystem — guard it with
+`test.skip(process.platform === 'linux', ...)` (with a comment
+explaining why) rather than letting it silently pass or fail for the
+wrong reason on a case-sensitive filesystem where the uppercased path
+genuinely wouldn't exist. If this limitation turns out to need
+adjusting once actually run, the engineer reports the real behavior
+rather than forcing the plan.
+
+### Fault-injection proof required (FI-5)
+
+Temporarily revert the `realpath` call (restore the raw
+`rootPath === currentTreeRoot` comparison), rebuild, run the new
+casing-equivalence test, confirm it goes RED — two `FOLDER_TREE_ROOT`
+broadcasts recorded instead of one, with two differently-cased
+`rootPath` values (on a case-insensitive filesystem, `fs.readdir`
+itself succeeds against either casing, so without the fix the second
+`establishTreeRoot` call fully completes and broadcasts again rather
+than erroring — that is exactly the spurious-reset bug, and the clean
+RED signal for it). Restore the fix, rebuild, confirm GREEN.
+
+### Regression check
+
+Run the full existing Task 17 suite (all `file-tree.spec.ts` cases, all
+fixtures) to confirm no regression — the existing fixture paths should
+`realpath` to themselves unchanged, so this should be a no-op for them,
+but the engineer must verify this empirically rather than assume it.
+
+### Governance note
+
+No ADR — this is a small, scoped bug fix closing a Task 17 spec gap,
+not a new architectural decision. A `backlog.md` "Resolved" entry at
+close-out is sufficient, cross-referencing the still-open Task 16
+close-out-sequencing item (hold `RUN_LOG.md`/scope-contract deletion
+until the Lead has evaluated `review_report_task18.md`). Per Task 17's
+own review finding (S3), `current_scope.json`'s `in_scope` list
+includes `.agents/specs/backlog.md`, `.agents/DEVLOG.md`, and
+`.agents/metrics/RUN_LOG.md` from the start this time, not amended
+reactively at close-out.
+
 ---

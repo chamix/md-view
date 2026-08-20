@@ -985,4 +985,66 @@ alongside the existing one, not a replacement for it.
    state — a future tree-sidebar UI keys off "no announcement has
    arrived yet," not off an explicit empty-payload event.
 
+## Task 18: File Tree Tree-Root Path-Casing Fix (bug fix)
+
+Escaped Task 17 spec gap, not a new feature: `establishTreeRoot`'s
+no-op guard (`rootPath === currentTreeRoot`) is a raw string
+comparison. On a case-insensitive filesystem — Windows (this dev
+machine) and default macOS/APFS — the same real directory can arrive
+as two different strings depending on how it was opened
+(`dialog.showOpenDialog`'s returned casing vs. `path.dirname()` of a
+drag-and-drop/argv-opened file's casing). The guard fails to recognize
+these as the same root, so switching between them re-lists the
+directory and re-broadcasts `FOLDER_TREE_ROOT` unnecessarily — a
+spurious tree reset a real user could hit simply by opening a file two
+different ways from the same folder. This gap was absent from Task
+17's spec, implementation, and both independent review rounds; it
+surfaced only once explicitly investigated.
+
+Resolved via the filesystem's own canonical-path answer
+(`realpath`-family resolution), not a platform-based case-folding
+heuristic — more precise (uses the actual on-disk identity rather than
+guessing by platform/filesystem convention), at the cost of one async
+`fs` call and a new failure mode (the directory may no longer exist by
+the time this runs) to handle explicitly.
+
+### Abstract Schema Contracts
+
+No new message shape, no IPC change, no new `BridgeApi` member. This is
+a purely internal behavioral fix to what value `establishTreeRoot`
+compares and stores — `DirectoryListResult`/`FolderTreeRootMessage`'s
+shapes are unchanged, guardrail #3 (never throw across the IPC
+boundary) still governs the same way it already did.
+
+### Pure Transformation Logic
+
+None new. This is a single additional `await` on an existing Node API
+inside `establishTreeRoot`, not a computed decision needing its own
+pure predicate — same tier as Task 15's one-line `removeMenu()` fix.
+
+### Edge-Case Invariant Guardrails
+
+9. Two path strings that differ only in casing but resolve to the same
+   real on-disk directory must be treated as the same tree root,
+   established via the filesystem's own canonicalization — never a
+   platform-based heuristic (e.g. lower-casing on Windows only).
+   Switching between two such strings must not re-broadcast
+   `FOLDER_TREE_ROOT`.
+10. If canonicalization itself fails (directory deleted between the
+    open action and this call, permission error), `establishTreeRoot`
+    must not throw. It falls back to the raw, uncanonicalized path, and
+    the existing `{ok:false}` error path (this file's Task 17 guardrail
+    #3) governs the outcome exactly as it already does for any other
+    unreadable directory — no new error-handling branch, no new
+    user-facing message.
+11. Task 17's existing behavior — `currentTreeRoot` is set
+    unconditionally regardless of whether the subsequent directory
+    listing succeeds — is unchanged by this fix. Only *which* value
+    (raw vs. canonicalized) gets compared and stored changes.
+12. `renderAndWatch` and `openFolderViaDialog` remain unaware of
+    canonicalization entirely — both continue to pass a raw path to
+    `establishTreeRoot` exactly as before. Resolution is fully
+    encapsulated inside `establishTreeRoot`; neither caller's code
+    changes.
+
 ---

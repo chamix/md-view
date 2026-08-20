@@ -243,3 +243,25 @@ packaging — not assumed fine just because Windows was.
   regression. Non-blocking, worth folding into whichever future task
   addresses e2e flakiness as its own effort rather than chasing
   individual instances as they surface.
+
+- [Pending — priority raised] E2E parallel-contention flakiness (see the
+  three entries directly above: `live-reload.spec.ts`'s primer test,
+  `ui-shell.spec.ts:67`, and Task 17's `file-tree.spec.ts:228` "Open
+  Folder…" test) recurred a **fourth** time during Task 18's independent
+  review — same test (`file-tree.spec.ts`'s "Open Folder…" case, zero
+  diff in Task 18's own changes), same failure shape (30s timeout on 1
+  of 3 full runs at default 4-worker parallelism, clean on immediate
+  rerun and in isolation). The Task 18 reviewer explicitly recommended
+  prioritizing this as its own effort rather than continuing to log new
+  occurrences task after task — every additional e2e spec file (this
+  project has added several since the pattern first appeared) increases
+  the odds of hitting the same shared resource-contention ceiling during
+  a full-suite run, and it is now a recurring cost on every review round
+  rather than a one-off curiosity. Still non-blocking (every documented
+  occurrence has been a clean rerun, never a genuine regression), but
+  flagged to the user as a candidate for its own scoped task — likely
+  investigation directions: whether `playwright.config` should reduce
+  default worker count for this project's Electron-heavy suite, whether
+  specific tests need more generous timeouts under contention, or
+  whether the shared `BrowserWindow`/Electron-process overhead itself is
+  the bottleneck.

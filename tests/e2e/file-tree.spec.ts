@@ -225,6 +225,72 @@ test('switching to a different file inside the same already-open folder does not
   await app.close();
 });
 
+test('opening the same tree root twice via differently-cased paths broadcasts FOLDER_TREE_ROOT exactly once (Task 18 guardrail #9 / FI-5 proof)', async () => {
+  // Only meaningful on a case-insensitive filesystem (Windows -- this dev
+  // machine -- and default macOS/APFS). On a case-sensitive filesystem the
+  // uppercased path genuinely would not exist, so this test would pass/fail
+  // for the wrong reason rather than proving the casing-equivalence
+  // guardrail -- skip outright instead of forcing a workaround.
+  test.skip(process.platform === 'linux', 'case-insensitive-filesystem-only guardrail; would test the wrong thing on ext4/most Linux filesystems');
+
+  const app = await electron.launch({
+    args: [path.join(process.cwd(), 'dist/main/index.js')],
+    env: childEnv,
+  });
+
+  const window = await app.firstWindow();
+
+  const lowerCaseDir = fixtureTreeDir;
+  const upperCaseDir = fixtureTreeDir.toUpperCase();
+
+  await app.evaluate(({ dialog }, dirs) => {
+    let callIndex = 0;
+    dialog.showOpenDialog = (async () => {
+      const dirPath = dirs[Math.min(callIndex, dirs.length - 1)];
+      callIndex += 1;
+      return { canceled: false, filePaths: [dirPath] };
+    }) as typeof dialog.showOpenDialog;
+  }, [lowerCaseDir, upperCaseDir]);
+
+  // Accumulate-events-and-poll pattern (this file's established, stable
+  // technique -- not a pending in-page Promise left unresolved across the
+  // CDP round trip, which proved flaky under full-suite parallel load).
+  await window.evaluate(() => {
+    (window as unknown as { __treeRootEvents: unknown[] }).__treeRootEvents = [];
+    (window as unknown as { mdview: { onFolderTreeRoot: (cb: (m: unknown) => void) => void } }).mdview.onFolderTreeRoot(
+      (message) => {
+        (window as unknown as { __treeRootEvents: unknown[] }).__treeRootEvents.push(message);
+      }
+    );
+  });
+
+  await app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open-folder')?.click());
+  await expect
+    .poll(async () =>
+      window.evaluate(() => (window as unknown as { __treeRootEvents: unknown[] }).__treeRootEvents.length)
+    )
+    .toBeGreaterThanOrEqual(1);
+
+  await app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open-folder')?.click());
+
+  // Give any (incorrect) second broadcast time to arrive before asserting
+  // the count stayed at exactly one -- same real directory, differently
+  // cased path string, must be a no-op per establishTreeRoot's
+  // canonicalized-comparison guard.
+  await window.waitForTimeout(500);
+
+  const events = await window.evaluate(
+    () => (window as unknown as { __treeRootEvents: unknown[] }).__treeRootEvents
+  );
+  expect(events).toHaveLength(1);
+
+  const firstEvent = events[0] as { ok: boolean; rootPath: string };
+  expect(firstEvent.ok).toBe(true);
+  expect(firstEvent.rootPath).toBe(lowerCaseDir);
+
+  await app.close();
+});
+
 test('Open Folder… broadcasts FOLDER_TREE_ROOT and triggers zero FILE_RENDERED events as a side effect', async () => {
   const app = await electron.launch({
     args: [path.join(process.cwd(), 'dist/main/index.js')],

@@ -138,13 +138,36 @@ export async function listDirectoryEntries(dirPath: string): Promise<DirectoryLi
   }
 }
 
-async function establishTreeRoot(rootPath: string): Promise<void> {
-  if (rootPath === currentTreeRoot) return; // no-op: no re-fetch, no event sent
-  const result = await listDirectoryEntries(rootPath);
-  currentTreeRoot = rootPath;
+async function establishTreeRoot(rawRootPath: string): Promise<void> {
+  // Canonicalize before comparing/storing so two differently-cased strings
+  // that name the same real on-disk directory (dialog.showOpenDialog's
+  // returned casing vs. path.dirname() of a drag-and-drop/argv-opened
+  // file's casing, on a case-insensitive filesystem) are recognized as the
+  // same tree root -- via the filesystem's own canonicalization, never a
+  // platform-based case-folding heuristic (functional_domain.md Task 18
+  // guardrail #9). fs.promises.realpath was empirically verified on this
+  // Windows machine/Node version to return the true on-disk casing (probed
+  // directly: fs.promises.realpath(<uppercased fixture dir>) resolved back
+  // to the real mixed-case path) -- fs.realpath.native (via util.promisify)
+  // was verified to return the identical result in the same probe, but
+  // fs.promises.realpath was chosen because it needs no extra wrapping.
+  let resolvedRootPath: string;
+  try {
+    resolvedRootPath = await fs.realpath(rawRootPath);
+  } catch {
+    // Canonicalization failed (e.g. ENOENT -- directory deleted between the
+    // open action and this call). Fall back to the raw path;
+    // listDirectoryEntries below will independently hit the same failure
+    // and correctly resolve {ok:false}, same as any other unreadable-
+    // directory case (Task 17's existing guardrail #3, unchanged).
+    resolvedRootPath = rawRootPath;
+  }
+  if (resolvedRootPath === currentTreeRoot) return; // no-op: no re-fetch, no event sent
+  const result = await listDirectoryEntries(resolvedRootPath);
+  currentTreeRoot = resolvedRootPath;
   const message: FolderTreeRootMessage = result.ok
-    ? { ok: true, rootPath, entries: result.entries }
-    : { ok: false, rootPath, error: result.error };
+    ? { ok: true, rootPath: resolvedRootPath, entries: result.entries }
+    : { ok: false, rootPath: resolvedRootPath, error: result.error };
   mainWindow?.webContents.send(IPC_CHANNELS.FOLDER_TREE_ROOT, message);
 }
 
