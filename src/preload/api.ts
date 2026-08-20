@@ -70,4 +70,5 @@ export interface BridgeApi {
   openDroppedFile(file: File): void;
   onFolderTreeRoot(callback: (message: FolderTreeRootMessage) => void): void;
   listDirectory(dirPath: string): Promise<DirectoryListResult>;
+  openFileByPath(filePath: string): void;
 }

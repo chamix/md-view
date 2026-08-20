@@ -11,15 +11,23 @@
     <link rel="stylesheet" href="./app.css" />
   </head>
   <body>
-    <div id="empty-state">No file open. Use File &gt; Open… (Ctrl+O) to open a Markdown file.</div>
-    <div id="document-container">
-      <div id="document-header">
-        <button type="button" id="tab-preview" class="doc-tab active">Preview</button>
-        <button type="button" id="tab-code" class="doc-tab">Code</button>
+    <div id="app-body">
+      <div id="tree-panel">
+        <div id="tree-empty-state">No folder open.</div>
+        <div id="tree-root" hidden></div>
       </div>
-      <div id="document-main">
-        <pre id="frontmatter" hidden></pre>
-        <div id="content" class="markdown-body"></div>
+      <div id="main-panel">
+        <div id="empty-state">No file open. Use File &gt; Open… (Ctrl+O) to open a Markdown file.</div>
+        <div id="document-container">
+          <div id="document-header">
+            <button type="button" id="tab-preview" class="doc-tab active">Preview</button>
+            <button type="button" id="tab-code" class="doc-tab">Code</button>
+          </div>
+          <div id="document-main">
+            <pre id="frontmatter" hidden></pre>
+            <div id="content" class="markdown-body"></div>
+          </div>
+        </div>
       </div>
     </div>
     <div id="status-bar">No file open</div>

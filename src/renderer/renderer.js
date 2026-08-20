@@ -26,6 +26,20 @@ function firstDroppedFile(fileList) {
   return fileList[0];
 }
 
+// Task 21: pure fetch-or-reveal caching predicate. A folder's children
+// container starts empty (no child nodes) and, once fetched, always ends up
+// with at least one child node -- either real entry rows, one inline error
+// row (ok:false), or one "empty folder" indicator row (ok:true, zero
+// entries). That last case is why this predicate is keyed off child-node
+// *count*, not "does it contain real TreeEntry rows": an empty result must
+// still be recorded as "already fetched," or a truly-empty directory would
+// never satisfy guardrail #21 (exactly one listDirectory call per folder,
+// ever) -- every re-expand of an empty folder would look indistinguishable
+// from "never fetched" and re-fetch forever.
+function needsFetch(childElementCount) {
+  return childElementCount === 0;
+}
+
 // Everything below touches real DOM/window globals, which don't exist when
 // this file is `require()`d under plain Node (e.g. by
 // tests/unit/renderer-order.test.ts, tests/unit/statusBarText.test.ts,
@@ -194,11 +208,145 @@ if (typeof document !== 'undefined') {
     const file = firstDroppedFile(event.dataTransfer.files);
     if (file) window.mdview.openDroppedFile(file);
   });
+
+  // Task 21: tree sidebar. First renderer consumer of Task 17/18's
+  // FOLDER_TREE_ROOT / listDirectory contract -- entries arrive already
+  // filtered and sorted (functional_domain.md guardrail #20), so nothing
+  // here re-filters or re-sorts, ever.
+  const treePanelEl = document.getElementById('tree-panel');
+  const treeEmptyStateEl = document.getElementById('tree-empty-state');
+  const treeRootEl = document.getElementById('tree-root');
+
+  const TREE_EMPTY_STATE_DEFAULT_TEXT = 'No folder open.';
+
+  const createTreeRow = (labelText, extraClassName) => {
+    const row = document.createElement('div');
+    row.className = extraClassName ? 'tree-row ' + extraClassName : 'tree-row';
+    row.textContent = labelText;
+    return row;
+  };
+
+  // One row-rendering function, called recursively for nested levels
+  // (initial_scaffold.md's documented Composite-shaped-without-a-class
+  // decision) -- each TreeEntry becomes one DOM node, appended into
+  // `parentEl`, never replacing siblings already there.
+  const renderTreeLevel = (entries, parentEl) => {
+    entries.forEach((entry) => {
+      const node = document.createElement('div');
+      node.className = 'tree-node';
+
+      const row = document.createElement('div');
+      row.className = 'tree-row';
+
+      const toggle = document.createElement('span');
+      const label = document.createElement('span');
+      label.className = 'tree-label';
+      label.textContent = entry.name;
+
+      if (entry.type === 'directory') {
+        node.classList.add('tree-directory');
+        toggle.className = 'tree-toggle';
+        toggle.textContent = '▸'; // ▸, rotated via CSS when expanded
+        row.appendChild(toggle);
+        row.appendChild(label);
+        node.appendChild(row);
+
+        const childrenEl = document.createElement('div');
+        childrenEl.className = 'tree-children';
+        childrenEl.hidden = true;
+        node.appendChild(childrenEl);
+
+        row.addEventListener('click', () => {
+          handleDirectoryRowClick(entry, childrenEl, toggle);
+        });
+      } else {
+        node.classList.add('tree-file');
+        toggle.className = 'tree-toggle tree-toggle-spacer';
+        row.appendChild(toggle);
+        row.appendChild(label);
+        node.appendChild(row);
+
+        // Guardrail #22/#23: exactly one REQUEST_OPEN_FILE per click, using
+        // entry.path verbatim, and nothing else -- no local DOM update. The
+        // existing FILE_RENDERED -> onFileRendered pipeline above handles
+        // the resulting content/status-bar update, exactly as it already
+        // does for File>Open and drag-and-drop.
+        row.addEventListener('click', () => {
+          window.mdview.openFileByPath(entry.path);
+        });
+      }
+
+      parentEl.appendChild(node);
+    });
+  };
+
+  const handleDirectoryRowClick = async (entry, childrenEl, toggleEl) => {
+    // Guardrail #21: exactly one listDirectory call per folder, ever, across
+    // any number of collapse/re-expand cycles. Once populated (real entries,
+    // an error row, or the empty-folder indicator row), every subsequent
+    // click is a pure visibility toggle, zero fetch.
+    if (!needsFetch(childrenEl.childElementCount)) {
+      childrenEl.hidden = !childrenEl.hidden;
+      toggleEl.classList.toggle('tree-toggle-expanded', !childrenEl.hidden);
+      return;
+    }
+
+    const loadingRow = createTreeRow('Loading…', 'tree-loading');
+    childrenEl.appendChild(loadingRow);
+    childrenEl.hidden = false;
+    toggleEl.classList.add('tree-toggle-expanded');
+
+    const result = await window.mdview.listDirectory(entry.path);
+
+    childrenEl.removeChild(loadingRow);
+
+    if (result.ok) {
+      if (result.entries.length === 0) {
+        // Genuinely empty, not an error -- and still counts as "fetched"
+        // (needsFetch's own doc comment explains why this row must exist).
+        childrenEl.appendChild(createTreeRow('(empty folder)', 'tree-empty'));
+      } else {
+        renderTreeLevel(result.entries, childrenEl);
+      }
+    } else {
+      // Guardrail #26: a visible inline error, never a silent no-op, never
+      // an unhandled rejection -- listDirectory always resolves (Task 17
+      // guardrail #3), so there is nothing here to catch/reject.
+      childrenEl.appendChild(createTreeRow('Could not list folder: ' + result.error, 'tree-error'));
+    }
+  };
+
+  window.mdview.onFolderTreeRoot((message) => {
+    // Guardrail #27: full replace, never append -- no stale nodes from a
+    // previous root ever remain visible or in the DOM after a folder
+    // switch.
+    if (treeRootEl) treeRootEl.textContent = '';
+
+    if (!message.ok) {
+      if (treeRootEl) treeRootEl.hidden = true;
+      if (treeEmptyStateEl) {
+        treeEmptyStateEl.textContent = 'Could not open folder: ' + message.error;
+        treeEmptyStateEl.hidden = false;
+      }
+      return;
+    }
+
+    if (treeEmptyStateEl) {
+      treeEmptyStateEl.textContent = TREE_EMPTY_STATE_DEFAULT_TEXT;
+      treeEmptyStateEl.hidden = true;
+    }
+    if (treeRootEl) {
+      renderTreeLevel(message.entries, treeRootEl);
+      treeRootEl.hidden = false;
+    }
+  });
+
+  void treePanelEl; // referenced for clarity/future use; no direct manipulation needed today
 }
 
 // No-op in the browser (there is no `module` global there); lets Vitest
 // `require()` this file under Node without needing jsdom, a bundler, or
 // converting the file to an ES module the <script> tag would need updating for.
 if (typeof module !== 'undefined') {
-  module.exports = { applyRenderedContent, statusBarText, shouldShowFrontmatter, firstDroppedFile };
+  module.exports = { applyRenderedContent, statusBarText, shouldShowFrontmatter, firstDroppedFile, needsFetch };
 }

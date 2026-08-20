@@ -20,6 +20,9 @@ const api: BridgeApi = {
   listDirectory: (dirPath) => {
     return ipcRenderer.invoke(IPC_CHANNELS.REQUEST_LIST_DIRECTORY, dirPath);
   },
+  openFileByPath: (filePath) => {
+    ipcRenderer.send(IPC_CHANNELS.REQUEST_OPEN_FILE, filePath);
+  },
 };
 
 contextBridge.exposeInMainWorld('mdview', api);

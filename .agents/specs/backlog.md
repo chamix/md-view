@@ -338,3 +338,66 @@ packaging — not assumed fine just because Windows was.
   own follow-up task if/when priority allows. Full raw 12-run tables for
   both baseline and post-fix live in `review_report_task19.md` and the
   Task 19 section of `initial_scaffold.md`.
+
+  **Update (Task 21):** this same `ui-shell.spec.ts` `marginLeft > 32`
+  assertion (item 2 above) recurred again — 4 of 7 full-suite runs
+  during Task 21's independent review, always the identical assertion,
+  zero other tests affected. This time it was measured rather than just
+  observed: a temporary diagnostic spec polled `#document-container`'s
+  computed box to its true settled value (bypassing the flaky test's own
+  fixed 100ms wait) with Task 21's new sidebar present — `marginLeft`
+  settles at `230.8px`, ~7x the `>32` threshold, deep inside the passing
+  band. This rules out a genuine width-budget/geometry cause for this
+  specific window size definitively — the flake is purely a
+  render-not-yet-settled timing race, exacerbated by however many
+  concurrent Electron processes happen to be running (more total e2e
+  specs in the suite over time = more contention pressure most full
+  runs), not by anything about what's on screen. Still unexplained *why*
+  the race happens (no fix attempted, out of scope for Task 21). Full
+  detail in `review_report_task21.md` §6(b).
+
+- [Pending] Task 21's `tests/e2e/tree-panel.spec.ts` FI-1 proof (the
+  "exactly one `listDirectory` call per folder, ever" caching guardrail)
+  only exercises the cache-defeat scenario against a non-empty folder
+  (`sub`). The empty-folder caching path — which needed its own special
+  "(empty folder)" indicator row specifically so `needsFetch`'s
+  child-count-based check has something to count — has no dedicated
+  fault-injection or call-count assertion in the shipped test suite; the
+  reviewer confirmed it works correctly via a throwaway diagnostic spec,
+  but that proof isn't part of the permanent suite. Worth adding an
+  `empty-of-md`-specific call-count assertion to `tree-panel.spec.ts`
+  next time that file is touched — this is precisely the edge case most
+  likely to silently regress. Non-blocking per `review_report_task21.md`.
+
+- [Pending] Task 21's `tree-panel.spec.ts` FI-1 test reads Electron's
+  internal `ipcMain._invokeHandlers` Map directly (grabs the real
+  registered `REQUEST_LIST_DIRECTORY` handler, removes it, re-registers
+  a counting wrapper that delegates to the grabbed reference) because
+  the spec's originally-proposed technique — re-`require()`-ing the
+  running `dist/main/index.js` from inside `electronApp.evaluate()` to
+  get the cached module — turned out not to work in this Electron/
+  Playwright version (`require`/`module` are `undefined` in that
+  evaluate context; it runs as global eval, not a CommonJS module body).
+  `_invokeHandlers` is undocumented/private and its shape could change
+  on an Electron upgrade with no advance warning, silently breaking this
+  one test with a confusing failure rather than a clear "API changed"
+  signal. Test-only (never ships), demonstrated working correctly by
+  both the shipped test and the reviewer's independent reproduction —
+  not blocking, but worth a one-line comment at the call site (if not
+  already present) noting the Electron-version dependency, and worth
+  revisiting if `electron`'s `package.json` version is ever bumped.
+  Non-blocking per `review_report_task21.md`.
+
+- [Pending] Task 21's independent reviewer could not reproduce the
+  implementer's reported "4 `file-tree.spec.ts` failures from a
+  drive-letter-casing environment artifact" claim, despite deliberately
+  trying (varied worker counts, `--repeat-each=3`, isolated and
+  full-suite runs, 60+ total executions, zero failures). This is now
+  the second task in a row (see Task 20's `review_report_task20.md`,
+  which called the same casing quirk "plausible" but also never
+  reproduced an actual `rootPath` mismatch failure) where an engineer
+  raised this environment concern and an independent reviewer's own
+  session never hit it. Likely session-specific to whatever shell/cwd
+  state a given Bash invocation inherits, not a deterministic repo bug —
+  low priority, but flagging the pattern explicitly rather than letting
+  each task re-raise it as a fresh unknown.

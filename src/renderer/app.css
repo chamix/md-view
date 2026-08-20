@@ -7,6 +7,40 @@ body {
   padding-bottom: 2rem; /* leaves room for the fixed status bar below */
 }
 
+/* Task 21: tree sidebar. --tree-panel-width is a single override point so a
+   later task (resize handle) can adjust it via one style.setProperty() call
+   without restructuring this HTML/CSS again. */
+:root {
+  --tree-panel-width: 260px;
+}
+
+#app-body {
+  display: flex;
+  flex-direction: row;
+}
+
+/* Fixed-width sidebar — never grows/shrinks with the row. */
+#tree-panel {
+  flex: 0 0 auto;
+  width: var(--tree-panel-width);
+  box-sizing: border-box;
+  overflow-y: auto;
+  border-right: 1px solid #d0d7de;
+  background: #f6f8fa;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  font-size: 0.85rem;
+}
+
+/* flex: 1 1 auto lets #main-panel take the remaining row width;
+   min-width: 0 is load-bearing -- without it, #document-container's own
+   width: calc(100% - 4rem) can refuse to shrink below its content's natural
+   width and overflow the row (a flex child's default min-width is auto, not
+   0). */
+#main-panel {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 #content {
   padding-inline: 2rem;
   /* Task 8: breathing room at the visual end of the rendered document
@@ -147,4 +181,100 @@ body.drag-over {
 
 body.dark-mode.drag-over {
   outline-color: #58a6ff;
+}
+
+/* Task 21: tree sidebar rows. */
+#tree-empty-state {
+  padding: 1rem 0.75rem;
+  color: #57606a;
+}
+
+#tree-root {
+  padding: 0.5rem 0;
+}
+
+.tree-node {
+  width: 100%;
+}
+
+.tree-children {
+  padding-left: 1rem;
+}
+
+.tree-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.5rem;
+  cursor: pointer;
+  color: #24292f;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tree-row:hover {
+  background: rgba(208, 215, 222, 0.32);
+}
+
+.tree-toggle {
+  display: inline-block;
+  width: 0.85rem;
+  flex: 0 0 auto;
+  transition: transform 0.1s ease-in-out;
+}
+
+.tree-toggle-expanded {
+  transform: rotate(90deg);
+}
+
+.tree-toggle-spacer {
+  visibility: hidden;
+}
+
+.tree-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tree-loading,
+.tree-empty {
+  padding: 0.2rem 0.5rem 0.2rem 1.85rem;
+  color: #57606a;
+  font-style: italic;
+  cursor: default;
+}
+
+.tree-error {
+  padding: 0.2rem 0.5rem 0.2rem 1.85rem;
+  color: #cf222e;
+  cursor: default;
+  white-space: normal;
+}
+
+body.dark-mode #tree-panel {
+  background: #161b22;
+  border-right-color: #30363d;
+}
+
+body.dark-mode #tree-empty-state {
+  color: #8b949e;
+}
+
+body.dark-mode .tree-row {
+  color: #c9d1d9;
+}
+
+body.dark-mode .tree-row:hover {
+  background: rgba(48, 54, 61, 0.6);
+}
+
+body.dark-mode .tree-loading,
+body.dark-mode .tree-empty {
+  color: #8b949e;
+}
+
+body.dark-mode .tree-error {
+  color: #ff7b72;
 }
