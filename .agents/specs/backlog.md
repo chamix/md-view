@@ -117,6 +117,68 @@ packaging — not assumed fine just because Windows was.
   hardening next time this spec file is touched, alongside Task 14's
   already-open note on test (d). Non-blocking per `review_report_task15.md`.
 
+  - [Resolved 2026-08-17] Task 16 (drag-and-drop file open) is the first
+  renderer→main IPC crossing in this app. Guardrail #10's investigation
+  (functional_domain.md) confirmed empirically: a `File` built via
+  Playwright's `page.evaluate(() => new File(...))` resolves to `''` from
+  `webUtils.getPathForFile()` even in the real running app, and
+  `contextBridge`-exposed methods (`window.mdview.openDroppedFile`) cannot
+  be monkey-patched from web content — closing off a literal "drop a real
+  file, see it render" e2e proof. Compensating strategy that worked and is
+  now the reusable pattern for any future renderer→main task: (1)
+  `app.evaluate(({ ipcMain }, ch) => ipcMain.emit(ch, {}, realPath))`
+  invokes the real, already-registered main-process listener directly with
+  a real filesystem path, bypassing only the renderer/preload File-
+  resolution boundary — proved guardrails #1 and #8. (2) `ipcMain.on`
+  supports multiple listeners per channel; a second, test-only counting
+  listener added via `app.evaluate()` alongside (not replacing) the
+  production one let a real `document.dispatchEvent(drop)` through the
+  actual renderer→preload→ipcMain chain prove "exactly one open requested"
+  for a multi-file drop (guardrail #2) without needing to distinguish
+  *which* file by content. (3) `new DragEvent('drop', { dataTransfer:
+  <plain object> })` throws (`"Failed to convert value to 'DataTransfer'"`)
+  in this Electron/Chromium version — worked around with `new Event('drop',
+  ...)` plus a manually-attached `.dataTransfer` property before dispatch;
+  plain `DragEvent` construction without a `dataTransfer` payload (used for
+  the `preventDefault()` proof) works fine. (4) The nested-element
+  `dragenter`/`dragleave` depth-counter fault-injection, predicted as
+  possibly impractical, turned out fully practical via normal DOM bubbling
+  (`bubbles: true` dispatched at a child element). Full trail in
+  `review_report_task16.md`. The one item genuinely out of reach in this
+  environment: physically dragging a real file from Windows Explorer onto
+  a running `npm run dev` window to observe Chromium's native
+  navigate-away default with/without the `preventDefault()` fix — no
+  GUI/mouse automation tool was available to either the implementer or the
+  independent reviewer. Flagged to the user at close-out; not resolved by
+  this task, tracked below.
+
+- [Pending] Task 16's one unperformed check: a real, physical drag of a
+  `.md` file from Windows Explorer onto a running `npm run dev` window
+  (with the `preventDefault()` fix reverted, then reapplied), to confirm
+  Electron's documented default (navigate the whole window to the
+  dropped file) is what actually happens today and is actually suppressed
+  by the fix. functional_domain.md guardrail #3 calls for this explicitly
+  as a one-time baseline; neither the implementing engineer nor the
+  independent reviewer had GUI/mouse automation available in their
+  sandboxed sessions to perform it. The automated proxy
+  (`event.defaultPrevented === true` on a synthetic `dragover`/`drop`,
+  independently fault-injection-verified RED→GREEN by the reviewer) is
+  the only coverage that currently exists for this guardrail. Low risk —
+  the mechanism (`event.preventDefault()` suppressing a browser default
+  action) is standard, well-documented behavior — but genuinely
+  unconfirmed on this specific app/Electron version by direct
+  observation. Worth a two-minute manual check next time someone is at
+  the physical dev machine.
+
+  - [Pending] `tests/e2e/ui-shell.spec.ts:67` (window-width assertion,
+  `containerBox.width > 800`) failed once during Task 16's review under
+  4-worker parallel `npm run test:e2e` load, then passed cleanly both in
+  isolation and on a full-suite rerun. Not part of Task 16's diff/scope —
+  pre-existing flakiness under parallel contention, same class as the
+  already-logged `live-reload.spec.ts` flakiness above. Non-blocking,
+  worth revisiting alongside that entry next time e2e flakiness is
+  addressed as its own task.
+
   - [Resolved 2026-08-17] `code-reviewer`'s frontmatter grants bare `Bash` alongside
   its "no Edit/Write, by design" read-only framing — Bash trivially
   achieves the same write effect (confirmed: `sed -i`, heredocs, `git
@@ -138,3 +200,32 @@ packaging — not assumed fine just because Windows was.
   wrote directly to review_report_task14.md via Bash rather than
   returning its report as a final message per code-reviewer.md's Output
   section — left open in the ADR, not resolved.
+
+- [Pending] Task 16 close-out (both the original review and its follow-up
+  round, 2026-08-17) logged `RUN_LOG.md` and closed the scope contract
+  before the Lead had evaluated `review_report_task16.md` — not a one-off:
+  it happened twice in the same task. The original review's "Pass, 0
+  Blocking" verdict turned out to rest on a guardrail #2 test that only
+  asserted an IPC-send *count*, not which file's path was sent (a
+  "last-file-wins" regression would have passed it silently); the Lead
+  caught this only after the row was already marked `Success` in the log.
+  The follow-up round repeated the exact same sequencing, again logging
+  `Pass` before the Lead's evaluation of that round reached the
+  conversation. In both cases the underlying work turned out to hold up on
+  inspection, so nothing had to be retracted — but the process gap is
+  real: nothing currently gates `RUN_LOG.md`/close-out on Lead sign-off,
+  only on the reviewer reaching a verdict. Neither `enforce-scope.mjs` nor
+  `protect-governance.mjs` can fix this — it's a sequencing question
+  between subagent close-out and Lead review, not a file-write permission,
+  so no existing PreToolUse hook has the right shape to catch it. Needs a
+  process fix, not a hook: e.g. an explicit line in the
+  `code-reviewer`/`full-stack-engineer` agent definitions' Output sections
+  and/or the delegation-prompt template stating that Step 3 close-out
+  (`RUN_LOG.md` append, scope-contract deletion) happens only after the
+  Lead has evaluated the review report and given an explicit go-ahead —
+  not automatically once the reviewer reaches its own verdict. Not
+  resolved here — flagged for whenever `.claude/agents/*.md` is next
+  touched. Note the source-of-truth split: this backlog entry is
+  project-specific and belongs in `md-view` directly, but the actual fix
+  (agent definition wording) lives in `claude-blueprints` first, per
+  usual, then ports.
