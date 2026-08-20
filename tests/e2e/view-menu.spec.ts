@@ -1,23 +1,16 @@
+import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
-import { test, expect, _electron as electron } from '@playwright/test';
-
-// The host shell may set ELECTRON_RUN_AS_NODE=1 (e.g. some CI/dev-tool
-// environments), which forces any Electron binary to run as plain Node
-// instead of booting the Electron runtime (app/BrowserWindow become
-// undefined). Strip it from the child process env so the launched app
-// always runs as real Electron regardless of the parent shell's env.
-const childEnv = { ...process.env };
-delete childEnv.ELECTRON_RUN_AS_NODE;
+import { _electron as electron } from '@playwright/test';
+import { test, expect } from './support/fixtures';
 
 const fixturePath = path.join(process.cwd(), 'tests/e2e/fixtures/with-frontmatter/doc.md');
+const ENTRY_POINT = path.join(process.cwd(), 'dist/main/index.js');
 
-test('(a) frontmatter is visible with line-separated, legible content', async () => {
-  const app = await electron.launch({
-    args: [path.join(process.cwd(), 'dist/main/index.js'), fixturePath],
-    env: childEnv,
-  });
+test.use({ electronArgs: [fixturePath] });
 
-  const window = await app.firstWindow();
+test('(a) frontmatter is visible with line-separated, legible content', async ({ electronApp }) => {
+  const window = await electronApp.firstWindow();
   const content = window.locator('#content');
   await expect(content).toContainText('Frontmatter Fixture Heading', { timeout: 10000 });
 
@@ -27,17 +20,10 @@ test('(a) frontmatter is visible with line-separated, legible content', async ()
   const lines = (await frontmatter.textContent())?.split('\n') ?? [];
   expect(lines.some((line) => line.includes('title: Frontmatter Fixture'))).toBe(true);
   expect(lines.some((line) => line.includes('tags: e2e, task8'))).toBe(true);
-
-  await app.close();
 });
 
-test('(b) toggling Show Frontmatter off hides it without touching #content', async () => {
-  const app = await electron.launch({
-    args: [path.join(process.cwd(), 'dist/main/index.js'), fixturePath],
-    env: childEnv,
-  });
-
-  const window = await app.firstWindow();
+test('(b) toggling Show Frontmatter off hides it without touching #content', async ({ electronApp }) => {
+  const window = await electronApp.firstWindow();
   const content = window.locator('#content');
   await expect(content).toContainText('Frontmatter Fixture Heading', { timeout: 10000 });
 
@@ -46,23 +32,16 @@ test('(b) toggling Show Frontmatter off hides it without touching #content', asy
 
   const contentBefore = await content.textContent();
 
-  await app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-show-frontmatter')?.click());
+  await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-show-frontmatter')?.click());
 
   await expect(frontmatter).toBeHidden();
 
   const contentAfter = await content.textContent();
   expect(contentAfter).toBe(contentBefore);
-
-  await app.close();
 });
 
-test('(c) dark mode toggle flips link-disabled states and a real computed style', async () => {
-  const app = await electron.launch({
-    args: [path.join(process.cwd(), 'dist/main/index.js'), fixturePath],
-    env: childEnv,
-  });
-
-  const window = await app.firstWindow();
+test('(c) dark mode toggle flips link-disabled states and a real computed style', async ({ electronApp }) => {
+  const window = await electronApp.firstWindow();
   const content = window.locator('#content');
   await expect(content).toContainText('Frontmatter Fixture Heading', { timeout: 10000 });
 
@@ -81,7 +60,7 @@ test('(c) dark mode toggle flips link-disabled states and a real computed style'
     failedRequests.push(`${request.url()} :: ${request.failure()?.errorText ?? 'unknown'}`);
   });
 
-  await app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-dark-mode')?.click());
+  await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-dark-mode')?.click());
 
   await window.waitForFunction(() => document.body.classList.contains('dark-mode'));
 
@@ -127,56 +106,69 @@ test('(c) dark mode toggle flips link-disabled states and a real computed style'
 
   expect(consoleErrors).toEqual([]);
   expect(failedRequests).toEqual([]);
-
-  await app.close();
 });
 
+// (d) is the one call site in this suite that genuinely needs two full,
+// sequential Electron launches within a single test (close, then relaunch,
+// to prove view settings don't persist across a process restart) -- the
+// standard one-launch-per-test `electronApp` fixture doesn't fit this shape.
+// Deliberately reuses ONE fixture-style mkdtempSync userDataDir across both
+// sequential launches (not the base fixture's per-test isolation, and not
+// Electron's shared default profile either): this keeps this test isolated
+// from other parallel workers (the actual bug this task fixes) while
+// preserving the original test's real semantics -- second launch reopens
+// the SAME on-disk profile the first launch just used, which is what
+// actually proves "no persistence" rather than trivially passing because
+// the two launches never shared a profile in the first place.
 test('(d) close-and-relaunch proves no persistence of view settings', async () => {
-  const app = await electron.launch({
-    args: [path.join(process.cwd(), 'dist/main/index.js'), fixturePath],
-    env: childEnv,
-  });
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-view-e2e-'));
+  const childEnv = { ...process.env };
+  delete childEnv.ELECTRON_RUN_AS_NODE;
 
-  const window = await app.firstWindow();
-  await expect(window.locator('#content')).toContainText('Frontmatter Fixture Heading', { timeout: 10000 });
+  try {
+    const app = await electron.launch({
+      args: [ENTRY_POINT, fixturePath],
+      env: childEnv,
+      userDataDir,
+    });
 
-  await app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-dark-mode')?.click());
+    const window = await app.firstWindow();
+    await expect(window.locator('#content')).toContainText('Frontmatter Fixture Heading', { timeout: 10000 });
 
-  const checkedBeforeClose = await app.evaluate(
-    ({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-dark-mode')?.checked
-  );
-  expect(checkedBeforeClose).toBe(true);
+    await app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-dark-mode')?.click());
 
-  await app.close();
+    const checkedBeforeClose = await app.evaluate(
+      ({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-dark-mode')?.checked
+    );
+    expect(checkedBeforeClose).toBe(true);
 
-  const secondApp = await electron.launch({
-    args: [path.join(process.cwd(), 'dist/main/index.js'), fixturePath],
-    env: childEnv,
-  });
+    await app.close();
 
-  const secondWindow = await secondApp.firstWindow();
-  await expect(secondWindow.locator('#content')).toContainText('Frontmatter Fixture Heading', { timeout: 10000 });
+    const secondApp = await electron.launch({
+      args: [ENTRY_POINT, fixturePath],
+      env: childEnv,
+      userDataDir,
+    });
 
-  const checkedAfterRelaunch = await secondApp.evaluate(
-    ({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-dark-mode')?.checked
-  );
-  expect(checkedAfterRelaunch).toBe(false);
+    const secondWindow = await secondApp.firstWindow();
+    await expect(secondWindow.locator('#content')).toContainText('Frontmatter Fixture Heading', { timeout: 10000 });
 
-  await secondApp.close();
+    const checkedAfterRelaunch = await secondApp.evaluate(
+      ({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-dark-mode')?.checked
+    );
+    expect(checkedAfterRelaunch).toBe(false);
+
+    await secondApp.close();
+  } finally {
+    fs.rmSync(userDataDir, { recursive: true, force: true });
+  }
 });
 
-test("(e) #content's computed padding-bottom is non-zero", async () => {
-  const app = await electron.launch({
-    args: [path.join(process.cwd(), 'dist/main/index.js'), fixturePath],
-    env: childEnv,
-  });
-
-  const window = await app.firstWindow();
+test("(e) #content's computed padding-bottom is non-zero", async ({ electronApp }) => {
+  const window = await electronApp.firstWindow();
   const content = window.locator('#content');
   await expect(content).toContainText('Frontmatter Fixture Heading', { timeout: 10000 });
 
   const paddingBottom = await content.evaluate((el) => window.getComputedStyle(el).paddingBottom);
   expect(parseFloat(paddingBottom)).toBeGreaterThan(0);
-
-  await app.close();
 });

@@ -1,22 +1,9 @@
 import * as path from 'path';
-import { test, expect, _electron as electron } from '@playwright/test';
+import { test, expect } from './support/fixtures';
 import { IPC_CHANNELS } from '../../src/preload/api';
 
-// The host shell may set ELECTRON_RUN_AS_NODE=1 (e.g. some CI/dev-tool
-// environments), which forces any Electron binary to run as plain Node
-// instead of booting the Electron runtime (app/BrowserWindow become
-// undefined). Strip it from the child process env so the launched app
-// always runs as real Electron regardless of the parent shell's env.
-const childEnv = { ...process.env };
-delete childEnv.ELECTRON_RUN_AS_NODE;
-
-test('non-.md real path sent over REQUEST_OPEN_FILE reuses renderFile validation (no bypass of renderAndWatch)', async () => {
-  const app = await electron.launch({
-    args: [path.join(process.cwd(), 'dist/main/index.js')],
-    env: childEnv,
-  });
-
-  const window = await app.firstWindow();
+test('non-.md real path sent over REQUEST_OPEN_FILE reuses renderFile validation (no bypass of renderAndWatch)', async ({ electronApp }) => {
+  const window = await electronApp.firstWindow();
   const emptyState = window.locator('#empty-state');
   await expect(emptyState).toBeVisible();
 
@@ -26,7 +13,7 @@ test('non-.md real path sent over REQUEST_OPEN_FILE reuses renderFile validation
   // main-process listener (src/main/index.ts) directly, with a real
   // filesystem path, bypassing only the renderer/preload File-resolution
   // boundary (webUtils.getPathForFile), not main's own logic at all.
-  await app.evaluate(
+  await electronApp.evaluate(
     ({ ipcMain }, { channel, filePath }) => {
       ipcMain.emit(channel, {}, filePath);
     },
@@ -36,23 +23,16 @@ test('non-.md real path sent over REQUEST_OPEN_FILE reuses renderFile validation
   const content = window.locator('#content');
   await expect(content).toContainText('Could not open file', { timeout: 10000 });
   await expect(content).toContainText('Not a Markdown file', { timeout: 10000 });
-
-  await app.close();
 });
 
-test('empty-path guard: no crash, and no render is triggered by that call', async () => {
-  const app = await electron.launch({
-    args: [path.join(process.cwd(), 'dist/main/index.js')],
-    env: childEnv,
-  });
-
-  const window = await app.firstWindow();
+test('empty-path guard: no crash, and no render is triggered by that call', async ({ electronApp }) => {
+  const window = await electronApp.firstWindow();
   const emptyState = window.locator('#empty-state');
   await expect(emptyState).toBeVisible();
   const content = window.locator('#content');
   await expect(content).toBeEmpty();
 
-  await app.evaluate(({ ipcMain }, channel) => {
+  await electronApp.evaluate(({ ipcMain }, channel) => {
     ipcMain.emit(channel, {}, '');
   }, IPC_CHANNELS.REQUEST_OPEN_FILE);
 
@@ -60,20 +40,13 @@ test('empty-path guard: no crash, and no render is triggered by that call', asyn
   // the baseline is unchanged.
   await window.waitForTimeout(300);
 
-  expect(app.windows().length).toBeGreaterThan(0);
+  expect(electronApp.windows().length).toBeGreaterThan(0);
   await expect(emptyState).toBeVisible();
   await expect(content).toBeEmpty();
-
-  await app.close();
 });
 
-test('only the first dropped file triggers a REQUEST_OPEN_FILE send, through the real renderer -> preload -> ipcMain chain', async () => {
-  const app = await electron.launch({
-    args: [path.join(process.cwd(), 'dist/main/index.js')],
-    env: childEnv,
-  });
-
-  const window = await app.firstWindow();
+test('only the first dropped file triggers a REQUEST_OPEN_FILE send, through the real renderer -> preload -> ipcMain chain', async ({ electronApp }) => {
+  const window = await electronApp.firstWindow();
   await expect(window.locator('#empty-state')).toBeVisible();
 
   // Two real, on-disk files with genuinely distinguishable absolute paths.
@@ -95,7 +68,7 @@ test('only the first dropped file triggers a REQUEST_OPEN_FILE send, through the
   // Test-only capturing listener, coexisting with the production listener
   // registered in src/main/index.ts (ipcMain.on supports multiple
   // listeners per channel; the production listener is never removed).
-  await app.evaluate(({ ipcMain }, channel) => {
+  await electronApp.evaluate(({ ipcMain }, channel) => {
     (global as unknown as { __capturedPaths: string[] }).__capturedPaths = [];
     ipcMain.on(channel, (_event, filePath: string) => {
       (global as unknown as { __capturedPaths: string[] }).__capturedPaths.push(filePath);
@@ -116,7 +89,7 @@ test('only the first dropped file triggers a REQUEST_OPEN_FILE send, through the
 
   await window.waitForTimeout(300);
 
-  const capturedPaths = await app.evaluate(
+  const capturedPaths = await electronApp.evaluate(
     () => (global as unknown as { __capturedPaths: string[] }).__capturedPaths
   );
 
@@ -127,17 +100,10 @@ test('only the first dropped file triggers a REQUEST_OPEN_FILE send, through the
   expect(capturedPaths).toHaveLength(1);
   expect(capturedPaths[0]).toBe(firstFile);
   expect(capturedPaths[0]).not.toBe(secondFile);
-
-  await app.close();
 });
 
-test('preventDefault() is called by the dragover handler', async () => {
-  const app = await electron.launch({
-    args: [path.join(process.cwd(), 'dist/main/index.js')],
-    env: childEnv,
-  });
-
-  const window = await app.firstWindow();
+test('preventDefault() is called by the dragover handler', async ({ electronApp }) => {
+  const window = await electronApp.firstWindow();
   await expect(window.locator('#empty-state')).toBeVisible();
 
   const defaultPrevented = await window.evaluate(() => {
@@ -148,17 +114,10 @@ test('preventDefault() is called by the dragover handler', async () => {
 
   expect(defaultPrevented.defaultPrevented).toBe(true);
   expect(defaultPrevented.dispatchReturnedFalse).toBe(true);
-
-  await app.close();
 });
 
-test('preventDefault() is called by the drop handler', async () => {
-  const app = await electron.launch({
-    args: [path.join(process.cwd(), 'dist/main/index.js')],
-    env: childEnv,
-  });
-
-  const window = await app.firstWindow();
+test('preventDefault() is called by the drop handler', async ({ electronApp }) => {
+  const window = await electronApp.firstWindow();
   await expect(window.locator('#empty-state')).toBeVisible();
 
   // A real `DragEvent('drop', { dataTransfer })` throws in this
@@ -177,17 +136,10 @@ test('preventDefault() is called by the drop handler', async () => {
 
   expect(defaultPrevented.defaultPrevented).toBe(true);
   expect(defaultPrevented.dispatchReturnedFalse).toBe(true);
-
-  await app.close();
 });
 
-test('depth-counter prevents flicker: highlight stays on while over a nested child, clears only at true dragleave', async () => {
-  const app = await electron.launch({
-    args: [path.join(process.cwd(), 'dist/main/index.js')],
-    env: childEnv,
-  });
-
-  const window = await app.firstWindow();
+test('depth-counter prevents flicker: highlight stays on while over a nested child, clears only at true dragleave', async ({ electronApp }) => {
+  const window = await electronApp.firstWindow();
   await expect(window.locator('#empty-state')).toBeVisible();
 
   // dragenter at document (depth 0 -> 1), then dragenter at a nested child
@@ -208,21 +160,12 @@ test('depth-counter prevents flicker: highlight stays on while over a nested chi
     return document.body.classList.contains('drag-over');
   });
   expect(afterFinalLeave).toBe(false);
-
-  await app.close();
 });
 
-test('rest state: drag-over class is absent on a freshly launched window with no drag in progress', async () => {
-  const app = await electron.launch({
-    args: [path.join(process.cwd(), 'dist/main/index.js')],
-    env: childEnv,
-  });
-
-  const window = await app.firstWindow();
+test('rest state: drag-over class is absent on a freshly launched window with no drag in progress', async ({ electronApp }) => {
+  const window = await electronApp.firstWindow();
   await expect(window.locator('#empty-state')).toBeVisible();
 
   const hasDragOver = await window.evaluate(() => document.body.classList.contains('drag-over'));
   expect(hasDragOver).toBe(false);
-
-  await app.close();
 });

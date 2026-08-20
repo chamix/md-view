@@ -1,26 +1,15 @@
 import * as path from 'path';
-import { test, expect, _electron as electron } from '@playwright/test';
-
-// The host shell may set ELECTRON_RUN_AS_NODE=1 (e.g. some CI/dev-tool
-// environments), which forces any Electron binary to run as plain Node
-// instead of booting the Electron runtime (app/BrowserWindow become
-// undefined). Strip it from the child process env so the launched app
-// always runs as real Electron regardless of the parent shell's env.
-const childEnv = { ...process.env };
-delete childEnv.ELECTRON_RUN_AS_NODE;
+import { test, expect } from './support/fixtures';
 
 // This fixture is read-only — nothing mutates doc.md or img/sample.png — so,
 // unlike the live-reload specs, there's no need to copy it to a tmpdir first;
 // launching directly against the checked-in fixture path is safe.
 const fixturePath = path.join(process.cwd(), 'tests/e2e/fixtures/with-image/doc.md');
 
-test('resolves a Markdown-relative image path against the open file\'s directory and the image actually loads', async () => {
-  const app = await electron.launch({
-    args: [path.join(process.cwd(), 'dist/main/index.js'), fixturePath],
-    env: childEnv,
-  });
+test.use({ electronArgs: [fixturePath] });
 
-  const window = await app.firstWindow();
+test('resolves a Markdown-relative image path against the open file\'s directory and the image actually loads', async ({ electronApp }) => {
+  const window = await electronApp.firstWindow();
   const content = window.locator('#content');
   await expect(content).toContainText('Image Fixture', { timeout: 10000 });
 
@@ -60,6 +49,4 @@ test('resolves a Markdown-relative image path against the open file\'s directory
   });
 
   expect(loaded).toBe(true);
-
-  await app.close();
 });

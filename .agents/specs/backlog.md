@@ -265,3 +265,46 @@ packaging — not assumed fine just because Windows was.
   specific tests need more generous timeouts under contention, or
   whether the shared `BrowserWindow`/Electron-process overhead itself is
   the bottleneck.
+
+  Task 19 investigated this directly and the three entries above stay
+  `[Pending]`, not `[Resolved]` — see the new entry immediately below
+  for what was actually learned.
+
+- [Pending] Task 19 tested the shared-`userDataDir` hypothesis directly
+  with a real 12-run-before/12-run-after comparison and it did not hold
+  up. Every one of the suite's 40 `electron.launch()` call sites was
+  migrated to a Playwright `test.extend` fixture giving each test its
+  own `fs.mkdtempSync` `userDataDir` (independently reviewed, no
+  blocking issues, FI-1 teardown-on-failure proof reproduced by the
+  reviewer). Baseline: 8/12 clean, 4/12 failed. Post-fix, same
+  conditions: 8/12 clean, 4/12 failed — identical count. Two sub-findings
+  worth separating out, not lumping together:
+  1. The suite's two hard worker-process crashes (Windows
+     `code=3221226505`, a fastfail — not a timeout, not previously
+     logged in this backlog before Task 19) occurred in baseline on
+     `view-menu.spec.ts:134` and `open-file-argv.spec.ts:47`, and
+     post-fix on `code-highlighting.spec.ts` and `ui-shell.spec.ts:4` —
+     four different tests across four occurrences. Per-test profile
+     isolation should have stopped this if profile-lock contention were
+     the cause; it didn't, on a different random test each time. Points
+     toward raw resource pressure (CPU/memory/handles) from running 4
+     concurrent full Electron/Chromium processes on this machine,
+     independent of whether they share a profile directory.
+  2. `ui-shell.spec.ts`'s already-logged flaky test (line-shifted to
+     `:49`/`:4` by the migration) failed twice post-fix on a *different*
+     assertion than the one originally logged (`marginLeft > 32`,
+     received `31.2` — a borderline layout-timing race) rather than the
+     originally-logged `width > 800` check. Also unaffected by profile
+     isolation, also unexplained.
+
+  The fixture itself was kept (real DRY win — centralizes 40 duplicated
+  `childEnv` blocks into one place, real teardown guarantee via
+  Playwright's fixture lifecycle vs. a hand-rolled helper) but does not
+  close this backlog item. Per the task's own guardrails, a second
+  hypothesis (e.g. lowering `playwright.config.ts`'s default worker
+  count, investigating actual CPU/memory headroom on this dev machine
+  under 4 concurrent Electron launches) was deliberately not guessed at
+  and implemented silently — flagged here for the user to scope as its
+  own follow-up task if/when priority allows. Full raw 12-run tables for
+  both baseline and post-fix live in `review_report_task19.md` and the
+  Task 19 section of `initial_scaffold.md`.

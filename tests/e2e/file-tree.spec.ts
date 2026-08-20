@@ -1,13 +1,5 @@
 import * as path from 'path';
-import { test, expect, _electron as electron } from '@playwright/test';
-
-// The host shell may set ELECTRON_RUN_AS_NODE=1 (e.g. some CI/dev-tool
-// environments), which forces any Electron binary to run as plain Node
-// instead of booting the Electron runtime (app/BrowserWindow become
-// undefined). Strip it from the child process env so the launched app
-// always runs as real Electron regardless of the parent shell's env.
-const childEnv = { ...process.env };
-delete childEnv.ELECTRON_RUN_AS_NODE;
+import { test, expect } from './support/fixtures';
 
 const fixtureTreeDir = path.join(process.cwd(), 'tests/e2e/fixtures/tree');
 const fixtureNotesFile = path.join(fixtureTreeDir, 'notes.md');
@@ -18,13 +10,8 @@ const fixtureNotesFile = path.join(fixtureTreeDir, 'notes.md');
 // window.mdview.onFolderTreeRoot(...), the same technique Task 16's
 // guardrail proofs used, just without a DOM interaction driving it.
 
-test('listDirectory resolves the real filtered/sorted fixture directory shape', async () => {
-  const app = await electron.launch({
-    args: [path.join(process.cwd(), 'dist/main/index.js')],
-    env: childEnv,
-  });
-
-  const window = await app.firstWindow();
+test('listDirectory resolves the real filtered/sorted fixture directory shape', async ({ electronApp }) => {
+  const window = await electronApp.firstWindow();
 
   const result = await window.evaluate(
     (dirPath) => (window as unknown as { mdview: { listDirectory: (p: string) => Promise<unknown> } }).mdview.listDirectory(dirPath),
@@ -40,17 +27,10 @@ test('listDirectory resolves the real filtered/sorted fixture directory shape', 
   expect(entries[1].type).toBe('directory');
   expect(entries[2].type).toBe('file');
   expect(names).not.toContain('ignored.txt');
-
-  await app.close();
 });
 
-test('listDirectory resolves ok:false for a nonexistent path (never rejects/hangs) -- FI-4 proof', async () => {
-  const app = await electron.launch({
-    args: [path.join(process.cwd(), 'dist/main/index.js')],
-    env: childEnv,
-  });
-
-  const window = await app.firstWindow();
+test('listDirectory resolves ok:false for a nonexistent path (never rejects/hangs) -- FI-4 proof', async ({ electronApp }) => {
+  const window = await electronApp.firstWindow();
   const nonexistentPath = path.join(fixtureTreeDir, 'does-not-exist-at-all');
 
   // If listDirectoryEntries ever threw instead of returning {ok:false}, this
@@ -64,19 +44,12 @@ test('listDirectory resolves ok:false for a nonexistent path (never rejects/hang
   );
 
   expect(result).toMatchObject({ ok: false, dirPath: nonexistentPath });
-
-  await app.close();
 });
 
-test('opening a fixture file via File > Open… establishes the tree root and broadcasts FOLDER_TREE_ROOT with the parent directory', async () => {
-  const app = await electron.launch({
-    args: [path.join(process.cwd(), 'dist/main/index.js')],
-    env: childEnv,
-  });
+test('opening a fixture file via File > Open… establishes the tree root and broadcasts FOLDER_TREE_ROOT with the parent directory', async ({ electronApp }) => {
+  const window = await electronApp.firstWindow();
 
-  const window = await app.firstWindow();
-
-  await app.evaluate(({ dialog }, filePath) => {
+  await electronApp.evaluate(({ dialog }, filePath) => {
     dialog.showOpenDialog = (async () => ({
       canceled: false,
       filePaths: [filePath],
@@ -99,7 +72,7 @@ test('opening a fixture file via File > Open… establishes the tree root and br
     );
   });
 
-  await app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open')?.click());
+  await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open')?.click());
 
   await expect
     .poll(async () =>
@@ -114,17 +87,10 @@ test('opening a fixture file via File > Open… establishes the tree root and br
   expect(treeRootMessage.ok).toBe(true);
   expect(treeRootMessage.rootPath).toBe(fixtureTreeDir);
   expect(treeRootMessage.entries.map((e) => e.name)).toContain('notes.md');
-
-  await app.close();
 });
 
-test('opening a file that fails to render still establishes the tree root for its parent directory (spec: tree-root establishment is independent of render success)', async () => {
-  const app = await electron.launch({
-    args: [path.join(process.cwd(), 'dist/main/index.js')],
-    env: childEnv,
-  });
-
-  const window = await app.firstWindow();
+test('opening a file that fails to render still establishes the tree root for its parent directory (spec: tree-root establishment is independent of render success)', async ({ electronApp }) => {
+  const window = await electronApp.firstWindow();
 
   // Nonexistent .md path -- renderFile() passes the extension check, then
   // fails at fs.readFile (ENOENT), producing a real FILE_RENDERED
@@ -133,7 +99,7 @@ test('opening a file that fails to render still establishes the tree root for it
   // the first test in this file rather than adding a new fixture.
   const nonexistentFile = path.join(fixtureTreeDir, 'does-not-exist.md');
 
-  await app.evaluate(({ dialog }, filePath) => {
+  await electronApp.evaluate(({ dialog }, filePath) => {
     dialog.showOpenDialog = (async () => ({
       canceled: false,
       filePaths: [filePath],
@@ -149,7 +115,7 @@ test('opening a file that fails to render still establishes the tree root for it
     );
   });
 
-  await app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open')?.click());
+  await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open')?.click());
 
   await expect
     .poll(async () =>
@@ -170,22 +136,15 @@ test('opening a file that fails to render still establishes the tree root for it
   // a coincidental success.
   const content = window.locator('#content');
   await expect(content).toContainText('Could not open file', { timeout: 10000 });
-
-  await app.close();
 });
 
-test('switching to a different file inside the same already-open folder does not re-broadcast FOLDER_TREE_ROOT (guardrail #4 / FI-1 proof)', async () => {
-  const app = await electron.launch({
-    args: [path.join(process.cwd(), 'dist/main/index.js')],
-    env: childEnv,
-  });
-
-  const window = await app.firstWindow();
+test('switching to a different file inside the same already-open folder does not re-broadcast FOLDER_TREE_ROOT (guardrail #4 / FI-1 proof)', async ({ electronApp }) => {
+  const window = await electronApp.firstWindow();
 
   const sameFolderFirstFile = path.join(fixtureTreeDir, 'sub', 'deep.md');
   const sameFolderSecondFile = path.join(fixtureTreeDir, 'sub', 'deep2.md');
 
-  await app.evaluate(({ dialog }, files) => {
+  await electronApp.evaluate(({ dialog }, files) => {
     let callIndex = 0;
     dialog.showOpenDialog = (async () => {
       const filePath = files[Math.min(callIndex, files.length - 1)];
@@ -203,14 +162,14 @@ test('switching to a different file inside the same already-open folder does not
     );
   });
 
-  await app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open')?.click());
+  await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open')?.click());
   await expect
     .poll(async () =>
       window.evaluate(() => (window as unknown as { __treeRootEvents: unknown[] }).__treeRootEvents.length)
     )
     .toBeGreaterThanOrEqual(1);
 
-  await app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open')?.click());
+  await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open')?.click());
 
   // Give any (incorrect) second broadcast time to arrive before asserting
   // the count stayed at exactly one -- same folder, second file, must be a
@@ -221,11 +180,9 @@ test('switching to a different file inside the same already-open folder does not
     () => (window as unknown as { __treeRootEvents: unknown[] }).__treeRootEvents
   );
   expect(events).toHaveLength(1);
-
-  await app.close();
 });
 
-test('opening the same tree root twice via differently-cased paths broadcasts FOLDER_TREE_ROOT exactly once (Task 18 guardrail #9 / FI-5 proof)', async () => {
+test('opening the same tree root twice via differently-cased paths broadcasts FOLDER_TREE_ROOT exactly once (Task 18 guardrail #9 / FI-5 proof)', async ({ electronApp }) => {
   // Only meaningful on a case-insensitive filesystem (Windows -- this dev
   // machine -- and default macOS/APFS). On a case-sensitive filesystem the
   // uppercased path genuinely would not exist, so this test would pass/fail
@@ -233,17 +190,12 @@ test('opening the same tree root twice via differently-cased paths broadcasts FO
   // guardrail -- skip outright instead of forcing a workaround.
   test.skip(process.platform === 'linux', 'case-insensitive-filesystem-only guardrail; would test the wrong thing on ext4/most Linux filesystems');
 
-  const app = await electron.launch({
-    args: [path.join(process.cwd(), 'dist/main/index.js')],
-    env: childEnv,
-  });
-
-  const window = await app.firstWindow();
+  const window = await electronApp.firstWindow();
 
   const lowerCaseDir = fixtureTreeDir;
   const upperCaseDir = fixtureTreeDir.toUpperCase();
 
-  await app.evaluate(({ dialog }, dirs) => {
+  await electronApp.evaluate(({ dialog }, dirs) => {
     let callIndex = 0;
     dialog.showOpenDialog = (async () => {
       const dirPath = dirs[Math.min(callIndex, dirs.length - 1)];
@@ -264,14 +216,14 @@ test('opening the same tree root twice via differently-cased paths broadcasts FO
     );
   });
 
-  await app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open-folder')?.click());
+  await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open-folder')?.click());
   await expect
     .poll(async () =>
       window.evaluate(() => (window as unknown as { __treeRootEvents: unknown[] }).__treeRootEvents.length)
     )
     .toBeGreaterThanOrEqual(1);
 
-  await app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open-folder')?.click());
+  await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open-folder')?.click());
 
   // Give any (incorrect) second broadcast time to arrive before asserting
   // the count stayed at exactly one -- same real directory, differently
@@ -287,19 +239,12 @@ test('opening the same tree root twice via differently-cased paths broadcasts FO
   const firstEvent = events[0] as { ok: boolean; rootPath: string };
   expect(firstEvent.ok).toBe(true);
   expect(firstEvent.rootPath).toBe(lowerCaseDir);
-
-  await app.close();
 });
 
-test('Open Folder… broadcasts FOLDER_TREE_ROOT and triggers zero FILE_RENDERED events as a side effect', async () => {
-  const app = await electron.launch({
-    args: [path.join(process.cwd(), 'dist/main/index.js')],
-    env: childEnv,
-  });
+test('Open Folder… broadcasts FOLDER_TREE_ROOT and triggers zero FILE_RENDERED events as a side effect', async ({ electronApp }) => {
+  const window = await electronApp.firstWindow();
 
-  const window = await app.firstWindow();
-
-  await app.evaluate(({ dialog }, dirPath) => {
+  await electronApp.evaluate(({ dialog }, dirPath) => {
     dialog.showOpenDialog = (async () => ({
       canceled: false,
       filePaths: [dirPath],
@@ -330,7 +275,7 @@ test('Open Folder… broadcasts FOLDER_TREE_ROOT and triggers zero FILE_RENDERED
     });
   });
 
-  await app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open-folder')?.click());
+  await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open-folder')?.click());
 
   const treeRootMessage = (await treeRootPromise) as { ok: boolean; rootPath: string; entries: Array<{ name: string }> };
 
@@ -348,6 +293,4 @@ test('Open Folder… broadcasts FOLDER_TREE_ROOT and triggers zero FILE_RENDERED
     () => (window as unknown as { __fileRenderedCount: number }).__fileRenderedCount
   );
   expect(fileRenderedCount).toBe(0);
-
-  await app.close();
 });

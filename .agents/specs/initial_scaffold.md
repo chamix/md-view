@@ -2519,3 +2519,199 @@ includes `.agents/specs/backlog.md`, `.agents/DEVLOG.md`, and
 reactively at close-out.
 
 ---
+
+## Task 19 Technical Specification — E2E Suite Flakiness Under Parallel Load
+
+Maps `functional_domain.md`'s Task 19 analysis to concrete design.
+
+### Phase 1 baseline (Lead-run, before this spec was written)
+
+Environment verified, not assumed: 8 logical CPUs on this machine;
+`npx playwright test --reporter=line` self-reports **"Running 39 tests
+using 4 workers"** (matches the 4 workers seen in past Task 16-18
+sessions, now confirmed rather than presumed for this task). `npm run
+build` run once before the 12 runs; each run reused that build (no
+source changed between runs, so this is pure launch-timing variance).
+
+12 consecutive `npx playwright test --reporter=line` runs, same
+conditions, no config changes:
+
+| Run | Result | Failing test | Error text |
+|---|---|---|---|
+| 1 | FAIL | `view-menu.spec.ts:134` "(d) close-and-relaunch proves no persistence of view settings" | `Error: worker process exited unexpectedly (code=3221226505, signal=null)` |
+| 2 | PASS | — | — |
+| 3 | PASS | — | — |
+| 4 | PASS | — | — |
+| 5 | PASS | — | — |
+| 6 | FAIL | `open-file-argv.spec.ts:47` "shows a visible error state for a non-.md file selected via the dialog, and does not crash" | `Error: worker process exited unexpectedly (code=3221226505, signal=null)` |
+| 7 | PASS | — | — |
+| 8 | PASS | — | — |
+| 9 | FAIL | `file-tree.spec.ts:294` "Open Folder… broadcasts FOLDER_TREE_ROOT and triggers zero FILE_RENDERED events" | `Test timeout of 30000ms exceeded.` |
+| 10 | PASS | — | — |
+| 11 | FAIL | `live-reload.spec.ts:17` "live-reloads rendered content when the open file changes on disk" | `expect(locator).toContainText(expected) failed … Received string: "" … Timeout: 10000ms` |
+| 12 | PASS | — | — |
+
+**8/12 fully green, 4/12 failed (one failing test per failing run, never
+more than one).**
+
+Cross-referenced against `backlog.md`'s three already-logged entries:
+
+- `file-tree.spec.ts`'s "Open Folder…" test (run 9) and
+  `live-reload.spec.ts`'s primer test (run 11) reproduced, both as a
+  timeout under load — same signature already logged.
+- `ui-shell.spec.ts:67` did **not** fail in this 12-run sample. Absence
+  of a repro in 12 runs is not proof it's fixed — sample size is small
+  relative to its historical one-in-several-dozen-runs rate — so it
+  stays `[Pending]` in `backlog.md`, not marked resolved, pending
+  Phase 2's own 12-run sample.
+- Runs 1 and 6 are a **distinct, previously-unlogged failure class**:
+  a hard worker-process crash (`code=3221226505` = Windows
+  `STATUS_STACK_BUFFER_OVERRUN`/fastfail, not a graceful timeout), on
+  two tests neither of which is one of the three backlog entries. This
+  is explicitly *not* folded into "same class" by assumption — it is a
+  different failure shape (process death vs. an assertion/test
+  timeout) on different tests. It is, however, consistent with the
+  same working hypothesis: a hard crash in a spawned Electron child
+  process is at least as plausible an outcome of shared-profile
+  resource contention (colliding writes to a `LOCK` file, `GPUCache`,
+  or `Local Storage` under concurrent access) as a soft timeout is —
+  arguably more consistent with contention than with a random flake.
+  Phase 2 must report whether fixture-based isolation resolves this
+  crash class too, not just the two already-logged timeout-class
+  tests.
+
+Correction to the task assignment's verified-context section: grepping
+`electron.launch(` across `tests/e2e/**` found **40** call sites, not
+43 (`app-launch:1, code-highlighting:1, drag-drop:7, external-links:2,
+file-tree:7, help-menu:5, html-comments:1, live-reload:3,
+open-file-argv:3, relative-images:1, ui-shell:3, view-menu:6`). Noted
+per this project's standing verify-don't-assume practice; does not
+change the plan, only the exact migration count in Phase 2's report.
+
+### The Inward Dependency Rule
+
+New peripheral-boundary module only: `tests/e2e/support/fixtures.ts`.
+It depends outward on `@playwright/test`'s `_electron` and Node's `fs`/
+`os`/`path` — same dependency direction every existing spec file
+already has. No `src/**` file is touched (guardrail #1) and no
+dependency points from `src/**` toward this file or vice versa; test
+infrastructure stays fully outside the application's own dependency
+graph.
+
+### SOLID Boundary Scan / Pattern Application (GoF)
+
+Single responsibility split: `fixtures.ts` owns exactly one decision —
+how an `electronApp` instance is constructed and torn down for a test
+— replacing 40 duplicated inline `electron.launch()` call sites (DRY)
+that previously each owned that decision independently. This is a
+**Factory Method** (the fixture function is the sole creator of
+`ElectronApplication` instances) combined with Playwright's own
+**options-fixture** mechanism to parameterize the factory's input
+(`electronArgs`) per test — the same shape as a Builder's parameterized
+construction step, without introducing a new abstraction beyond what
+Playwright's `test.extend` already provides. Test bodies remain
+consumers of the fixture via dependency injection
+(`async ({ electronApp }) => {...}`), never constructing
+`ElectronApplication` themselves — this is the DIP boundary: test
+logic depends on the fixture's contract (an already-launched, already-
+isolated app), not on `_electron.launch()`'s concrete construction
+details.
+
+### Fixture design (authoritative)
+
+`tests/e2e/support/fixtures.ts`:
+
+```ts
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { test as base, _electron as electron, type ElectronApplication } from '@playwright/test';
+
+const childEnv = { ...process.env };
+delete childEnv.ELECTRON_RUN_AS_NODE;
+
+const ENTRY_POINT = path.join(__dirname, '../../../dist/main/index.js');
+
+export const test = base.extend<{
+  electronArgs: string[];
+  electronApp: ElectronApplication;
+}>({
+  electronArgs: [[], { option: true }],
+  electronApp: async ({ electronArgs }, use) => {
+    const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-view-e2e-'));
+    const app = await electron.launch({
+      args: [ENTRY_POINT, ...electronArgs],
+      env: childEnv,
+      userDataDir,
+    });
+    await use(app);
+    await app.close();
+    fs.rmSync(userDataDir, { recursive: true, force: true });
+  },
+});
+
+export { expect } from '@playwright/test';
+```
+
+`electronArgs` is a Playwright **options fixture** (`{ option: true }`),
+set per test-or-describe-block via `test.use({ electronArgs: [...] })`
+— chosen over a per-test-call parameter because it is Playwright's
+documented mechanism for exactly this shape (data that varies per test
+file but not per individual `use()` call), and keeps test bodies
+themselves signature-identical
+(`async ({ electronApp }) => {...}`) regardless of whether that test's
+launch needs extra argv. Confirmed against actual call-site variance
+(guardrail #14): `app-launch.spec.ts` needs no `electronArgs` (default
+`[]`); `open-file-argv.spec.ts` needs a different fixture file path per
+test within the *same* file — handled via one `test.describe` block per
+distinct `electronArgs` value, each with its own `test.use(...)` at the
+top, since Playwright scopes `test.use()` to its enclosing describe
+block, not to a single `test()` call.
+
+`await use(app)` is the load-bearing line for guardrail #15/FI-1:
+Playwright guarantees the code after `use()` (`app.close()`, `fs.rmSync`)
+runs during teardown even when the test body throws inside `use()`'s
+scope — this is the documented behavior a hand-rolled
+`try { ... } finally { ... }` helper cannot promise as reliably (a
+helper only runs its cleanup if every call site remembers to wrap its
+own body in try/finally; a fixture's teardown is structural, not
+opt-in per call site).
+
+### Migration (mechanical, all 40 call sites)
+
+Each spec file: replace
+`import { test, expect, _electron as electron } from '@playwright/test'`
+with `import { test, expect } from './support/fixtures'` (relative path
+adjusted per file depth — all spec files are flat under `tests/e2e/`,
+so `./support/fixtures` from every file); delete the file-local
+`childEnv` declaration (now centralized); replace each
+`const app = await electron.launch({ args: [...], env: childEnv })`
+call with consuming the injected `electronApp` fixture parameter,
+adding `test.use({ electronArgs: [...] })` at the top of the enclosing
+`test.describe` (or a new one wrapping a single test) wherever a call
+site's `args` included more than the bare entry point. `await
+app.close()` at the end of each test body is deleted — teardown is now
+the fixture's job, not the test's. No assertion, no `expect(...)` line,
+no test title changes anywhere (guardrail #2).
+
+### Regression check
+
+Phase 2's own 12-run repeat (spec's own required proof) is the
+regression check for flakiness. Additionally: full `tsc --noEmit`,
+`test:unit`, `test:integration` runs must stay green (untouched by this
+task, but confirms nothing in the migration accidentally broke a
+shared import path), and FI-1 (intentional single-test failure,
+confirm tmp `userDataDir` removed anyway) is the fault-injection proof
+for the teardown guarantee specifically.
+
+### Governance note
+
+No ADR for the fixture itself (mechanical test-infrastructure change,
+same tier as Task 18). If Phase 2's 12-run comparison is inconclusive
+or negative, no further architecture change is authorized under this
+spec — `playwright.config.ts`'s `workers` setting is explicitly out of
+scope (task assignment's "Out of scope" section) and any second
+hypothesis requires reporting back to the user first, not silent
+escalation.
+
+---

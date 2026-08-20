@@ -1048,3 +1048,49 @@ pure predicate — same tier as Task 15's one-line `removeMenu()` fix.
     changes.
 
 ---
+
+## Task 19: E2E Suite Flakiness Under Parallel Load (test infrastructure)
+
+None — this is test infrastructure, not application business logic, same
+precedent as Task 15/18's small non-domain changes. There is no incoming
+data map, no output state, no business transformation: the "input" is a
+Playwright worker launching a real Electron process, the "output" is
+that process's lifecycle, and the invariant under test is process
+isolation, not domain correctness. `src/**` is explicitly zero-diff for
+this task (guardrail from the task assignment) — nothing here changes
+what the application does, only how the e2e suite launches and tears
+down the app under test.
+
+### Abstract Schema Contracts
+
+None. No IPC shape, no `BridgeApi` member, no message format is touched.
+
+### Pure Transformation Logic
+
+None. No domain data mutation. The only "transformation" is mechanical:
+each test's existing `electron.launch({ args, env: childEnv })` call
+becomes a fixture-provided `electronApp`, with a fresh `fs.mkdtempSync`
+temp directory passed as `userDataDir` per test instead of every
+parallel worker sharing Electron's default profile directory.
+
+### Edge-Case Invariant Guardrails
+
+13. Every existing test's assertions must remain word-for-word
+    identical — only the launch mechanism changes, per the task's own
+    guardrail #2.
+14. Test-specific `args` (different argv file paths, different fixture
+    directories) must be preserved through whatever fixture
+    parameterization mechanism is chosen — confirmed by reading actual
+    call sites (`open-file-argv.spec.ts` passes an extra argv file path
+    beyond the entry point; `app-launch.spec.ts` passes only the entry
+    point), not assumed uniform.
+15. Fixture teardown (closing the app, removing the tmp `userDataDir`)
+    must run even when the test body throws — the entire reason a
+    native Playwright fixture was chosen over a hand-rolled
+    `electron.launch()` + manual cleanup helper (decision already made
+    by the Lead and user, stated in the task assignment).
+16. `childEnv`'s `ELECTRON_RUN_AS_NODE` stripping (already duplicated
+    across all 12 spec files) must still apply to every launch after
+    centralization in the fixture.
+
+---
