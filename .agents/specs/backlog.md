@@ -230,19 +230,33 @@ packaging — not assumed fine just because Windows was.
   (agent definition wording) lives in `claude-blueprints` first, per
   usual, then ports.
 
-- [Pending] Task 17's `tests/e2e/file-tree.spec.ts:228` (Open Folder…
-  test) failed once under default 4-worker parallel `npx playwright
-  test` load during the reviewer's independent verification of the
-  guardrail-#5-on-failed-render follow-up fix, then passed cleanly on
-  two immediate reruns and in isolation. The failing test's own code was
-  unchanged at the time (byte-identical to the version already reviewed
-  and passed earlier in the same task). Same class of pre-existing
-  parallel-contention flakiness already tracked above
+- [Resolved 2026-08-20] Task 17's `tests/e2e/file-tree.spec.ts:228` (Open
+  Folder… test) failed once under default 4-worker parallel `npx
+  playwright test` load during the reviewer's independent verification
+  of the guardrail-#5-on-failed-render follow-up fix, then passed
+  cleanly on two immediate reruns and in isolation. The failing test's
+  own code was unchanged at the time (byte-identical to the version
+  already reviewed and passed earlier in the same task). ~~Same class of
+  pre-existing parallel-contention flakiness already tracked above
   (`live-reload.spec.ts`'s primer test, `ui-shell.spec.ts:67`) — a fresh
   data point in that bucket, not a new distinct issue and not a Task 17
-  regression. Non-blocking, worth folding into whichever future task
-  addresses e2e flakiness as its own effort rather than chasing
-  individual instances as they surface.
+  regression.~~ **Correction (Task 20): this original diagnosis was
+  wrong.** The actual mechanism had nothing to do with parallel-worker
+  resource contention — this specific test registered its
+  `onFolderTreeRoot` listener via an un-awaited, Promise-returning
+  `window.evaluate()` call immediately before an awaited
+  `electronApp.evaluate()` menu click on a separate automation channel;
+  nothing ordered the listener's CDP round-trip ahead of the click's
+  IPC round-trip, so the click could win and the broadcast fired into
+  zero listeners (IPC events aren't replayed), hanging until the 30s
+  timeout. Fixed by adopting the accumulate-then-poll pattern already
+  used correctly by four sibling tests in the same file. Verified via
+  repeated-run proof, not a single fault injection: RED reproduced by
+  both the implementer and the independent reviewer under the pre-fix
+  code (`--repeat-each=30 --workers=4`, 1/30 failures each,
+  `"Test timeout of 30000ms exceeded... Target page, context or browser
+  has been closed"`); GREEN confirmed 30/30 at both `--workers=4` and
+  `--workers=2` after the fix. Full detail in `review_report_task20.md`.
 
 - [Pending — priority raised] E2E parallel-contention flakiness (see the
   three entries directly above: `live-reload.spec.ts`'s primer test,
@@ -269,6 +283,22 @@ packaging — not assumed fine just because Windows was.
   Task 19 investigated this directly and the three entries above stay
   `[Pending]`, not `[Resolved]` — see the new entry immediately below
   for what was actually learned.
+
+  **Update (Task 20):** the `file-tree.spec.ts` "Open Folder…" instances
+  this entry cites (Task 17's occurrence and this entry's own "fourth
+  time" during Task 18) are now understood and resolved — see the
+  entry above, now marked `[Resolved 2026-08-20]`. It was a genuine
+  race condition local to that one test's listener-registration code,
+  unrelated to worker-count/resource contention — the original
+  "shared resource-contention ceiling" framing this entry proposed was
+  wrong for this specific test. `live-reload.spec.ts`'s primer test and
+  `ui-shell.spec.ts:67` remain open and unexplained; per Task 19's
+  findings (entry below), their failure modes (a hard worker-process
+  crash class, and a separate borderline layout-timing assertion) look
+  distinct from each other and from this test's race, so this entry's
+  original premise — all three sharing one root cause — no longer
+  holds. Each remaining open test likely needs its own dedicated
+  investigation rather than a single shared fix.
 
 - [Pending] Task 19 tested the shared-`userDataDir` hypothesis directly
   with a real 12-run-before/12-run-after comparison and it did not hold

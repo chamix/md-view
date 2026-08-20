@@ -1094,3 +1094,45 @@ parallel worker sharing Electron's default profile directory.
     centralization in the fixture.
 
 ---
+
+## Task 20: Fix Race Condition in "Open Folder…" E2E Test (test infrastructure)
+
+None — test infrastructure, same tier as Task 18. This is not the
+crash-class/resource-pressure flakiness Task 19 investigated and left
+open; it's a distinct, previously-misdiagnosed race inside one specific
+test's own listener-registration code, now precisely identified:
+`file-tree.spec.ts`'s "Open Folder…" test (lines 244-296) registers its
+`onFolderTreeRoot` listener via an un-awaited, Promise-returning
+`window.evaluate()` call, then immediately fires an awaited
+`electronApp.evaluate()` menu click on a separate automation channel
+(Electron's own, not CDP). Nothing orders the listener's CDP round-trip
+ahead of the click's IPC round-trip; if the click wins, the
+`FOLDER_TREE_ROOT` broadcast fires into zero listeners (IPC events
+aren't replayed) and the test hangs until Playwright's 30s timeout,
+surfacing as "Target page, context or browser has been closed." This
+file already contains the correct fix pattern in four other tests
+(accumulate-into-an-array-then-poll, not a dangling `Promise`) — this
+task makes the fifth test match the other four, nothing more.
+
+### Abstract Schema Contracts
+
+None. No IPC shape, no `BridgeApi` member touched.
+
+### Pure Transformation Logic
+
+None. Listener-registration mechanics only — what gets asserted (tree
+root `ok`/`rootPath`/`entries`, zero `FILE_RENDERED` side effect) is
+unchanged.
+
+### Edge-Case Invariant Guardrails
+
+17. A test's event listener must be registered via a plain, awaited,
+    immediately-resolving `evaluate()` call that completes before the
+    action triggering the event — never a dangling un-awaited
+    Promise-returning `evaluate()` racing a separately-awaited
+    triggering action on a different automation channel.
+18. All of this test's existing assertions stay word-for-word
+    identical — only the listener-registration mechanism changes.
+19. No other test in `file-tree.spec.ts` is touched.
+
+---

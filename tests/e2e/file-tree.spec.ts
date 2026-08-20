@@ -267,17 +267,26 @@ test('Open Folder… broadcasts FOLDER_TREE_ROOT and triggers zero FILE_RENDERED
     );
   });
 
-  const treeRootPromise = window.evaluate(() => {
-    return new Promise((resolve) => {
-      (window as unknown as { mdview: { onFolderTreeRoot: (cb: (m: unknown) => void) => void } }).mdview.onFolderTreeRoot(
-        (message) => resolve(message)
-      );
-    });
+  await window.evaluate(() => {
+    (window as unknown as { __treeRootEvents: unknown[] }).__treeRootEvents = [];
+    (window as unknown as { mdview: { onFolderTreeRoot: (cb: (m: unknown) => void) => void } }).mdview.onFolderTreeRoot(
+      (message) => {
+        (window as unknown as { __treeRootEvents: unknown[] }).__treeRootEvents.push(message);
+      }
+    );
   });
 
   await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open-folder')?.click());
 
-  const treeRootMessage = (await treeRootPromise) as { ok: boolean; rootPath: string; entries: Array<{ name: string }> };
+  await expect
+    .poll(async () =>
+      window.evaluate(() => (window as unknown as { __treeRootEvents: unknown[] }).__treeRootEvents.length)
+    )
+    .toBeGreaterThanOrEqual(1);
+
+  const treeRootMessage = (await window.evaluate(
+    () => (window as unknown as { __treeRootEvents: unknown[] }).__treeRootEvents[0]
+  )) as { ok: boolean; rootPath: string; entries: Array<{ name: string }> };
 
   expect(treeRootMessage.ok).toBe(true);
   expect(treeRootMessage.rootPath).toBe(fixtureTreeDir);

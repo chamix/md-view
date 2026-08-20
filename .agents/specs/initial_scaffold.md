@@ -2715,3 +2715,97 @@ hypothesis requires reporting back to the user first, not silent
 escalation.
 
 ---
+
+## Task 20 Technical Specification — Fix Race Condition in "Open Folder…" E2E Test
+
+Maps `functional_domain.md`'s Task 20 analysis to concrete design.
+
+### The Inward Dependency Rule
+
+No new module, no touched application code. Single call site inside
+`tests/e2e/file-tree.spec.ts`, already outside `src/**`'s dependency
+graph entirely (guardrail #4 — zero `src/**` diff).
+
+### SOLID Boundary Scan / Pattern Application
+
+Not applicable at this scale — this test already had four sibling
+tests in the same file using the correct pattern; the fix is adopting
+that same, already-established idiom in a fifth place, not introducing
+new structure.
+
+### Exact change (authoritative — verified against the live file before writing this spec)
+
+Confirmed directly: lines 270-280 of `tests/e2e/file-tree.spec.ts`
+(current content, not paraphrased) are
+
+```ts
+  const treeRootPromise = window.evaluate(() => {
+    return new Promise((resolve) => {
+      (window as unknown as { mdview: { onFolderTreeRoot: (cb: (m: unknown) => void) => void } }).mdview.onFolderTreeRoot(
+        (message) => resolve(message)
+      );
+    });
+  });
+
+  await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open-folder')?.click());
+
+  const treeRootMessage = (await treeRootPromise) as { ok: boolean; rootPath: string; entries: Array<{ name: string }> };
+```
+
+Replace with the accumulate-then-poll shape already used verbatim by
+this same file's "opening a fixture file via File > Open…" test
+(lines 66-85) and its three siblings:
+
+```ts
+  await window.evaluate(() => {
+    (window as unknown as { __treeRootEvents: unknown[] }).__treeRootEvents = [];
+    (window as unknown as { mdview: { onFolderTreeRoot: (cb: (m: unknown) => void) => void } }).mdview.onFolderTreeRoot(
+      (message) => {
+        (window as unknown as { __treeRootEvents: unknown[] }).__treeRootEvents.push(message);
+      }
+    );
+  });
+
+  await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open-folder')?.click());
+
+  await expect
+    .poll(async () =>
+      window.evaluate(() => (window as unknown as { __treeRootEvents: unknown[] }).__treeRootEvents.length)
+    )
+    .toBeGreaterThanOrEqual(1);
+
+  const treeRootMessage = (await window.evaluate(
+    () => (window as unknown as { __treeRootEvents: unknown[] }).__treeRootEvents[0]
+  )) as { ok: boolean; rootPath: string; entries: Array<{ name: string }> };
+```
+
+`__treeRootEvents` reset fresh at the top of this test is safe — Task
+19's fixture already gives every test its own freshly-launched
+Electron process and window, so there is no other test's leftover
+`window` to collide with. Every assertion after this block (`ok`,
+`rootPath`, `entries` containing `notes.md`, `#empty-state` visible,
+`#content` empty, `__fileRenderedCount === 0`) is untouched.
+
+### Regression check / required proof
+
+A single fault-injection RED→GREEN can't reliably reproduce a timing
+race on demand — use repeated runs instead, scoped to this one test:
+
+1. Before the fix: `npx playwright test tests/e2e/file-tree.spec.ts -g
+   "Open Folder" --repeat-each=30 --workers=4` against the current
+   (racy) code. Report the raw result honestly either way — a clean
+   30-repeat run does not disprove the race (already observed 4 times
+   "in the wild" across separate sessions per `backlog.md`), and a
+   reproduced failure is bonus confirmatory evidence, not a
+   requirement for proceeding with the fix.
+2. After the fix: the same `--repeat-each=30` command at both
+   `--workers=4` and `--workers=2`, confirm clean, report raw counts.
+
+### Governance note
+
+No ADR — small, scoped bug fix, same tier as Task 18. `backlog.md`'s
+existing "Open Folder…" flakiness entries get marked `[Resolved
+<date>]` in place at close-out, not deleted, cross-referencing this
+spec section for the mechanism.
+
+---
