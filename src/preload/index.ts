@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { bridgeApi, IPC_CHANNELS } from './api';
-import type { BridgeApi, FileRenderedMessage, ViewSettings } from './api';
+import type { BridgeApi, FileRenderedMessage, ViewSettings, FolderTreeRootMessage } from './api';
 
 const api: BridgeApi = {
   version: bridgeApi.version,
@@ -13,6 +13,12 @@ const api: BridgeApi = {
   openDroppedFile: (file) => {
     const filePath = webUtils.getPathForFile(file);
     ipcRenderer.send(IPC_CHANNELS.REQUEST_OPEN_FILE, filePath);
+  },
+  onFolderTreeRoot: (callback) => {
+    ipcRenderer.on(IPC_CHANNELS.FOLDER_TREE_ROOT, (_event, message: FolderTreeRootMessage) => callback(message));
+  },
+  listDirectory: (dirPath) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.REQUEST_LIST_DIRECTORY, dirPath);
   },
 };
 

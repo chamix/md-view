@@ -13,8 +13,9 @@ import { extractFrontmatter } from './frontmatter';
 import { shouldSetDockIcon } from './dockIcon';
 import { shouldCreateHelpWindow, buildHelpHtml } from './helpWindow';
 import type { FSWatcher } from 'chokidar';
+import { filterAndSortEntries } from './fileTree';
 import { IPC_CHANNELS } from '../preload/api';
-import type { FileRenderedMessage } from '../preload/api';
+import type { FileRenderedMessage, DirectoryListResult, FolderTreeRootMessage } from '../preload/api';
 
 let mainWindow: BrowserWindow | null = null;
 let activeWatcher: FSWatcher | null = null;
@@ -24,6 +25,10 @@ let helpWindow: BrowserWindow | null = null;
 // resets to this exact default on every launch, regardless of a prior
 // session's choices.
 let viewSettings: ViewSettings = { darkMode: false, showFrontmatter: true };
+
+// Session-scoped, never persisted — same explicit precedent as viewSettings's
+// "resets to this exact default on every launch" comment above.
+let currentTreeRoot: string | null = null;
 
 function broadcastViewSettings(): void {
   mainWindow?.webContents.send(IPC_CHANNELS.VIEW_SETTINGS, viewSettings);
@@ -119,6 +124,30 @@ function sendToRenderer(message: FileRenderedMessage): void {
   mainWindow?.webContents.send(IPC_CHANNELS.FILE_RENDERED, message);
 }
 
+export async function listDirectoryEntries(dirPath: string): Promise<DirectoryListResult> {
+  try {
+    const raw = await fs.readdir(dirPath, { withFileTypes: true });
+    const entries = filterAndSortEntries(
+      raw.map((d) => ({ name: d.name, isDirectory: d.isDirectory() })),
+      dirPath
+    );
+    return { ok: true, dirPath, entries };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, dirPath, error: message };
+  }
+}
+
+async function establishTreeRoot(rootPath: string): Promise<void> {
+  if (rootPath === currentTreeRoot) return; // no-op: no re-fetch, no event sent
+  const result = await listDirectoryEntries(rootPath);
+  currentTreeRoot = rootPath;
+  const message: FolderTreeRootMessage = result.ok
+    ? { ok: true, rootPath, entries: result.entries }
+    : { ok: false, rootPath, error: result.error };
+  mainWindow?.webContents.send(IPC_CHANNELS.FOLDER_TREE_ROOT, message);
+}
+
 function stopWatching(): void {
   activeWatcher?.close();
   activeWatcher = null;
@@ -137,6 +166,7 @@ async function renderAndWatch(filePath: string): Promise<void> {
   if (message.ok) {
     startWatching(filePath);
   }
+  await establishTreeRoot(path.dirname(filePath));
 }
 
 async function openFileViaDialog(): Promise<void> {
@@ -146,6 +176,12 @@ async function openFileViaDialog(): Promise<void> {
   });
   if (result.canceled || result.filePaths.length === 0) return;
   await renderAndWatch(result.filePaths[0]);
+}
+
+async function openFolderViaDialog(): Promise<void> {
+  const result = await dialog.showOpenDialog({ properties: ['openDirectory'] });
+  if (result.canceled || result.filePaths.length === 0) return;
+  await establishTreeRoot(result.filePaths[0]);
 }
 
 async function onOpenHelp(): Promise<void> {
@@ -220,6 +256,7 @@ app.whenReady().then(() => {
       buildMenuTemplate(
         {
           onOpen: openFileViaDialog,
+          onOpenFolder: openFolderViaDialog,
           onToggleDarkMode: setDarkMode,
           onToggleShowFrontmatter: setShowFrontmatter,
           onOpenHelp,
@@ -259,6 +296,10 @@ app.whenReady().then(() => {
       renderAndWatch(filePath);
     }
   });
+
+  // Task 17: first request-response IPC pair in the app (ipcMain.handle /
+  // ipcRenderer.invoke) — every other channel above is fire-and-forget.
+  ipcMain.handle(IPC_CHANNELS.REQUEST_LIST_DIRECTORY, (_e, dirPath: string) => listDirectoryEntries(dirPath));
 });
 
 app.on('window-all-closed', () => {

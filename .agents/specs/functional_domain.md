@@ -881,4 +881,108 @@ an incidental detail.
     1, 2, 5, 8 in particular). Do not fabricate a shallow e2e assertion
     to paper over the gap.
 
+## Task 17: File Tree: Foundation (main process, IPC, preload bridge)
+
+Establishes the data and IPC layer for a future file-tree sidebar
+(Task 18's job — no renderer UI here). Two new capabilities: listing a
+single directory's entries on demand, and establishing/broadcasting a
+"tree root" (the folder containing whichever file is currently open, or
+a folder chosen explicitly). Converges on one function,
+`establishTreeRoot(rootPath)`, for both triggers — auto-detected from
+`renderAndWatch(filePath)` and explicit from a new "Open Folder…" menu
+action — the same discipline `renderAndWatch` itself already enforces
+for file-open triggers (this file's Task 2, guardrail #3: no separate
+ad hoc logic per trigger).
+
+This is the first **request-response** shape in the app's IPC surface.
+Every existing main↔renderer crossing (`FILE_RENDERED`, `VIEW_SETTINGS`,
+`REQUEST_OPEN_FILE`) is fire-and-forget: `ipcMain.on`/`ipcRenderer.send`
+one way, or `ipcMain.on`/`ipcRenderer.send` the other way (Task 16).
+Listing a directory doesn't fit that shape — the caller needs the
+result back, not a later broadcast — so this task introduces
+`ipcMain.handle`/`ipcRenderer.invoke` as a first-class pattern
+alongside the existing one, not a replacement for it.
+
+### Abstract Schema Contracts
+
+- `TreeEntry`: `{ name: string; path: string; type: 'file' | 'directory' }`
+  — one entry in a directory listing. `path` is always absolute.
+- `DirectoryListResult`: a discriminated union, `DirectoryListOk { ok:
+  true; dirPath: string; entries: TreeEntry[] }` or `DirectoryListError
+  { ok: false; dirPath: string; error: string }` — mirrors
+  `FileRenderedOk`/`FileRenderedError`'s existing shape exactly (Task 2's
+  established idiom for "this either worked or it didn't, and the
+  caller always gets a value, never an exception").
+- `FolderTreeRootMessage`: the same discriminated-union shape,
+  `FolderTreeRootOk { ok: true; rootPath: string; entries: TreeEntry[] }`
+  or `FolderTreeRootError { ok: false; rootPath: string; error: string }`
+  — what gets broadcast when the tree root is (re)established.
+- Two new named IPC channels: one for the request-response directory
+  listing, one for the push-broadcast tree-root event. No generic
+  `invoke(channel, ...args)` passthrough — each capability is its own
+  named contract, same as every existing channel.
+
+### Pure Transformation Logic
+
+- `filterAndSortEntries(raw, dirPath)`: given raw `{ name, isDirectory
+  }` pairs and the directory they came from, produce `TreeEntry[]`.
+  - Every directory entry is kept, regardless of what (if anything) is
+    inside it — no recursive pre-scan to hide folders with zero
+    Markdown files. This is a deliberate lazy-loading design choice:
+    a folder's contents are only inspected once a caller actually asks
+    to list *that* folder, not preemptively for every folder in a tree.
+  - A file entry is kept only if its name ends in `.md`, case-
+    insensitive — the same test `renderFile()` already applies when
+    deciding whether a path is openable. One shared rule, not two
+    independently-maintained ones that could drift apart.
+  - Ordering is a domain rule, not an accident of the filesystem:
+    directories sort before files; within each group, case-insensitive
+    alphabetical by name. This must hold regardless of which OS or
+    filesystem produced the raw listing — readdir order is not a
+    contract this app can depend on.
+  - This function touches no filesystem and no Electron API — it is a
+    pure mapping from "what the OS reported" to "what the tree should
+    show," identical in shape to this file's existing
+    `classifyWatchEvent`/`baseUrlForFile` leaf functions.
+
+### Edge-Case Invariant Guardrails
+
+1. Only `.md` files (case-insensitive) appear as file entries. Every
+   directory appears regardless of contents — including one with zero
+   `.md` files anywhere inside it. No recursive pre-scan to filter out
+   "irrelevant" folders; that would break the lazy-loading design this
+   task is built around.
+2. A single directory listing is sorted deterministically: directories
+   first, then case-insensitive alphabetical within each group. Must
+   not depend on OS/filesystem readdir ordering, which varies by
+   platform and is not a guarantee this app can rely on.
+3. Listing a directory is request-response and always resolves to a
+   result value — it must never throw across the process boundary and
+   must never leave a caller awaiting forever. A nonexistent path, a
+   path that turned out to be a file instead of a directory, and a
+   permission error are all the same kind of outcome from the caller's
+   perspective: a resolved failure, not a rejection.
+4. Switching to a different file inside the *same* already-open folder
+   must not reset or re-announce the tree root. Establishing the root
+   is a no-op when the requested root is already the current one — no
+   re-listing, no repeat broadcast.
+5. Establishing a folder as the tree root, on its own, must never alter
+   the currently open document or its live-reload watcher in any way.
+   Opening a folder with no file selected inside it leaves whatever was
+   already being previewed exactly as it was.
+6. The three existing security invariants hold unchanged: context
+   isolation, no Node integration in the renderer, and the sandbox flag
+   are all untouched by this task. The two new bridge capabilities are
+   explicit, individually named methods — never a generic passthrough
+   that would let the renderer invoke arbitrary main-process channels.
+7. The established tree root is session-scoped only — never written to
+   disk, never read back on the next launch. It resets to "none" every
+   process start, the same explicit precedent already set for view
+   settings (this file's Task 8, guardrail #6: resets to its documented
+   default every launch regardless of a prior session's choices).
+8. No tree-root announcement happens on startup before any file or
+   folder has been opened by the user. Silence is the correct initial
+   state — a future tree-sidebar UI keys off "no announcement has
+   arrived yet," not off an explicit empty-payload event.
+
 ---

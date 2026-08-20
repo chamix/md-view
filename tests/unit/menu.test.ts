@@ -5,6 +5,7 @@ import type { MenuHandlers, ViewSettings } from '../../src/main/menu';
 function handlers(overrides: Partial<MenuHandlers> = {}): MenuHandlers {
   return {
     onOpen: () => {},
+    onOpenFolder: () => {},
     onToggleDarkMode: () => {},
     onToggleShowFrontmatter: () => {},
     onOpenHelp: () => {},
@@ -17,16 +18,17 @@ function viewSettings(overrides: Partial<ViewSettings> = {}): ViewSettings {
 }
 
 describe('buildMenuTemplate (pure menu structure)', () => {
-  it('returns exactly one top-level item (File) whose submenu has exactly 3 entries', () => {
+  it('returns exactly one top-level item (File) whose submenu has exactly 4 entries', () => {
     const template = buildMenuTemplate(handlers(), viewSettings());
 
     expect(template[0].label).toBe('File');
 
     const submenu = template[0].submenu as Array<Record<string, unknown>>;
-    expect(submenu).toHaveLength(3);
+    expect(submenu).toHaveLength(4);
     expect(submenu[0].id).toBe('menu-open');
-    expect(submenu[1].type).toBe('separator');
-    expect(submenu[2].id).toBe('menu-exit');
+    expect(submenu[1].id).toBe('menu-open-folder');
+    expect(submenu[2].type).toBe('separator');
+    expect(submenu[3].id).toBe('menu-exit');
   });
 
   it('menu-open has label, accelerator, and click reference-equal to the onOpen handler', () => {
@@ -41,17 +43,29 @@ describe('buildMenuTemplate (pure menu structure)', () => {
     expect(openItem.click).toBe(onOpen);
   });
 
+  it('menu-open-folder has label, accelerator, and click reference-equal to the onOpenFolder handler', () => {
+    const onOpenFolder = () => {};
+    const template = buildMenuTemplate(handlers({ onOpenFolder }), viewSettings());
+
+    const submenu = template[0].submenu as Array<Record<string, unknown>>;
+    const openFolderItem = submenu[1];
+
+    expect(openFolderItem.label).toBe('Open Folder…');
+    expect(openFolderItem.accelerator).toBe('CmdOrCtrl+Shift+O');
+    expect(openFolderItem.click).toBe(onOpenFolder);
+  });
+
   it('the separator entry has type: separator', () => {
     const template = buildMenuTemplate(handlers(), viewSettings());
     const submenu = template[0].submenu as Array<Record<string, unknown>>;
 
-    expect(submenu[1].type).toBe('separator');
+    expect(submenu[2].type).toBe('separator');
   });
 
   it('menu-exit has label Exit and role quit', () => {
     const template = buildMenuTemplate(handlers(), viewSettings());
     const submenu = template[0].submenu as Array<Record<string, unknown>>;
-    const exitItem = submenu[2];
+    const exitItem = submenu[3];
 
     expect(exitItem.label).toBe('Exit');
     expect(exitItem.role).toBe('quit');

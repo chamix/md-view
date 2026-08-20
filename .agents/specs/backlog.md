@@ -229,3 +229,17 @@ packaging — not assumed fine just because Windows was.
   project-specific and belongs in `md-view` directly, but the actual fix
   (agent definition wording) lives in `claude-blueprints` first, per
   usual, then ports.
+
+- [Pending] Task 17's `tests/e2e/file-tree.spec.ts:228` (Open Folder…
+  test) failed once under default 4-worker parallel `npx playwright
+  test` load during the reviewer's independent verification of the
+  guardrail-#5-on-failed-render follow-up fix, then passed cleanly on
+  two immediate reruns and in isolation. The failing test's own code was
+  unchanged at the time (byte-identical to the version already reviewed
+  and passed earlier in the same task). Same class of pre-existing
+  parallel-contention flakiness already tracked above
+  (`live-reload.spec.ts`'s primer test, `ui-shell.spec.ts:67`) — a fresh
+  data point in that bucket, not a new distinct issue and not a Task 17
+  regression. Non-blocking, worth folding into whichever future task
+  addresses e2e flakiness as its own effort rather than chasing
+  individual instances as they surface.

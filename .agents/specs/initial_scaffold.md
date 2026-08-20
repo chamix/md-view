@@ -2113,4 +2113,287 @@ up as predicted vs. needed adjustment), so the renderer→main-boundary
 testing approach is discoverable for whichever future task needs a
 renderer→main crossing next, rather than being re-derived from scratch.
 
+## Task 17 Technical Specification — File Tree: Foundation
+
+Maps `functional_domain.md`'s Task 17 analysis to concrete design. This
+is the first task to introduce **request-response** IPC
+(`ipcMain.handle`/`ipcRenderer.invoke`) — every prior crossing, in
+either direction, is fire-and-forget (`.on`/`.send`). The Facade/DIP
+split (ADR-001) is exercised in a third mechanical shape (main→renderer
+push, Task 1–15; renderer→main push, Task 16; now renderer↔main
+request-response), not a new architectural direction — `BridgeApi`
+stays the sole crossing point regardless of which transport a given
+method uses underneath it.
+
+### The Inward Dependency Rule
+
+- `src/main/fileTree.ts` is a new peripheral-adjacent pure module: no
+  `fs`, no `electron` import. It sits at the same layer as
+  `src/main/watcher.ts`'s `classifyWatchEvent` and `src/main/paths.ts`'s
+  `baseUrlForFile` — domain logic (what belongs in a tree listing, how
+  it's ordered) stays independent of the I/O mechanism (`fs.readdir`)
+  that supplies its raw input.
+- `src/main/index.ts`'s `listDirectoryEntries(dirPath)` is the I/O
+  wrapper at the periphery — same layering role as `renderFile()`
+  wrapping `markdownToHtml()`. It owns the one effectful call
+  (`fs.readdir`) and translates both success and thrown failure into
+  the `DirectoryListResult` contract; `fileTree.ts` itself never touches
+  a filesystem.
+- `establishTreeRoot(rootPath)` is the single composition point both
+  triggers converge on — `renderAndWatch` (auto-detect, existing
+  function extended) and the new `openFolderViaDialog` (explicit). Same
+  discipline `renderAndWatch` itself already enforces for file-open
+  triggers (functional_domain.md Task 2, guardrail #3): no duplicate ad
+  hoc tree-establishing logic per trigger.
+- The renderer still never imports `electron` or `node:*`; its only
+  channel outward remains `window.mdview`. This task adds two named
+  methods to that surface, not a second channel out.
+
+### SOLID Boundary Scan / Pattern Application
+
+- **SRP** — `fileTree.ts` owns exactly one responsibility: mapping raw
+  `{name, isDirectory}` pairs into sorted, filtered `TreeEntry[]`. It
+  does not read directories (`listDirectoryEntries` in `index.ts` does)
+  and does not construct IPC envelopes (`listDirectoryEntries`/
+  `establishTreeRoot` do, by wrapping this function's return value in
+  `{ok, dirPath, entries}`/`{ok, rootPath, entries}`).
+- **ISP / Facade (extends ADR-001)** — `BridgeApi` gains exactly two new
+  named methods, `onFolderTreeRoot` and `listDirectory`. No generic
+  `invoke(channel, ...args)` passthrough (functional_domain.md guardrail
+  #6) — matches Task 16's established framing for this interface: each
+  capability is its own explicit member, never a wider surface than the
+  domain operation needs.
+- **DIP** — the renderer depends on the `BridgeApi` interface only, not
+  on `ipcRenderer` mechanics or on which transport (`send`/`on` vs.
+  `invoke`/`handle`) a given method uses underneath. That transport
+  choice is an implementation detail of the preload layer, invisible
+  across the boundary.
+- **Adapter (extension of an existing pattern, not a new one)** —
+  `listDirectoryEntries()` adapts `fs.readdir`'s throw-based error
+  signaling into the `DirectoryListResult` discriminated union, the same
+  translation `renderFile()` already performs for `fs.readFile` via
+  try/catch → `{ok: false, ...}`. No new GoF pattern class is introduced
+  by this task; it reuses the "pure leaf module + effectful wrapper"
+  separation already established for markdown rendering and extends it
+  to directory listing.
+- **Idempotent command guard** — `establishTreeRoot`'s
+  `rootPath === currentTreeRoot` early return (functional_domain.md
+  guardrail #4) is the same "cheap equality check before doing
+  expensive/observable work" shape already used implicitly by
+  `stopWatching()`/`startWatching()`'s "close the old one first" — not
+  named as a formal GoF pattern, just consistent defensive design
+  already present in this codebase.
+
+### Exact changes (authoritative)
+
+**`src/preload/api.ts`**
+```ts
+export const IPC_CHANNELS = {
+  FILE_RENDERED: 'md-view:file-rendered',
+  VIEW_SETTINGS: 'md-view:view-settings',
+  REQUEST_OPEN_FILE: 'md-view:request-open-file',
+  FOLDER_TREE_ROOT: 'md-view:folder-tree-root',
+  REQUEST_LIST_DIRECTORY: 'md-view:request-list-directory',
+} as const;
+
+export interface TreeEntry {
+  name: string;
+  path: string;
+  type: 'file' | 'directory';
+}
+export interface DirectoryListOk { ok: true; dirPath: string; entries: TreeEntry[]; }
+export interface DirectoryListError { ok: false; dirPath: string; error: string; }
+export type DirectoryListResult = DirectoryListOk | DirectoryListError;
+
+export interface FolderTreeRootOk { ok: true; rootPath: string; entries: TreeEntry[]; }
+export interface FolderTreeRootError { ok: false; rootPath: string; error: string; }
+export type FolderTreeRootMessage = FolderTreeRootOk | FolderTreeRootError;
+
+export interface BridgeApi {
+  readonly version: string;
+  onFileRendered(callback: (message: FileRenderedMessage) => void): void;
+  onViewSettings(callback: (settings: ViewSettings) => void): void;
+  openDroppedFile(file: File): void;
+  onFolderTreeRoot(callback: (message: FolderTreeRootMessage) => void): void;
+  listDirectory(dirPath: string): Promise<DirectoryListResult>;
+}
+```
+Mirrors `FileRenderedOk`/`FileRenderedError`'s discriminated-union shape
+exactly, per functional_domain.md's Abstract Schema Contracts — Task 2's
+own idiom, not a new one.
+
+**`src/preload/index.ts`**
+```ts
+onFolderTreeRoot: (callback) => {
+  ipcRenderer.on(IPC_CHANNELS.FOLDER_TREE_ROOT, (_event, message: FolderTreeRootMessage) => callback(message));
+},
+listDirectory: (dirPath) => {
+  return ipcRenderer.invoke(IPC_CHANNELS.REQUEST_LIST_DIRECTORY, dirPath);
+},
+```
+`onFolderTreeRoot` reuses the existing `.on` push pattern
+(`onFileRendered`/`onViewSettings`'s shape). `listDirectory` is the
+first use of `ipcRenderer.invoke` anywhere in this codebase — the new
+request-response pattern this task introduces.
+
+**`src/main/fileTree.ts`** (new, pure — no `fs`, no `electron`)
+```ts
+export function filterAndSortEntries(
+  raw: { name: string; isDirectory: boolean }[],
+  dirPath: string
+): TreeEntry[] {
+  // keep all directories; keep files only if name.toLowerCase().endsWith('.md');
+  // sort: directories before files, case-insensitive alphabetical within each group;
+  // path: path.join(dirPath, name)
+}
+```
+
+**`src/main/index.ts`**
+```ts
+import { filterAndSortEntries } from './fileTree';
+// ...
+let currentTreeRoot: string | null = null; // session-scoped, never persisted —
+// same explicit precedent as viewSettings's "resets to this exact default on
+// every launch, regardless of a prior session's choices" (functional_domain.md
+// Task 8 guardrail #6, extended here per Task 17 guardrail #7)
+
+async function listDirectoryEntries(dirPath: string): Promise<DirectoryListResult> {
+  try {
+    const raw = await fs.readdir(dirPath, { withFileTypes: true });
+    const entries = filterAndSortEntries(
+      raw.map((d) => ({ name: d.name, isDirectory: d.isDirectory() })),
+      dirPath
+    );
+    return { ok: true, dirPath, entries };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, dirPath, error: message };
+  }
+}
+
+ipcMain.handle(IPC_CHANNELS.REQUEST_LIST_DIRECTORY, (_e, dirPath: string) =>
+  listDirectoryEntries(dirPath)
+);
+
+async function establishTreeRoot(rootPath: string): Promise<void> {
+  if (rootPath === currentTreeRoot) return; // guardrail #4: no-op, no re-fetch, no event
+  const result = await listDirectoryEntries(rootPath);
+  currentTreeRoot = rootPath;
+  const message: FolderTreeRootMessage = result.ok
+    ? { ok: true, rootPath, entries: result.entries }
+    : { ok: false, rootPath, error: result.error };
+  mainWindow?.webContents.send(IPC_CHANNELS.FOLDER_TREE_ROOT, message);
+}
+
+async function renderAndWatch(filePath: string): Promise<void> {
+  const message = await renderFile(filePath);
+  sendToRenderer(message);
+  if (message.ok) {
+    startWatching(filePath);
+  }
+  await establishTreeRoot(path.dirname(filePath));
+}
+
+async function openFolderViaDialog(): Promise<void> {
+  const result = await dialog.showOpenDialog({ properties: ['openDirectory'] });
+  if (result.canceled || result.filePaths.length === 0) return;
+  await establishTreeRoot(result.filePaths[0]); // touches nothing document-related
+}
+```
+`establishTreeRoot` is called from `renderAndWatch` regardless of
+whether `message.ok` — even a failed render still has a real containing
+directory worth treating as the tree root (matches guardrail #5's
+framing: tree-root establishment is independent of document state).
+`openFolderViaDialog` calls only `establishTreeRoot` — never
+`renderFile`, never touches `activeWatcher` — satisfying guardrail #5
+structurally, not by convention.
+
+**`src/main/menu.ts`**
+```ts
+export interface MenuHandlers {
+  onOpen: () => void;
+  onOpenFolder: () => void;
+  onToggleDarkMode: (checked: boolean) => void;
+  onToggleShowFrontmatter: (checked: boolean) => void;
+  onOpenHelp: () => void;
+}
+// File submenu, right after 'Open…':
+{ id: 'menu-open-folder', label: 'Open Folder…', accelerator: 'CmdOrCtrl+Shift+O', click: handlers.onOpenFolder },
+```
+
+**`app.whenReady()` wiring** — `onOpenFolder: openFolderViaDialog` added
+to the existing `buildMenuTemplate(...)` handlers object.
+
+### Test architecture
+
+This task ships no renderer UI, so its e2e coverage crosses the real
+preload `contextBridge` directly via `page.evaluate()` calling
+`window.mdview.listDirectory(...)`/`window.mdview.onFolderTreeRoot(...)`
+— genuine end-to-end proof of everything on this task's side of the
+boundary, the same technique Task 16's guardrail #1/#2 proofs used, just
+without a DOM interaction driving it (there is no DOM interaction to
+drive yet). Three concrete real-fs fixtures back both the integration
+and e2e layers so both assert against the identical on-disk shape:
+`tests/e2e/fixtures/tree/{notes.md, ignored.txt, sub/deep.md,
+empty-of-md/}`.
+
+**Resulting layers:**
+
+- **Unit** (`tests/unit/fileTree.test.ts`): `filterAndSortEntries`
+  against fabricated arrays only, no real `fs` — `.md` kept, non-`.md`
+  dropped, all directories kept regardless of name, dirs-before-files
+  and case-insensitive sort, empty input, mixed-case extensions.
+- **Integration** (`tests/integration/fileTree.test.ts`): real
+  `fs.readdir` against the real fixture tree, same pattern as
+  `tests/integration/watcher.test.ts`'s real-chokidar approach — full
+  `listDirectoryEntries()` result including the `{ok:false}` path
+  against a nonexistent directory. Extend
+  `tests/integration/preload-api-contract.test.ts` with the two new
+  `IPC_CHANNELS` strings (non-empty, distinct from all existing ones)
+  and a `BridgeApi`-literal constructibility check including
+  `onFolderTreeRoot`/`listDirectory`, same shape as the existing Task 16
+  block.
+- **Unit** (`tests/unit/menu.test.ts`): extend for `menu-open-folder`
+  (id, label, accelerator, click wiring), same coverage style as the
+  existing `menu-open` assertions.
+- **E2E** (`tests/e2e/file-tree.spec.ts`): `listDirectory` against the
+  real fixture dir (asserting the exact filtered/sorted shape) and
+  against a nonexistent path (`{ok:false}`); opening a fixture file via
+  the existing dialog-mock pattern and asserting `onFolderTreeRoot`
+  fires with `rootPath` = the fixture's parent dir and correct entries;
+  triggering Open Folder… via its own dialog mock and asserting the same
+  `FOLDER_TREE_ROOT` shape plus **no** `FILE_RENDERED` event as a side
+  effect (guardrail #5).
+
+### Fault-injection proofs required (map to functional_domain.md guardrails)
+
+1. **FI-1** — remove the `rootPath === currentTreeRoot` guard in
+   `establishTreeRoot` → a test switching files within the same folder
+   must go RED (tree root re-sent redundantly). Restore, confirm GREEN.
+2. **FI-2** — drop the `.md` filter (let all files through) → the unit
+   test must go RED (non-`.md` entries appear). Restore, confirm GREEN.
+3. **FI-3** — return raw unsorted `readdir` order instead of the sorted
+   result → the determinism test must go RED. Restore, confirm GREEN.
+4. **FI-4** — make `listDirectoryEntries` throw instead of resolving
+   `{ok:false}` on a bad path → the e2e test's `invoke()` call must
+   surface as a caught rejection, not a silent hang, proving the
+   boundary-safety contract is actually exercised rather than assumed.
+   Restore, confirm GREEN.
+
+### Governance note
+
+This is the first request-response IPC pattern in the app — worth a
+`DEVLOG.md` entry documenting it as a first-of-kind architectural
+change, same convention as prior first-of-kind entries (Task 14's
+IPC-free Help window, Task 16's first renderer→main crossing). The
+engineer drafts it; the Lead reviews before it goes to disk, not written
+directly by the engineer. Per the still-open `backlog.md` item on Task
+16's close-out sequencing, `RUN_LOG.md`'s append and
+`current_scope.json`'s deletion are held until the Lead has evaluated
+`review_report_task17.md` — not automatic once the reviewer reaches its
+own verdict. `current_scope.json`'s `in_scope` list includes
+`.agents/specs/review_report_task17.md` from the start (Task 11's
+precedent), avoiding the recurring `enforce-scope.mjs` self-exemption
+gap hit in Tasks 6, 7, 9, 10, 12.
+
 ---

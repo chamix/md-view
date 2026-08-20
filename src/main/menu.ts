@@ -7,6 +7,7 @@ export interface ViewSettings {
 
 export interface MenuHandlers {
   onOpen: () => void;
+  onOpenFolder: () => void;
   onToggleDarkMode: (checked: boolean) => void;
   onToggleShowFrontmatter: (checked: boolean) => void;
   onOpenHelp: () => void;
@@ -21,6 +22,12 @@ export function buildMenuTemplate(
       label: 'File',
       submenu: [
         { id: 'menu-open', label: 'Open…', accelerator: 'CmdOrCtrl+O', click: handlers.onOpen },
+        {
+          id: 'menu-open-folder',
+          label: 'Open Folder…',
+          accelerator: 'CmdOrCtrl+Shift+O',
+          click: handlers.onOpenFolder,
+        },
         { type: 'separator' },
         { id: 'menu-exit', label: 'Exit', role: 'quit' },
       ],
