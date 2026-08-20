@@ -3,6 +3,7 @@ export const bridgeApi = { version: '0.0.0-scaffold' } as const;
 export const IPC_CHANNELS = {
   FILE_RENDERED: 'md-view:file-rendered',
   VIEW_SETTINGS: 'md-view:view-settings',
+  REQUEST_OPEN_FILE: 'md-view:request-open-file',
 } as const;
 
 export interface FileRenderedOk {
@@ -30,4 +31,5 @@ export interface BridgeApi {
   readonly version: string;
   onFileRendered(callback: (message: FileRenderedMessage) => void): void;
   onViewSettings(callback: (settings: ViewSettings) => void): void;
+  openDroppedFile(file: File): void;
 }

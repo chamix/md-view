@@ -136,3 +136,15 @@ body.dark-mode #document-header {
 body.dark-mode .doc-tab {
   color: #c9d1d9;
 }
+
+/* Task 16: drag-and-drop file open — visual highlight while a file is
+   dragged over the window. `outline`, not `border`, so it never affects
+   layout/box size and can't shift #document-container's centered column. */
+body.drag-over {
+  outline: 3px dashed #0969da;
+  outline-offset: -3px;
+}
+
+body.dark-mode.drag-over {
+  outline-color: #58a6ff;
+}

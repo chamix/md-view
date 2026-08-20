@@ -18,6 +18,14 @@ function shouldShowFrontmatter(message, viewSettings) {
   return message.frontmatter !== null && message.frontmatter !== undefined;
 }
 
+// Pure drop-target selection: this app only ever opens a single file at a
+// time (functional_domain.md), so a multi-file drop must deterministically
+// pick the first entry, never the last or an arbitrary one.
+function firstDroppedFile(fileList) {
+  if (!fileList || fileList.length === 0) return null;
+  return fileList[0];
+}
+
 // Everything below touches real DOM/window globals, which don't exist when
 // this file is `require()`d under plain Node (e.g. by
 // tests/unit/renderer-order.test.ts, tests/unit/statusBarText.test.ts,
@@ -149,11 +157,48 @@ if (typeof document !== 'undefined') {
     applyDarkMode(settings.darkMode);
     updateFrontmatterVisibility();
   });
+
+  // Task 16: drag-and-drop file open. Wired to `document`, not #content or
+  // #document-container, so the drop target works identically whether
+  // #empty-state or #document-container is currently visible.
+  //
+  // dragDepth counts nested dragenter/dragleave pairs. A naive
+  // dragenter-adds/dragleave-removes toggle flickers, because dragleave also
+  // fires when the pointer crosses from the drop target into a *child*
+  // element inside it (still logically "over" the target overall). Only
+  // clearing the highlight when the depth returns to exactly 0 avoids that.
+  let dragDepth = 0;
+
+  document.addEventListener('dragenter', (event) => {
+    event.preventDefault();
+    dragDepth += 1;
+    document.body.classList.add('drag-over');
+  });
+
+  document.addEventListener('dragover', (event) => {
+    event.preventDefault(); // load-bearing: without this, Electron's default action
+    // navigates the whole window to the dropped file's location instead of this app
+    // handling the drop
+  });
+
+  document.addEventListener('dragleave', (event) => {
+    event.preventDefault();
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) document.body.classList.remove('drag-over');
+  });
+
+  document.addEventListener('drop', (event) => {
+    event.preventDefault(); // load-bearing, same reason as dragover
+    dragDepth = 0;
+    document.body.classList.remove('drag-over');
+    const file = firstDroppedFile(event.dataTransfer.files);
+    if (file) window.mdview.openDroppedFile(file);
+  });
 }
 
 // No-op in the browser (there is no `module` global there); lets Vitest
 // `require()` this file under Node without needing jsdom, a bundler, or
 // converting the file to an ES module the <script> tag would need updating for.
 if (typeof module !== 'undefined') {
-  module.exports = { applyRenderedContent, statusBarText, shouldShowFrontmatter };
+  module.exports = { applyRenderedContent, statusBarText, shouldShowFrontmatter, firstDroppedFile };
 }

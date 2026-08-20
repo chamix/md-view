@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { IPC_CHANNELS } from '../../src/preload/api';
-import type { FileRenderedOk } from '../../src/preload/api';
+import type { BridgeApi, FileRenderedOk } from '../../src/preload/api';
 
 describe('IPC_CHANNELS (preload/main contract)', () => {
   it('exposes non-empty string channel names', () => {
@@ -9,10 +9,18 @@ describe('IPC_CHANNELS (preload/main contract)', () => {
 
     expect(typeof IPC_CHANNELS.VIEW_SETTINGS).toBe('string');
     expect(IPC_CHANNELS.VIEW_SETTINGS.length).toBeGreaterThan(0);
+
+    expect(typeof IPC_CHANNELS.REQUEST_OPEN_FILE).toBe('string');
+    expect(IPC_CHANNELS.REQUEST_OPEN_FILE.length).toBeGreaterThan(0);
   });
 
   it('FILE_RENDERED and VIEW_SETTINGS are distinct channel names', () => {
     expect(IPC_CHANNELS.VIEW_SETTINGS).not.toBe(IPC_CHANNELS.FILE_RENDERED);
+  });
+
+  it('REQUEST_OPEN_FILE is distinct from FILE_RENDERED and VIEW_SETTINGS', () => {
+    expect(IPC_CHANNELS.REQUEST_OPEN_FILE).not.toBe(IPC_CHANNELS.FILE_RENDERED);
+    expect(IPC_CHANNELS.REQUEST_OPEN_FILE).not.toBe(IPC_CHANNELS.VIEW_SETTINGS);
   });
 });
 
@@ -35,5 +43,32 @@ describe('FileRenderedOk (Task 4: baseUrl field)', () => {
     };
 
     expect(sample.baseUrl).toBe('file:///some/dir/');
+  });
+});
+
+describe('BridgeApi (Task 16: openDroppedFile field)', () => {
+  // Honest limitation: same as FileRenderedOk above — BridgeApi is a
+  // TypeScript interface, erased at compile time, so this test cannot by
+  // itself "catch" a removed/renamed openDroppedFile field the way a
+  // runtime check on IPC_CHANNELS' string constants can. The real
+  // protection against that regression is `tsc --strict` (via `npm run
+  // build`): if openDroppedFile were removed from the interface or this
+  // literal stopped satisfying it, the `: BridgeApi` annotation below would
+  // fail to compile. What this test does prove is that the shape is usable
+  // as claimed at runtime.
+  it('is constructible with an openDroppedFile method and it is callable', () => {
+    let received: File | null = null;
+    const sample: BridgeApi = {
+      version: '0.0.0-test',
+      onFileRendered: () => {},
+      onViewSettings: () => {},
+      openDroppedFile: (file) => {
+        received = file;
+      },
+    };
+
+    const fakeFile = { name: 'doc.md' } as unknown as File;
+    sample.openDroppedFile(fakeFile);
+    expect(received).toBe(fakeFile);
   });
 });

@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { bridgeApi, IPC_CHANNELS } from './api';
 import type { BridgeApi, FileRenderedMessage, ViewSettings } from './api';
 
@@ -9,6 +9,10 @@ const api: BridgeApi = {
   },
   onViewSettings: (callback) => {
     ipcRenderer.on(IPC_CHANNELS.VIEW_SETTINGS, (_event, settings: ViewSettings) => callback(settings));
+  },
+  openDroppedFile: (file) => {
+    const filePath = webUtils.getPathForFile(file);
+    ipcRenderer.send(IPC_CHANNELS.REQUEST_OPEN_FILE, filePath);
   },
 };
 

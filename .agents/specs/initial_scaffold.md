@@ -1849,3 +1849,268 @@ new architectural decision. A `backlog.md` "Resolved" entry at close-out
 is sufficient.
 
 ---
+
+## Task 16 Technical Specification — Drag-and-Drop File Open
+
+Maps `functional_domain.md`'s Task 16 analysis to concrete design. This
+is the first task that adds a **renderer→main** crossing to the bridge
+contract — until now `BridgeApi` has been strictly main→renderer
+(`onFileRendered`, `onViewSettings`), so the Inward Dependency Rule and
+the Facade/DIP split (ADR-001) both get exercised in the new direction
+for the first time, not just extended in the old one.
+
+### The Inward Dependency Rule
+
+- The renderer still never imports `electron` or `node:*`. Its only
+  channel outward remains `window.mdview` — this task adds one new
+  method to that surface (`openDroppedFile`), not a second channel.
+- `webUtils.getPathForFile()` — the one new Node/Electron-privileged
+  call this task introduces — lives exclusively inside
+  `src/preload/index.ts`'s implementation of `openDroppedFile`. It must
+  never be called from `src/main` (functional_domain.md guardrail #7:
+  documented Electron requirement, not a style choice) and the renderer
+  has no way to reach it directly (contextBridge only exposes the one
+  function, never `webUtils` itself).
+- `src/main/index.ts` gains one new `ipcMain.on` listener. It sits at
+  the same peripheral layer as the existing `openFileViaDialog` —
+  another *trigger* that terminates in the one shared `renderAndWatch`
+  orchestration, never a parallel implementation of it.
+
+### SOLID Boundary Scan / Pattern Application
+
+- **ISP / Facade (extends ADR-001)** — `BridgeApi` gains exactly one
+  new named method, `openDroppedFile(file: File): void`. Deliberately
+  not split into `getPathForFile()` + `openFile()` as two bridge
+  methods: that shape would hand the renderer a resolved absolute
+  filesystem path as a raw JS value it could inspect, log, or misuse —
+  a strictly wider surface than the domain operation needs. One method,
+  one responsibility ("hand this dropped File to the part of the app
+  that knows what to do with it"), no new abstraction layer.
+- **DIP** — the renderer depends on the `BridgeApi` interface, not on
+  `ipcRenderer`/`contextBridge` mechanics or on `webUtils`. Nothing
+  about this task changes that dependency direction; it just adds one
+  more member to the interface already playing that role since Task 1.
+- **No new pattern introduced.** `IPC_CHANNELS` already is the
+  single-source-of-truth enum-like object (Task 2's "IPC boundary is
+  named, not stringly-typed" precedent) — `REQUEST_OPEN_FILE` is a
+  fourth entry in an existing pattern, not a new one. The Composition
+  Root (`src/main/index.ts`) gains one more wired trigger alongside
+  argv/dialog/menu, the same shape every prior task's new trigger has
+  taken (Task 2, Task 7).
+
+### Exact changes (authoritative)
+
+**`src/preload/api.ts`**
+```ts
+export const IPC_CHANNELS = {
+  FILE_RENDERED: 'md-view:file-rendered',
+  VIEW_SETTINGS: 'md-view:view-settings',
+  REQUEST_OPEN_FILE: 'md-view:request-open-file',
+} as const;
+
+export interface BridgeApi {
+  readonly version: string;
+  onFileRendered(callback: (message: FileRenderedMessage) => void): void;
+  onViewSettings(callback: (settings: ViewSettings) => void): void;
+  openDroppedFile(file: File): void;
+}
+```
+No change to `FileRenderedMessage`/`ViewSettings` — per the approved
+functional-domain analysis, this task's result still flows over the
+existing `FILE_RENDERED` channel.
+
+**`src/preload/index.ts`**
+```ts
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
+...
+openDroppedFile: (file) => {
+  const filePath = webUtils.getPathForFile(file);
+  ipcRenderer.send(IPC_CHANNELS.REQUEST_OPEN_FILE, filePath);
+},
+```
+Fire-and-forget (`send`, not `invoke`) — matches every existing
+trigger's pattern; no open path today awaits a return value.
+
+**`src/main/index.ts`**
+```ts
+ipcMain.on(IPC_CHANNELS.REQUEST_OPEN_FILE, (_event, filePath: string) => {
+  if (typeof filePath === 'string' && filePath.length > 0) {
+    renderAndWatch(filePath);
+  }
+});
+```
+Registered once, alongside the other `app.whenReady()` wiring. No new
+`.md`-extension check, no new error text — `renderAndWatch` →
+`renderFile` already owns that validation (guardrail #1). The
+non-empty-string guard is the *only* new logic in main, and it exists
+solely to satisfy guardrail #8 (never call `renderAndWatch('')`).
+
+**`src/renderer/renderer.js`** (inside the existing `typeof document
+!== 'undefined'` block, alongside the other DOM wiring)
+```js
+function firstDroppedFile(fileList) {
+  if (!fileList || fileList.length === 0) return null;
+  return fileList[0];
+}
+
+let dragDepth = 0;
+
+document.addEventListener('dragenter', (event) => {
+  event.preventDefault();
+  dragDepth += 1;
+  document.body.classList.add('drag-over');
+});
+
+document.addEventListener('dragover', (event) => {
+  event.preventDefault(); // load-bearing: without this, Electron's default
+  // action navigates the whole window to the dropped file's location
+});
+
+document.addEventListener('dragleave', (event) => {
+  event.preventDefault();
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) document.body.classList.remove('drag-over');
+});
+
+document.addEventListener('drop', (event) => {
+  event.preventDefault(); // load-bearing, same reason as dragover
+  dragDepth = 0;
+  document.body.classList.remove('drag-over');
+  const file = firstDroppedFile(event.dataTransfer.files);
+  if (file) window.mdview.openDroppedFile(file);
+});
+```
+`firstDroppedFile` is exported through the existing `typeof module !==
+'undefined'` guard alongside `applyRenderedContent`/`statusBarText`/
+`shouldShowFrontmatter`, for direct unit testing with zero DOM.
+Listeners are on `document` (guardrail #4: whole-document drop target,
+not `#content`/`#document-container` specifically — works identically
+whether `#empty-state` or `#document-container` is currently visible).
+
+**`src/renderer/app.css`**
+```css
+body.drag-over {
+  outline: 3px dashed #0969da;
+  outline-offset: -3px;
+}
+
+body.dark-mode.drag-over {
+  outline-color: #58a6ff;
+}
+```
+`outline` (not `border`) so the highlight never triggers reflow/layout
+shift of `#document-container`'s centered max-width column (Task 12
+guardrail territory) — purely additive, no existing rule touched.
+Scoped to `body` so it's visible regardless of which region
+(`#empty-state` or `#document-container`) currently occupies the
+window, satisfying guardrail #4's "whole document" framing for the
+visual affordance too, not just the drop-target wiring.
+
+### Test architecture (investigated per guardrail #10, not assumed)
+
+`webUtils.getPathForFile()` only resolves a real path for a `File`
+tracing back to a genuine OS-level drag; a `File` constructed inside
+`page.evaluate()` will very likely resolve to `''` even in the real
+running app, and `contextBridge`-exposed methods are non-configurable
+from web content, so `window.mdview.openDroppedFile` cannot be
+monkey-patched/spied from the page side. That closes off the literal
+"drop a real file, see it render" e2e proof. It does **not** close off
+proving the rest of this task's guardrails end-to-end with real
+production code, via two channels the engineer must confirm empirically
+while implementing:
+
+1. **`ipcMain` is a plain `EventEmitter`.** `app.evaluate(({ ipcMain },
+   channel) => ipcMain.emit(channel, {}, filePath))` invokes the *real*
+   registered main-process listener directly, with a real filesystem
+   path chosen by the test — bypassing only the renderer/preload File-
+   resolution boundary, not main's own logic. This proves guardrails
+   #1 (non-`.md` real path → identical "Not a Markdown file" error
+   already proven for the dialog path) and #8 (empty string → no
+   render, no crash) with the actual shipped handler, not a
+   reimplementation.
+2. **`ipcMain.on` supports multiple listeners per channel.** A second,
+   test-only listener added via `app.evaluate()` before a drop can
+   count real `REQUEST_OPEN_FILE` sends without touching the production
+   listener. Combined with a **real** `document.dispatchEvent(new
+   DragEvent('drop', { dataTransfer: <2 files> }))` fired from
+   `page.evaluate()` (exercising the actual `renderer.js` wiring,
+   actual preload `openDroppedFile`, actual `ipcRenderer.send`), this
+   proves guardrail #2 ("only one open requested") through the real
+   call chain — the count assertion the guardrail's own wording asks
+   for, without needing to distinguish *which* file by content.
+3. **`event.defaultPrevented` / `dispatchEvent`'s boolean return** are
+   observable on a synthetic (untrusted) event regardless of whether
+   Chromium would apply its native default action to an untrusted
+   event. This proves *our handler calls `preventDefault()`* — the
+   thing guardrail #3 requires us to add — deterministically. It does
+   **not** prove Chromium's native navigate-away default is thereby
+   suppressed for a genuine OS drag; that half stays a one-time manual
+   baseline observation (drag a real `.md` file onto the running dev
+   build with the fix reverted, then applied), recorded in the review
+   report, per guardrail #3's own instruction — not encoded as an
+   automated assertion of something outside this app's control.
+4. **`dragenter`/`dragleave` dispatched at a nested child element**
+   (`bubbles: true`, targeted at e.g. `#content` rather than
+   `document`) exercise the real depth-counter logic via normal DOM
+   bubbling — this does not require a native OS drag either, so
+   guardrail #5's fault-injection is expected to be practical; only
+   report it as impractical if empirical attempts during implementation
+   show otherwise.
+
+If any of 1–4 behaves differently than predicted here once actually
+run, the engineer reports the real behavior rather than forcing the
+plan — that's the point of investigating instead of assuming, same
+standard as Task 15's `removeMenu()` confirmation.
+
+**Resulting layers:**
+
+- **Unit** (`tests/unit/firstDroppedFile.test.ts`): empty list → `null`;
+  single file → that file; multiple files → specifically index `0`
+  (not last, not all) — catches a `files[1]`/`files.at(-1)` regression
+  directly, independent of the e2e layer.
+- **Integration** (extend `tests/integration/preload-api-contract.test.ts`):
+  `IPC_CHANNELS.REQUEST_OPEN_FILE` is a non-empty string, distinct from
+  both existing channels (same shape as the existing `FILE_RENDERED`/
+  `VIEW_SETTINGS` pair-distinctness test). A `BridgeApi`-shaped literal
+  including `openDroppedFile` type-checks (same `tsc --strict`-backed
+  proof pattern as the existing `FileRenderedOk` constructibility test).
+- **E2E** (`tests/e2e/drag-drop.spec.ts`): the four cases in items 1–4
+  above, plus a case confirming the drag-over class is absent at rest
+  and present mid-drag before any drop/leave resolves it.
+
+### Fault-injection proofs required (map to functional_domain.md guardrails)
+
+1. Remove both `preventDefault()` calls (dragover, drop) → the
+   `event.defaultPrevented` e2e assertion (item 3) must go RED. Restore,
+   confirm GREEN.
+2. Change the main handler to call `sendToRenderer({ ok: true, ... })`
+   directly instead of `renderAndWatch(filePath)` → the `ipcMain.emit`
+   non-`.md`-path e2e assertion (item 1) must go RED (no "Not a
+   Markdown file" text appears). Restore, confirm GREEN.
+3. Change `firstDroppedFile` to return `fileList[fileList.length - 1]`
+   → the unit test must go RED. Separately, change the renderer's drop
+   handler to call `openDroppedFile` once per file in the list instead
+   of once for `firstDroppedFile(...)` → the `ipcMain` counter e2e
+   assertion (item 2) must go RED. Restore both, confirm GREEN both.
+4. Swap the depth-counter for a naive direct toggle (`dragenter` → add
+   class, `dragleave` → remove class, no counter) → the nested-element
+   e2e assertion (item 4) must go RED (highlight flickers off while
+   still over the drop target). Restore, confirm GREEN. If this
+   specific scenario proves impractical to simulate deterministically
+   in Playwright once actually attempted, state that explicitly in the
+   review report rather than silently omitting the fault-injection —
+   per the functional-domain guardrail's own instruction.
+
+### Governance note
+
+No ADR needed for the bridge-method shape itself — `openDroppedFile`
+is an additive member on an interface whose Facade/DIP treatment was
+already decided in Step 0/ADR-001; this task doesn't change *how* the
+bridge works, only adds one more crossing through the same mechanism.
+Worth one `DEVLOG.md`/`backlog.md` sentence at close-out noting the
+guardrail #10 investigation's actual outcome (which of items 1–4 held
+up as predicted vs. needed adjustment), so the renderer→main-boundary
+testing approach is discoverable for whichever future task needs a
+renderer→main crossing next, rather than being re-derived from scratch.
+
+---

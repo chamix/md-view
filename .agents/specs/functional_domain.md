@@ -747,3 +747,138 @@ for the Help window, every time).
    addition (suppress the menu), not a rewrite of `onOpenHelp`.
 
 ---
+
+## Task 16: Drag-and-Drop File Open
+
+Adds a fourth way to open a file — dragging a `.md` file from the OS
+onto the main window — alongside the existing argv, dialog, and (soon)
+whichever paths already exist. Converges on the exact same
+`renderAndWatch(filePath)` used by argv/dialog today; no new validation
+or watcher logic. Also includes a basic drag-over visual affordance
+(highlighted drop target) as part of this same task, per user decision.
+
+This is the first task to add a renderer→main IPC channel — until now
+`BridgeApi` has been strictly main→renderer (`onFileRendered`,
+`onViewSettings`). Treat that as a first-class fact of this task, not
+an incidental detail.
+
+### Abstract Schema Contracts
+
+- New `IPC_CHANNELS` entry: `REQUEST_OPEN_FILE: 'md-view:request-open-file'`.
+- New `BridgeApi` method: `openDroppedFile(file: File): void`. This is
+  the *only* new bridge surface — deliberately not split into a
+  separate `getPathForFile()` + `openFile()` pair, so the renderer never
+  receives a resolved absolute path as a raw JS value it could do
+  anything else with. Path resolution (`webUtils.getPathForFile`) and
+  the `ipcRenderer.send` call both happen inside the preload
+  implementation of this one method.
+- No changes to `FileRenderedMessage` or `ViewSettings`. The result of a
+  drag-and-drop open is delivered over the existing `FILE_RENDERED`
+  channel — identical to how a dialog-triggered open already works.
+  Fire-and-forget (`ipcRenderer.send` / `ipcMain.on`), not
+  `invoke`/`handle` — matches the existing pattern where no open path
+  today awaits a return value.
+
+### Pure Transformation Logic
+
+- `firstDroppedFile(fileList)` in `src/renderer/renderer.js`, alongside
+  the existing `statusBarText`/`shouldShowFrontmatter` pure helpers:
+  returns `fileList[0]` if non-empty, else `null`. Exported via the same
+  `typeof module !== 'undefined'` guard for direct unit testing —
+  extras beyond index 0 are never inspected here, per guardrail #2.
+
+### Edge-Case Invariant Guardrails
+
+1. **Reuse `renderAndWatch()` unmodified.** The new `ipcMain.on(...)`
+   handler must call the existing `renderAndWatch(filePath)` directly —
+   no new `.md`-extension check, no new error-message text anywhere in
+   this task's diff. A dropped non-`.md` file must produce the exact
+   same "Not a Markdown file" error already proven for the dialog path
+   (`renderFile()`'s existing check). If this guardrail is violated
+   (validation duplicated instead of reused), that is itself a Blocking
+   finding regardless of whether the duplicated logic happens to work.
+
+2. **Only the first dropped file is opened, full stop.** If more than
+   one file is dropped, `files[1]` onward are silently ignored — no
+   error, no partial-support message. This must be pinned by a test
+   that dispatches a drop with 2+ files and asserts only one open was
+   requested, not just that opening one file works when only one is
+   dropped.
+
+3. **`event.preventDefault()` on `dragover` *and* `drop` is
+   load-bearing, not optional.** Electron's documented default is to
+   navigate the entire window to a dropped file's location if these are
+   left unhandled — this predates this task and would silently replace
+   the app's own UI. Before writing the fix, empirically confirm what
+   currently happens today (drag a file onto a running dev build,
+   observe) and note it in the review report as a baseline, the same
+   way Task 15 empirically confirmed `removeMenu()`'s macOS no-op rather
+   than trusting the docs alone. This must be fault-injection tested:
+   remove the `preventDefault()` calls, confirm the relevant e2e
+   assertion goes red, restore, confirm green.
+
+4. **Drop target is the whole document, not just `#content` or
+   `#document-container`.** Both `#empty-state` and
+   `#document-container` are always present in the DOM (only
+   `#empty-state`'s `hidden` attribute toggles) — drag-and-drop must
+   work identically whether no file is open yet or one is already open
+   and being replaced, exactly like `File > Open` already does.
+
+5. **Drag-over highlight must not flicker on nested elements.** A naive
+   `dragenter`/`dragleave` pair toggling a class directly will flicker
+   because `dragleave` also fires when the pointer crosses into a child
+   element inside the drop target. Use a depth counter (or equivalent)
+   so the highlight only clears when the counter returns to zero.
+   Attempt a fault-injection test for this specifically (swap the
+   counter-based version for a naive one, confirm a test that exercises
+   a nested-element crossing catches it); if that specific scenario
+   turns out impractical to simulate deterministically in Playwright,
+   say so explicitly rather than silently skipping the fault-injection
+   for this guardrail.
+
+6. **Highlight must be legible in both light and dark mode.** Add a
+   dark-mode-aware override alongside the base `.drag-over`-equivalent
+   style — this app has already shipped one dark-mode-only-partially-
+   applied bug once (Task 9); don't repeat that class of bug on a new
+   visual state.
+
+7. **Preload path resolution is preload-only, never main-process.**
+   `webUtils.getPathForFile()` must be called from inside
+   `src/preload/index.ts`'s implementation of `openDroppedFile`, not
+   from a main-process IPC handler receiving a raw `File`-like payload.
+   This is a documented Electron requirement (there are open upstream
+   issues showing it failing when called from main), not a style
+   preference.
+
+8. **Empty/unresolved path is a silent no-op, not a crash or a new
+   error message.** If `webUtils.getPathForFile()` ever returns an
+   empty string (documented as possible in some platform edge cases),
+   the main-process handler must not call `renderAndWatch('')` — guard
+   on a non-empty string before dispatching. No new user-facing error
+   text for this specific case; it's rare enough not to warrant one.
+
+9. **Help window is explicitly out of scope.** It has no `preload`
+   script by design (Task 14, guardrail #1) — do not add one, do not
+   extend drag-and-drop there.
+
+10. **Test-coverage honesty requirement, stated up front so it isn't
+    discovered as a surprise mid-review:** `webUtils.getPathForFile()`
+    only resolves a real filesystem path for a `File` object that
+    traces back to an actual native OS-level drag. A `File` constructed
+    inside a Playwright `page.evaluate()` will very likely resolve to an
+    empty path even inside the real running app — meaning a synthetic
+    e2e drop test can faithfully prove the *rejection* path (guardrail
+    #1's reused error handling) but probably cannot prove the true
+    happy path (drop a real file → see it rendered) end-to-end the way
+    the dialog tests do via `dialog.showOpenDialog` mocking, because
+    `contextBridge`-exposed methods are non-configurable from web
+    content by design and can't simply be monkey-patched to fake a
+    resolved path. Investigate this directly — try it — rather than
+    assuming either way. If the happy path genuinely can't be proven at
+    the e2e layer, name that gap explicitly in the review report and
+    `backlog.md`, and compensate with thorough unit/integration coverage
+    of everything on this app's own side of that boundary (guardrails
+    1, 2, 5, 8 in particular). Do not fabricate a shallow e2e assertion
+    to paper over the gap.
+
+---

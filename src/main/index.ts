@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, Menu, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron';
 import * as path from 'path';
 import * as fs from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
@@ -245,6 +245,20 @@ app.whenReady().then(() => {
       renderAndWatch(filePath);
     });
   }
+
+  // Task 16: drag-and-drop file open. The renderer resolves the dropped
+  // File's real filesystem path (via webUtils.getPathForFile, which must run
+  // in preload — see src/preload/index.ts) and sends it here, fire-and-
+  // forget. All validation (extension check, existence, read errors) is
+  // owned exclusively by renderFile() via renderAndWatch() — never
+  // duplicated here. The only new logic is the empty-string guard below,
+  // covering a documented possible return from getPathForFile() on some
+  // platforms; that case is a silent no-op, not a user-facing error.
+  ipcMain.on(IPC_CHANNELS.REQUEST_OPEN_FILE, (_event, filePath: string) => {
+    if (typeof filePath === 'string' && filePath.length > 0) {
+      renderAndWatch(filePath);
+    }
+  });
 });
 
 app.on('window-all-closed', () => {
