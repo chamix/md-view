@@ -2809,3 +2809,392 @@ existing "Open Folder…" flakiness entries get marked `[Resolved
 spec section for the mechanism.
 
 ---
+
+## Task 21 Technical Specification — Tree Sidebar: Core Rendering, Lazy Expand, Click-to-Open
+
+Maps `functional_domain.md`'s Task 21 analysis to concrete design.
+
+### The Inward Dependency Rule
+
+New rendering logic depends outward on `window.mdview` (the preload
+bridge, Task 17's boundary) exactly the same way the existing
+`renderer.js` already does — no new dependency direction. `src/main`
+is untouched except for nothing at all: `REQUEST_OPEN_FILE`'s handler
+(`src/main/index.ts` line ~317) already does zero validation beyond
+non-empty-string before delegating to `renderAndWatch`, confirmed by
+reading it directly — safe to reuse verbatim via a new preload method,
+no main-process diff required for this task.
+
+### SOLID/Pattern note
+
+The tree is conceptually a Composite (folders contain children of
+either kind, files are leaves, both respond to "render yourself") but
+this codebase has no class hierarchy anywhere in the renderer — it's
+plain DOM-manipulation functions, matching `renderHtml`/`renderError`'s
+existing style. Forcing a class-based Composite here would be the kind
+of premature structure this project has consistently avoided (e.g.
+Task 11's presentational-only card chrome needed no pattern beyond
+plain markup). One row-rendering function, called recursively for
+nested levels, is the right-sized solution — same recursion-depth-
+equals-tree-depth shape a Composite would produce, without inventing
+a class hierarchy for two node kinds and ~7 behaviors total.
+
+### File-module decision
+
+Keep the new tree logic inside `src/renderer/renderer.js` rather than
+splitting to a sibling file. Splitting is architecturally reasonable
+(this app already uses per-concern leaf modules on the main-process
+side — `dockIcon.ts`, `devtools.ts`, `fileTree.ts`, `helpWindow.ts`),
+but `package.json`'s `build` script copies every `dist/renderer/*`
+asset via **individually listed** `copyFileSync` calls (verified — no
+wildcard/glob copy exists), so a new renderer file requires both a new
+`<script>` tag in `index.html` AND a new `copyFileSync` line in
+`package.json`'s build script, or the file silently never ships to
+`dist/renderer/` and every e2e test depending on it fails opaquely.
+Given `renderer.js` is not yet large enough to be genuinely unwieldy
+even after this task's addition, the lower-risk default is one file.
+**If the engineer's own judgment during implementation says split
+anyway, both required changes above are mandatory, not optional — say
+so explicitly in the delivery report either way.**
+
+### HTML/CSS structure (authoritative)
+
+```html
+<body>
+  <div id="app-body">
+    <div id="tree-panel">
+      <div id="tree-empty-state">No folder open.</div>
+      <div id="tree-root" hidden></div>
+    </div>
+    <div id="main-panel">
+      <div id="empty-state">...</div>          <!-- unchanged content -->
+      <div id="document-container">...</div>   <!-- unchanged content -->
+    </div>
+  </div>
+  <div id="status-bar">...</div>                <!-- unchanged -->
+  <script src="./renderer.js"></script>
+</body>
+```
+
+`#status-bar` is already `position: fixed; left:0; right:0; bottom:0`
+(`app.css`, confirmed) — fully out of normal flow, so wrapping
+`#empty-state`/`#document-container` in `#app-body` cannot itself
+shift `#status-bar`'s position; guardrail #24's regression risk is
+about `#empty-state`/`#document-container`'s own computed styles
+(padding, max-width, centering), not `#status-bar`.
+
+CSS: `#app-body` is `display: flex; flex-direction: row;` filling the
+space above `#status-bar` (`body`'s existing `padding-bottom: 2rem`
+already reserves that clearance — untouched). `#main-panel` gets
+`flex: 1 1 auto; min-width: 0;` (the `min-width: 0` is load-bearing —
+without it a flex child containing `#document-container`'s own
+`width: calc(100% - 4rem)` can refuse to shrink below its content's
+natural width and overflow the row). `#tree-panel` gets a fixed width
+via a single CSS custom property, e.g. `--tree-panel-width: 260px;`
+declared on `:root` and consumed as `width: var(--tree-panel-width);`
+on `#tree-panel` — trivial for a later task (resize handle, Task 22)
+to override via a single inline `style.setProperty` call without
+restructuring this HTML/CSS again. Every new element
+(`#tree-panel`, `#tree-empty-state`, `#tree-root`, and whatever class
+tree rows use) needs a `body.dark-mode #id`/`.class` rule per
+guardrail #25 — follow the file's existing per-ID scoping exactly, do
+not invent a CSS variable-based theme mechanism this file doesn't
+already use elsewhere.
+
+### New BridgeApi method (authoritative)
+
+`src/preload/api.ts`, added to the `BridgeApi` interface:
+```ts
+openFileByPath(filePath: string): void;
+```
+
+`src/preload/index.ts`, added to the `api` object:
+```ts
+openFileByPath: (filePath) => {
+  ipcRenderer.send(IPC_CHANNELS.REQUEST_OPEN_FILE, filePath);
+},
+```
+No new `IPC_CHANNELS` entry — reuses `REQUEST_OPEN_FILE` verbatim,
+same channel `openDroppedFile` already sends on.
+
+### Rendering/interaction logic (renderer.js)
+
+1. `window.mdview.onFolderTreeRoot((message) => {...})`:
+   `ok:false` → clear `#tree-root`'s children, hide it, show
+   `#tree-empty-state` with an inline error variant (reuse the same
+   element, swap its text — a second dedicated error element is not
+   needed for one line of text). `ok:true` → clear `#tree-root`'s
+   children (guardrail #27 — full replace, never append), render
+   `message.entries` as the top level, un-hide `#tree-root`, hide
+   `#tree-empty-state`.
+2. Row rendering (one function, called recursively for nested levels):
+   each `TreeEntry` becomes a row. Directories get an expand
+   affordance plus a children container that starts `hidden` and
+   starts with **no children rendered yet** (not merely hidden —
+   genuinely empty, so "has this folder ever been fetched" is
+   determinable by checking whether the container has any child
+   nodes, no separate boolean flag needed). Files are plain leaf rows,
+   no affordance, no children container.
+3. Folder row click: if the children container already has content
+   (regardless of current hidden/visible state) → toggle `hidden`
+   only, zero fetch (guardrail #21). If empty → show a lightweight
+   loading indicator on the row, `await window.mdview.listDirectory(entry.path)`,
+   remove the indicator; `ok:true` → render `result.entries` into the
+   children container via the same row-rendering function (recursion),
+   un-hide it; `ok:false` → render one inline error row into the
+   children container in place of entries (guardrail #26), still
+   un-hide it so the error is visible.
+4. File row click: `window.mdview.openFileByPath(entry.path)` — one
+   call, `entry.path` verbatim, nothing else (guardrail #22/#23). No
+   local DOM update of any kind here; `FILE_RENDERED`'s existing
+   pipeline (`onFileRendered` → `renderHtml`/`renderError`,
+   `updateStatusBar`) handles everything, exactly as it already does
+   for File>Open and drag-and-drop.
+
+### FI-1 proof technique — the existing "coexisting listener" idiom does NOT directly transfer
+
+This codebase's established counting-proof idiom (drag-drop.spec.ts's
+multi-file-drop test, file-tree.spec.ts's "Open Folder…" zero-render
+test) adds a **second** `ipcMain.on`/`ipcRenderer.on` listener
+alongside the production one, because `.on()`-based channels support
+multiple listeners per channel. `REQUEST_LIST_DIRECTORY` is
+`ipcMain.handle`/`ipcRenderer.invoke` (Task 17's first request-
+response pair) — Electron allows **exactly one** handler per channel;
+registering a second throws. The idiom needs adaptation, not blind
+reuse:
+
+`listDirectoryEntries` is an exported function in `src/main/index.ts`
+(confirmed: compiled `dist/main/index.js` contains
+`exports.listDirectoryEntries = listDirectoryEntries;`). Since the
+already-running main process has this module in Node's `require`
+cache, calling `require(<same absolute dist/main/index.js path>)`
+again from inside `electronApp.evaluate()` returns the exact same
+cached `module.exports` object the app itself is using — not a
+re-executed copy. This lets a test remove the production handler and
+re-install a counting wrapper that still delegates to the real,
+unmodified production logic:
+
+```ts
+const mainModulePath = path.join(process.cwd(), 'dist/main/index.js'); // same resolution as fixtures.ts's ENTRY_POINT
+
+await electronApp.evaluate(({ ipcMain }, { channel, modulePath }) => {
+  const mainModule = require(modulePath);
+  (globalThis as any).__listDirectoryCallCount = 0;
+  ipcMain.removeHandler(channel);
+  ipcMain.handle(channel, async (_e: unknown, dirPath: string) => {
+    (globalThis as any).__listDirectoryCallCount += 1;
+    return mainModule.listDirectoryEntries(dirPath);
+  });
+}, { channel: IPC_CHANNELS.REQUEST_LIST_DIRECTORY, modulePath: mainModulePath });
+```
+
+Read the count afterward via
+`electronApp.evaluate(() => (globalThis as any).__listDirectoryCallCount)`.
+This preserves the "test the real production code path, count
+invocations, don't fake the behavior" spirit of the existing idiom;
+it just uses `removeHandler`+re-`handle`+delegate instead of a second
+listener, because the IPC shape (request-response, single-handler)
+is different from every prior guardrail-#2-style proof in this suite.
+If the engineer finds a cleaner mechanism that preserves the same
+two properties (real production logic still runs; count is
+observable), that's an acceptable substitution — state the reasoning
+in the delivery report either way.
+
+### Tests — `tests/e2e/tree-panel.spec.ts`
+
+Reuses `tests/e2e/fixtures/tree/` (no new fixtures): `notes.md`,
+`ignored.txt`, `sub/deep.md`, `sub/deep2.md`, `empty-of-md/`. Uses the
+Task 19 `tests/e2e/support/fixtures.ts` isolated-launch pattern like
+every other spec file now does.
+
+1. Opening a fixture file shows the tree panel with the root's
+   top-level entries, correctly filtered/ordered (directories before
+   `notes.md`, `ignored.txt` absent) — reuses the same expected-shape
+   assertions as `file-tree.spec.ts`'s first test.
+2. Clicking an unexpanded folder reveals its children, including
+   `empty-of-md/` expanding to a genuinely empty (not error) state.
+3. FI-1: temporarily remove the "already-populated, skip fetch" check,
+   confirm the call-count test goes RED (2 calls on collapse/
+   re-expand), restore, confirm GREEN.
+4. Clicking a file row updates `#content`/`#status-bar` exactly as
+   `open-file-argv.spec.ts`'s existing assertions verify for File>Open.
+5. Dark mode toggle with a folder expanded to a nested level — real
+   `getComputedStyle` checks on tree elements, same technique as
+   `view-menu.spec.ts` test (c).
+6. Full pre-existing suite (all specs predating this task) run and
+   confirmed green — guardrail #24's proof, run explicitly and
+   reported with raw pass/fail counts, not assumed.
+
+### Governance note
+
+No ADR — new UI surface built entirely from already-established
+patterns (existing IPC contract, existing dark-mode convention,
+existing e2e fixture/isolation pattern), not a new architectural
+decision. Normal-weight review, not the abbreviated Task 18/20 tier —
+this is real, non-trivial UI behavior with a genuine regression risk
+(guardrail #24) attached.
+
+---
+
+## Task 22 Technical Specification — Replace Fixed-Wait Layout Reads with Poll-Until-Stable in ui-shell.spec.ts
+
+Maps `functional_domain.md`'s Task 22 analysis to concrete design.
+
+### The Inward Dependency Rule
+
+New peripheral-boundary module only: `tests/e2e/support/pollUntilStable.ts`.
+It depends on nothing beyond plain JS/TS (`setTimeout`/`Date.now` via a
+small delay helper) — no Playwright import, no DOM, no Electron. This is
+what makes it directly unit-testable under Vitest with a fake `read()`
+rather than needing a real browser, the same "Electron-free leaf module"
+discipline already used for `src/main/paths.ts`/`linkPolicy.ts`/etc.,
+applied here to test infrastructure instead of application code.
+`tests/e2e/ui-shell.spec.ts` depends outward on it exactly the way it
+already depends on `./support/fixtures` — no new dependency direction.
+
+### SOLID Boundary Scan / Pattern Application
+
+**SRP** — `sameValues` (equality) and `pollUntilStable` (polling loop +
+timeout) are two separate exported functions with two separate reasons
+to change, not one function doing both inline. **OCP** — `pollUntilStable`
+is generic over `T extends Record<string, number>`; adding a poll of a
+new field set (a future check (i)-style assertion, say) requires zero
+changes to the helper itself, only a new `read()` closure at the call
+site. No new GoF pattern — this is the same "small pure/near-pure
+reusable helper" tier as `classifyWatchEvent`/`needsFetch`, not a
+Strategy/Template Method situation (there is exactly one polling
+algorithm, not a family of interchangeable ones).
+
+### Exact signature (authoritative)
+
+```ts
+// tests/e2e/support/pollUntilStable.ts
+export function sameValues<T extends Record<string, number>>(a: T, b: T): boolean {
+  return (Object.keys(a) as Array<keyof T>).every((key) => a[key] === b[key]);
+}
+
+export async function pollUntilStable<T extends Record<string, number>>(
+  read: () => Promise<T>,
+  options?: { stableReads?: number; intervalMs?: number; timeoutMs?: number }
+): Promise<T> {
+  const stableReads = options?.stableReads ?? 5;
+  const intervalMs = options?.intervalMs ?? 20;
+  const timeoutMs = options?.timeoutMs ?? 5000;
+  const deadline = Date.now() + timeoutMs;
+
+  let last = await read();
+  let consecutive = 1;
+
+  while (consecutive < stableReads) {
+    if (Date.now() > deadline) {
+      throw new Error(
+        `pollUntilStable: value never stabilized within ${timeoutMs}ms (last read: ${JSON.stringify(last)})`
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    const next = await read();
+    consecutive = sameValues(next, last) ? consecutive + 1 : 1;
+    last = next;
+  }
+
+  return last;
+}
+```
+
+`intervalMs` (default 20ms, not specified in the task assignment but
+needed to make the loop concrete) is deliberately short relative to
+`timeoutMs` — five consecutive stable 20ms-apart reads is a ~100ms best
+case (matching what the fixed wait it replaces already assumed was
+"enough"), while genuinely unsettled layouts get up to 5000ms to
+converge before the helper gives up loudly. The timeout check happens
+before each additional wait, not after — a `read()` call that itself
+hangs is not this helper's concern (Playwright's own action timeouts
+already bound `.evaluate()` calls), only "keeps changing" is.
+
+### Call-site changes (authoritative — both within `tests/e2e/ui-shell.spec.ts`)
+
+Check (g) (around current line 115-123): replace
+```ts
+await window.waitForTimeout(100);
+
+const defaultWidthBox = await documentContainer.evaluate((el) => {
+  const style = window.getComputedStyle(el);
+  return {
+    marginLeft: parseFloat(style.marginLeft),
+    marginRight: parseFloat(style.marginRight),
+  };
+});
+```
+with
+```ts
+const defaultWidthBox = await pollUntilStable(() =>
+  documentContainer.evaluate((el) => {
+    const style = window.getComputedStyle(el);
+    return {
+      marginLeft: parseFloat(style.marginLeft),
+      marginRight: parseFloat(style.marginRight),
+    };
+  })
+);
+```
+
+Check (h) (around current line 139-148): same transformation, `read()`
+returning `{ width, marginLeft, marginRight }` instead. In both cases
+every line after the read (the `expect(...)` assertions) is untouched —
+this is a measurement-mechanism swap only, not a logic change. New
+import at the top of the file: `import { pollUntilStable } from
+'./support/pollUntilStable';`.
+
+### Required proof (authoritative — matches the task assignment's own two-level requirement)
+
+1. `tests/unit/pollUntilStable.test.ts` (Vitest, no Playwright/DOM): a
+   fake `read()` returning a counter-driven sequence — changing values
+   for the first K calls, then stable — with small `stableReads`/
+   `intervalMs` so the suite runs in milliseconds. Minimum cases:
+   settles correctly once genuinely stable; returns as soon as N-in-a-
+   row match without over-polling past that point (assert the fake
+   `read()`'s call count, not just the return value); throws when
+   `read()` never stabilizes within a short `timeoutMs`. This is this
+   task's fault-injection-equivalent — deterministic, independent of
+   real Electron/Chromium timing.
+2. Real-world confidence check (run, not assumed): `npx playwright test
+   tests/e2e/ui-shell.spec.ts --repeat-each=20`, then the full suite 5x
+   at the project's default `workers: 2` (same methodology as Tasks
+   19/20). Report raw pass/fail counts honestly. Per the task
+   assignment's own framing: this fix targets the specific
+   "read-before-settling" failure mode: `pollUntilStable` reading a
+   truly-unsettled layout for the full `timeoutMs` (Task 19's deeper,
+   unrelated contention issue manifesting as something worse than a
+   momentary render lag) is explicitly out of this task's claim to fix,
+   and should be reported as such if ever observed rather than silently
+   absorbed into "it passed."
+
+### File tree — Task 22 additions/changes
+
+```
+md-view/
+├── tests/
+│   ├── e2e/
+│   │   ├── ui-shell.spec.ts             # ~ checks (g)/(h) only, per above
+│   │   └── support/
+│   │       └── pollUntilStable.ts       # NEW — sameValues + pollUntilStable
+│   └── unit/
+│       └── pollUntilStable.test.ts      # NEW
+├── .agents/
+│   ├── specs/backlog.md                 # ~ targeted note, cross-referenced to
+│   │                                     #   Task 19's still-open item (not resolved)
+│   ├── DEVLOG.md                        # ~ brief entry
+│   └── metrics/RUN_LOG.md               # ~ append-only row, held until Lead
+│                                         #   sign-off per process notes
+```
+
+### Governance note
+
+No ADR — small, scoped test-infrastructure fix, same tier as Task
+18/19/20. `backlog.md`'s Task 19/21 entries on `ui-shell.spec.ts`
+flakiness are annotated in place (cross-referenced, not deleted) to
+note this task's narrower scope: it fixes the "read before settling"
+symptom specifically and explicitly does not claim to resolve Task 19's
+broader, still-open concurrent-process contention question.
+
+---

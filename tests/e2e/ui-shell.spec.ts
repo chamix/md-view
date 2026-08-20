@@ -1,5 +1,6 @@
 import * as path from 'path';
 import { test, expect } from './support/fixtures';
+import { pollUntilStable } from './support/pollUntilStable';
 
 test('no-argv launch: no legacy h1/button, empty-state visible, status bar shows "No file open"', async ({ electronApp }) => {
   const window = await electronApp.firstWindow();
@@ -112,15 +113,15 @@ test.describe('argv launch with sample.md', () => {
       const win = BrowserWindow.getAllWindows()[0];
       win.setBounds({ width: 900, height: 640 });
     });
-    await window.waitForTimeout(100);
-
-    const defaultWidthBox = await documentContainer.evaluate((el) => {
-      const style = window.getComputedStyle(el);
-      return {
-        marginLeft: parseFloat(style.marginLeft),
-        marginRight: parseFloat(style.marginRight),
-      };
-    });
+    const defaultWidthBox = await pollUntilStable(() =>
+      documentContainer.evaluate((el) => {
+        const style = window.getComputedStyle(el);
+        return {
+          marginLeft: parseFloat(style.marginLeft),
+          marginRight: parseFloat(style.marginRight),
+        };
+      }),
+    );
     // toBeCloseTo(32, 0)'s < 0.5 tolerance is tighter than real sub-pixel
     // rendering allows here (observed ~0.8px drift) — use an explicit 1px
     // band instead, per this task's documented fallback.
@@ -136,16 +137,16 @@ test.describe('argv launch with sample.md', () => {
       const win = BrowserWindow.getAllWindows()[0];
       win.setBounds({ width: 1600, height: 900 });
     });
-    await window.waitForTimeout(100);
-
-    const containerBox = await documentContainer.evaluate((el) => {
-      const style = window.getComputedStyle(el);
-      return {
-        width: parseFloat(style.width),
-        marginLeft: parseFloat(style.marginLeft),
-        marginRight: parseFloat(style.marginRight),
-      };
-    });
+    const containerBox = await pollUntilStable(() =>
+      documentContainer.evaluate((el) => {
+        const style = window.getComputedStyle(el);
+        return {
+          width: parseFloat(style.width),
+          marginLeft: parseFloat(style.marginLeft),
+          marginRight: parseFloat(style.marginRight),
+        };
+      }),
+    );
     expect(containerBox.width).toBeLessThan(900);
     expect(containerBox.width).toBeGreaterThan(800);
     expect(containerBox.marginLeft).toBeCloseTo(containerBox.marginRight, 0);

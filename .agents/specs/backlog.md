@@ -356,6 +356,35 @@ packaging — not assumed fine just because Windows was.
   the race happens (no fix attempted, out of scope for Task 21). Full
   detail in `review_report_task21.md` §6(b).
 
+  **Update (Task 22):** replaced checks (g) and (h)'s fixed
+  `waitForTimeout(100)` + single-shot computed-style read with a new
+  reusable `tests/e2e/support/pollUntilStable.ts` helper (poll `read()`
+  until N=5 consecutive reads match, 20ms apart, 5000ms ceiling) —
+  targeting exactly the "read before settling" symptom this entry's
+  Task 21 update measured (`marginLeft` settling at 230.8px, far past a
+  single 100ms wait). This narrower fix is done and does **not** claim
+  to resolve this entry's own broader, still-open item: a fresh
+  `--repeat-each=20` run (60 executions) plus 5 full-suite runs at
+  `workers: 2` surfaced a *different* flake on the same test, at check
+  (h) specifically — `containerBox.width > 800` failing with received
+  values as low as 126.4/562.4 (11/60 on the repeat run; 2/5 on full-
+  suite runs, always the same assertion). A throwaway diagnostic spec
+  (same discipline as Task 21's, deleted after use) traced the actual
+  mechanism: `BrowserWindow.getBounds()` (native, main-process) reports
+  the new 1600×900 size immediately, but the renderer's own
+  `window.innerWidth`/`getComputedStyle` can lag the real resize by up
+  to ~280ms under load — and because that stale value is itself
+  perfectly *stable* for that whole span, `pollUntilStable`'s
+  5-consecutive-match criterion is satisfied on the wrong value well
+  before the true resize ever reaches the renderer. This is a distinct
+  mechanism from the render-not-yet-settled-after-resize race this task
+  targeted (a renderer-side IPC/message-pump delay under concurrent-
+  process contention, not a layout-settling delay) — squarely inside
+  Task 19's still-open, broader contention item, not something this
+  task's scope authorized fixing (its `pollUntilStable` signature and
+  both call sites are spec-mandated verbatim). Reported honestly per
+  this task's own instructions rather than treated as a clean pass.
+
 - [Pending] Task 21's `tests/e2e/tree-panel.spec.ts` FI-1 proof (the
   "exactly one `listDirectory` call per folder, ever" caching guardrail)
   only exercises the cache-defeat scenario against a non-empty folder

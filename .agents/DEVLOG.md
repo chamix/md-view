@@ -1,5 +1,87 @@
 # Devlog
 
+## 2026-08-20 — La tentación de apurar, justo cuando el prototipo empieza a sentirse como un producto
+
+A mitad de Task 22 surgieron preguntas operativas legítimas: ¿por qué
+el reviewer vuelve a correr lo que el engineer ya corrió, si no hubo
+cambios en el medio? ¿No se está poniendo pesado el ciclo de e2e? La
+respuesta a la primera ya tenía precedente propio en este mismo
+proyecto — el hallazgo S1 de Task 21 (el caso de carpeta vacía que el
+suite entregado nunca cubrió) y el claim de casing de Task 20 nunca
+reproducido por dos reviewers independientes en dos tareas distintas
+— existen específicamente porque alguien re-verificó en vez de confiar
+en el reporte. Re-leer no atrapa lo que el propio autor no vio para
+empezar.
+
+Pero hubo una segunda capa, más honesta, debajo de la pregunta: el
+impulso de aligerar la verificación apareció en un momento muy
+específico — justo cuando la app empezó a sentirse fluida, tangible,
+"cerca de estar lista" — y casi se justificó solo. Nombrarlo tal cual
+es lo que vale: no es un defecto de carácter, es la dinámica humana más
+predecible que existe frente a un prototipo que empieza a andar.
+
+Lo que lo frenó fue recordar el propósito real, doble, de este
+proyecto: no es solo shippear md-view — es también material crudo para
+comparar enfoques de desarrollo agéntico. Bajo ese propósito, la
+verificación pesada por tarea no es overhead sobre "el entregable de
+verdad" — es uno de los dos entregables. Aligerarla por velocidad no es
+una optimización gratis, es un trade-off real contra un objetivo
+explícito del proyecto, no contra nada.
+
+Lo que salió de la conversación no fue "no cambiar nada" — apareció un
+ajuste legítimo, ya presente a medias sin estar declarado: el peso de
+la verificación debería escalar con el radio de impacto real del
+cambio, no aplicarse parejo siempre. Tasks 17/18/20/22 (backend puro,
+sin tocar el renderer compartido) nunca necesitaron correr el suite
+completo siete veces — eso fue específicamente Task 21, porque tocó
+layout compartido, exactamente la clase de cambio con blast radius
+impredecible. Formalizar esa distinción es una mejora real, compatible
+con el propósito doble, no una concesión a la impaciencia.
+
+Vale la pena nombrar el paralelo: es la misma disciplina de "verificar
+antes de asumir" que este proyecto ya viene aplicando a los subagentes
+y a las propias afirmaciones del Lead (Task 8, Task 21) — aplicada una
+vez más, esta vez al propio impulso de apurar, atrapado por quien lo
+tuvo, no por otro.
+
+## 2026-08-20 — Task 22: pollUntilStable resolvió el síntoma que midió, y destapó uno distinto
+
+Task 21 había dejado un número concreto sobre la mesa: `marginLeft` de
+`#document-container` se asienta en 230.8px, siete veces el umbral de
+32px que el check (h) de `ui-shell.spec.ts` exige — el flake nunca fue
+un problema de geometría, era leer el layout antes de que terminara de
+asentarse tras un `waitForTimeout(100)` fijo. Esta tarea reconstruyó
+ese diagnóstico descartable de Task 21 como un helper permanente y
+reutilizable (`tests/e2e/support/pollUntilStable.ts`: sondea `read()`
+hasta cinco lecturas consecutivas idénticas o lanza tras 5s), con
+firma exacta dictada por la spec, cubierto por pruebas unitarias
+deterministas en Vitest (incluida una inyección de falla real: se
+introdujo temporalmente una lectura extra tras la convergencia, la
+prueba de "no over-poll" se puso roja, se confirmó, se revirtió).
+
+Lo que valió la pena no dar por cerrado sin verificar: correr la
+prueba real requerida (`--repeat-each=20`, y el suite completo 5 veces
+a `workers: 2`) no dio cero fallas. Un patrón nuevo apareció — no en
+`marginLeft` (check g), sino en `containerBox.width` (check h),
+recibiendo valores tan bajos como 126.4 en vez de >800. En vez de
+asumir que era la misma clase de flake ya explicada, se escribió otro
+diagnóstico descartable (mismo estilo que el de Task 21, borrado
+después de usarlo) que trazó los bounds nativos de la ventana junto
+al ancho computado del DOM cuadro a cuadro. Resultado: `getBounds()`
+del proceso main reporta el nuevo tamaño (1600×900) de inmediato, pero
+`window.innerWidth` del renderer puede quedarse hasta ~280ms atrás
+bajo carga — y como ese valor viejo es perfectamente *estable* durante
+ese tramo, `pollUntilStable` puede declarar convergencia sobre el
+valor equivocado antes de que el resize real llegue al renderer. Es un
+mecanismo distinto al que esta tarea targeteaba (un rezago de
+IPC/message-pump del lado del renderer bajo contención de procesos
+concurrentes, no un reflow de layout post-resize) — cae dentro del
+ítem más amplio y todavía abierto de Task 19, no algo que el alcance
+de esta tarea autorizara a arreglar (la firma de `pollUntilStable` y
+ambos call-sites vienen dictados verbatim por la spec). Documentado
+honestamente en `backlog.md` como hallazgo nuevo, no maquillado como
+un pase limpio.
+
 ## 2026-08-20 — Task 21: el sidebar del árbol, y por qué la aritmética antes de asumir importa
 
 Task 21 fue la primera pieza de UI real construida sobre el backend

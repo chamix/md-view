@@ -1136,3 +1136,136 @@ unchanged.
 19. No other test in `file-tree.spec.ts` is touched.
 
 ---
+
+## Task 21: Tree Sidebar — Core Rendering, Lazy Expand, Click-to-Open
+
+Task 17 built the backend (main-process `establishTreeRoot`,
+`listDirectory` IPC, preload bridge methods `onFolderTreeRoot`/
+`listDirectory`) with deliberately no renderer UI. This task is the
+first renderer consumer of that contract. Two data flows, both already
+proven correct by Task 17/18's own tests: `FOLDER_TREE_ROOT` (push,
+one root per open action) and `REQUEST_LIST_DIRECTORY` (request-
+response, one call per folder expansion). Neither shape changes here —
+this task is a pure consumer.
+
+### Abstract Schema Contracts
+
+No new IPC message shape. `TreeEntry` (`{name, path, type}`),
+`DirectoryListResult`, `FolderTreeRootMessage` (all `src/preload/api.ts`,
+Task 17) are consumed exactly as they already exist — the renderer
+never re-derives or re-validates their fields. One new `BridgeApi`
+member: `openFileByPath(filePath: string): void` — a thin send-only
+wrapper reusing `REQUEST_OPEN_FILE`'s existing channel and existing
+main-process validation path (`renderAndWatch`, unchanged, unowned by
+this task). No new `IPC_CHANNELS` entry.
+
+### Pure Transformation Logic
+
+Two decisions worth naming as pure predicates, testable without DOM,
+following this file's established `typeof document`-guard pattern
+(`statusBarText`, `shouldShowFrontmatter`, `firstDroppedFile` in
+`renderer.js`):
+
+- **Row kind**: `entry.type === 'directory'` decides expand-affordance
+  vs. plain leaf row — already fully decided by data Task 17 already
+  filters/sorts; the renderer performs zero re-filtering (guardrail
+  #1 below).
+- **Fetch-or-reveal decision**: given a folder's current in-memory
+  state (never fetched / fetched-and-collapsed / fetched-and-expanded),
+  a click either triggers exactly one `listDirectory` call (first time
+  only) or a pure visibility toggle (every subsequent time) — never
+  both, never neither. This is the guardrail #2 caching contract and
+  is the one piece of new logic actually worth unit-testing in
+  isolation from Playwright/DOM.
+
+Everything else (DOM row creation, event wiring, recursion into child
+levels) is standard imperative rendering, same tier as the existing
+`renderHtml`/`renderError` functions — not claimed as "pure" and not
+forced into a shape it doesn't naturally have.
+
+### Edge-Case Invariant Guardrails
+
+20. The renderer never re-filters or re-validates `TreeEntry[]` —
+    trusts Task 17's contract completely. No duplicate `.md`-extension
+    check, no re-sorting.
+21. Lazy-expand caching: re-expanding a folder previously expanded-
+    then-collapsed must not re-fetch. Exactly one `listDirectory` call
+    per folder, ever, across any number of collapse/expand cycles in
+    a session.
+22. A file-row click sends exactly one `REQUEST_OPEN_FILE` per click,
+    using the entry's own `path` field verbatim — no string
+    concatenation, no recomputation.
+23. Tree interactions never touch `#content`/`#frontmatter`/
+    `#status-bar` directly. Every visible update after a file click
+    flows through the existing `FILE_RENDERED` → `onFileRendered` →
+    `renderHtml`/`renderError` pipeline, unchanged, same as File>Open
+    or drag-and-drop.
+24. `#empty-state`/`#document-container`/`#status-bar`'s existing
+    observable behavior (visibility, computed styles, text content) is
+    unchanged by the new wrapper structure — the full pre-existing e2e
+    suite must stay green, not just new tree tests. Layout
+    restructuring silently shifting computed styles has broken this
+    app twice before (Task 8, Task 12); treated with the same weight
+    here, not as a formality.
+25. Every new tree-panel element gets a `body.dark-mode #id` rule,
+    following the file's existing per-ID scoping convention exactly —
+    no new theming mechanism introduced.
+26. A `{ok:false}` `listDirectory` result renders a visible inline
+    error in place of that folder's children — never a silent no-op,
+    never an unhandled promise rejection.
+27. `#tree-root`'s content is fully replaced (not appended-to) on each
+    new `FOLDER_TREE_ROOT` broadcast — no stale nodes from a previous
+    root ever remain visible or in the DOM after a folder switch.
+
+---
+
+## Task 22: Replace Fixed-Wait Layout Reads with Poll-Until-Stable in ui-shell.spec.ts (test infrastructure)
+
+None — test infrastructure, same tier as Task 19/20. This targets one
+specific, already-measured symptom: `ui-shell.spec.ts`'s checks (g) and
+(h) each do a fixed `waitForTimeout(100)` then a single computed-style
+read of `#document-container`. Task 21's review (`review_report_task21.md`
+§6b) proved via a throwaway polling diagnostic that check (h)'s flake is
+not a geometry defect — the real settled `marginLeft` is 230.8px, ~7x the
+`>32` threshold — it's a render-not-yet-settled read racing a fixed
+100ms wait under concurrent-process contention (Task 19's still-open,
+broader, unrelated issue). This task rebuilds that diagnostic's polling
+behavior as a permanent, reusable helper and applies it to both checks
+(g) and (h). It does not touch or claim to resolve Task 19's item.
+
+### Abstract Schema Contracts
+
+None. No IPC shape, no `BridgeApi` member, no message format touched —
+this is purely how a test *reads* an already-correct, already-rendered
+DOM value, not a change to what gets rendered or asserted.
+
+### Pure Transformation Logic
+
+One new pure(-ish) async helper, decoupled from Playwright/DOM so its
+own stability logic is unit-testable without a real browser:
+`pollUntilStable<T>(read: () => Promise<T>, options): Promise<T>` — calls
+`read()` repeatedly, returns as soon as N consecutive calls
+(`stableReads`, default 5) produce identical values, throws if it never
+stabilizes within `timeoutMs` (default 5000). Equality is its own small
+function, `sameValues<T>(a, b)` — strict-equal on every key. Both are
+generic over `T extends Record<string, number>`, not hardcoded to margin
+fields — check (g) (`marginLeft`/`marginRight`) and check (h)
+(`width`/`marginLeft`/`marginRight`) both call the same helper with
+their own field sets.
+
+### Edge-Case Invariant Guardrails
+
+28. No assertion threshold anywhere in `ui-shell.spec.ts` changes — this
+    is a measurement-timing fix only. Every existing value (31/33,
+    800/900, `>32`, `toBeCloseTo`) stays exactly as-is.
+29. `pollUntilStable` must have a real timeout ceiling and throw a clear
+    error rather than hang forever if genuinely never stable — same
+    "never leave a caller awaiting forever" principle already applied to
+    `listDirectory`'s error handling (Task 17).
+30. `sameValues`/`pollUntilStable` are reusable, not hardcoded to margin
+    fields — no duplicated polling logic between checks (g) and (h).
+31. No change to any other test in the file, any other file, or `src/**`.
+32. Check (g)'s existing 1px-band comment/rationale (subpixel rendering
+    variance) is untouched — unrelated to this fix.
+
+---
