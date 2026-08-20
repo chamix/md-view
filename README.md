@@ -10,6 +10,9 @@ A minimal Electron + TypeScript desktop app for previewing Markdown files.
 - **Syntax highlighting** for fenced code blocks with a declared language (`highlight.js`)
 - **Relative image paths** in the Markdown source resolve correctly against the open file's directory
 - **External links** open in your system's default browser, not inside the app
+- **Drag-and-drop** a `.md` file from the OS onto the window to open it — same validation as File → Open, and only the first file is opened if several are dropped
+- **Dark Mode and Show Frontmatter toggles** in the View menu control preview appearance and frontmatter visibility
+- **In-app Help window** with usage documentation, available via Help → md-view Help or the F1 key
 
 ## Stack
 
