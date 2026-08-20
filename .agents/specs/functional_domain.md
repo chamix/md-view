@@ -1269,3 +1269,85 @@ their own field sets.
     variance) is untouched — unrelated to this fix.
 
 ---
+
+## Task 23: Tree Panel — Drag-to-Resize
+
+Real interactive behavior (not test infrastructure) — the tree sidebar
+Task 21 shipped has a fixed `--tree-panel-width`; this task lets the
+user drag it. `#tree-panel` is the flex row's first child, so its left
+edge sits at viewport x=0, which is the key domain fact: raw pointer
+x-position *is* the desired panel width, with no delta/offset state to
+track.
+
+### Abstract Schema Contracts
+
+- **Panel width is a single scalar in a bounded range**, not two
+  independent min/max flags. The domain operation is
+  `clampWidth(rawX, windowWidth) -> width`, where the valid output range
+  is `[MIN_TREE_WIDTH, windowWidth - MIN_MAIN_PANEL_WIDTH]`. Both bounds
+  are named constants (`180`, `300`), not inlined magic numbers, mirroring
+  the app's existing convention of naming boundary constants explicitly
+  (e.g. `windowConfig.ts`'s `minWidth`/`minHeight`).
+- **The upper bound is a function of live window width, not a fixed
+  constant.** This is the one non-obvious domain rule: a fixed absolute
+  cap (e.g. 600px) is only safe at large window widths and becomes unsafe
+  at the app's own documented 480px minimum window width
+  (`windowConfig.ts` `minWidth: 480`), where it would let the tree panel
+  claim the entire window and crush `#main-panel`. The upper bound must
+  therefore always be derived (`windowWidth - MIN_MAIN_PANEL_WIDTH`), never
+  cached or hardcoded.
+- **No new main↔renderer IPC contract.** This is a pure renderer/DOM
+  concern — no `BridgeApi` member, no IPC channel, no main-process
+  involvement at all. Distinguishes it from every prior tree-panel task
+  (17/18/21), which crossed the IPC boundary.
+- **No persisted state.** Width is transient UI state for the lifetime
+  of one window, same tier as `viewSettings`/`currentTreeRoot` — resets
+  to the CSS default (`260px`) on every relaunch. No schema for
+  persistence is defined because none is introduced.
+
+### Pure Transformation Logic
+
+One pure transformation: `clampWidth(rawX, windowWidth) -> width`, where
+`width = min(windowWidth - MIN_MAIN_PANEL_WIDTH, max(MIN_TREE_WIDTH, rawX))`.
+Everything else in this task (mousedown/mousemove/mouseup wiring, the CSS
+custom-property write) is infrastructural glue applying this
+transformation's result to the DOM — not additional domain logic. The
+transformation is re-evaluated on every mousemove from the *live* raw
+pointer x-position and *live* window width — never from a cached
+start-of-drag delta or a start-of-drag window-width snapshot — because
+the domain fact above (left edge at x=0) makes delta-tracking both
+unnecessary and a source of drift if the window is resized mid-drag.
+
+### Edge-Case Invariant Guardrails
+
+33. Resulting width is always within `[MIN_TREE_WIDTH, windowWidth -
+    MIN_MAIN_PANEL_WIDTH]` inclusive, for every mousemove during a drag,
+    with no transient out-of-range write to the DOM even for one frame.
+34. The upper bound is *always* recomputed from live `window.innerWidth`
+    at the moment of each mousemove — never a value captured once at
+    drag-start and reused. This specifically prevents the tree panel from
+    being able to crush `#main-panel` below `MIN_MAIN_PANEL_WIDTH` at any
+    window size the app supports, including its documented 480px minimum.
+35. Dragging the resize handle must never trigger a tree-node's own
+    click/expand behavior (Task 21's `handleDirectoryRowClick` /
+    `REQUEST_OPEN_FILE` paths) — the two interactions are on disjoint
+    elements with no shared listeners or bubbling dependency.
+36. No width persistence across sessions — matches the app's existing
+    session-only state model (`viewSettings`, `currentTreeRoot`). Width
+    is always `260px` (the CSS default) at a fresh launch, regardless of
+    what it was set to in a prior session.
+37. Drag tracking (`mousemove`/`mouseup`) is registered on `document`,
+    added on the handle's `mousedown` and removed on `mouseup` — never
+    hover-scoped to the handle element itself. A fast real drag moves the
+    pointer off a few-pixel-wide handle constantly; hover-scoped tracking
+    would silently drop the drag mid-motion.
+38. Cursor (`col-resize`) and text-selection suppression apply to the
+    whole document for the duration of an active drag (via a body-level
+    class), not just while the pointer is directly over the handle —
+    otherwise fast pointer movement produces cursor flicker and
+    accidental text selection elsewhere in the document.
+39. Every new tree-panel-resize element gets a `body.dark-mode #id` rule,
+    following the same per-ID scoping convention as guardrail #25
+    (Task 21) — no new theming mechanism introduced.
+
+---

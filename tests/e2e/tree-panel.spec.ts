@@ -1,7 +1,12 @@
+import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import type { Page } from '@playwright/test';
+import { _electron as electron } from '@playwright/test';
 import { test, expect } from './support/fixtures';
 import { IPC_CHANNELS } from '../../src/preload/api';
+
+const ENTRY_POINT = path.join(process.cwd(), 'dist/main/index.js');
 
 // First renderer UI consumer of Task 17/18's FOLDER_TREE_ROOT / listDirectory
 // contract (Task 17 was backend-only). Reuses the same fixture tree
@@ -217,4 +222,142 @@ test('dark mode toggle with a folder expanded to a nested level applies real com
   // Task 8 guardrail #4), never a content-refresh side effect.
   await expect(nestedRow).toBeVisible();
   await expect(subChildren).toBeVisible();
+});
+
+// Task 23: drag-to-resize handle between #tree-panel and #main-panel.
+// `#tree-panel` is the flex row's first child (left edge always at viewport
+// x=0), so a real Playwright mouse drag's clientX *is* the desired panel
+// width -- these tests drive `page.mouse.down/move/up` directly rather than
+// standing in with a synthetic `style.setProperty()` call, per the task
+// assignment's own requirement.
+test.describe('Task 23: tree panel drag-to-resize', () => {
+  async function dragHandleTo(window: Page, targetClientX: number) {
+    const handle = window.locator('#tree-resize-handle');
+    const box = await handle.boundingBox();
+    if (!box) throw new Error('#tree-resize-handle has no bounding box -- test setup assumption broken');
+    const handleY = box.y + box.height / 2;
+    await window.mouse.move(box.x + box.width / 2, handleY);
+    await window.mouse.down();
+    await window.mouse.move(targetClientX, handleY, { steps: 10 });
+    await window.mouse.up();
+  }
+
+  function elementWidth(window: Page, selector: string): Promise<number> {
+    return window.locator(selector).evaluate((el) => el.getBoundingClientRect().width);
+  }
+
+  test('dragging the handle to a mid-range position resizes #tree-panel to match', async ({ electronApp }) => {
+    const window = await electronApp.firstWindow();
+    await expect(window.locator('#tree-root')).toBeVisible();
+
+    await dragHandleTo(window, 400);
+
+    const width = await elementWidth(window, '#tree-panel');
+    expect(width).toBeGreaterThan(390);
+    expect(width).toBeLessThan(410);
+  });
+
+  test('dragging past MIN_TREE_WIDTH clamps #tree-panel to 180px', async ({ electronApp }) => {
+    const window = await electronApp.firstWindow();
+    await expect(window.locator('#tree-root')).toBeVisible();
+
+    await dragHandleTo(window, -50);
+
+    const width = await elementWidth(window, '#tree-panel');
+    expect(width).toBe(180);
+  });
+
+  test('dragging past the dynamic max at the default window size clamps to windowWidth - MIN_MAIN_PANEL_WIDTH', async ({
+    electronApp,
+  }) => {
+    const window = await electronApp.firstWindow();
+    await expect(window.locator('#tree-root')).toBeVisible();
+
+    const innerWidth = await window.evaluate(() => window.innerWidth);
+    await dragHandleTo(window, innerWidth + 500);
+
+    const width = await elementWidth(window, '#tree-panel');
+    expect(width).toBe(innerWidth - 300);
+  });
+
+  test('dragging past the dynamic max at a shrunk (480x640) window clamps to the LIVE windowWidth - MIN_MAIN_PANEL_WIDTH (not the pre-shrink 900px-window value), never crushing #main-panel (guardrail #34 / FI-2 proof)', async ({
+    electronApp,
+  }) => {
+    const window = await electronApp.firstWindow();
+    await expect(window.locator('#tree-root')).toBeVisible();
+
+    await electronApp.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0].setBounds({ width: 480, height: 640 });
+    });
+    // Client-area width after an outer setBounds(480) isn't necessarily
+    // exactly 480 (Windows window-chrome overhead) -- read the real live
+    // value rather than assuming it, then derive the expected clamp from
+    // that, same as the "default window size" test above.
+    await expect.poll(() => window.evaluate(() => window.innerWidth)).toBeLessThanOrEqual(480);
+    const innerWidth = await window.evaluate(() => window.innerWidth);
+    const expectedMaxTreeWidth = innerWidth - 300; // MIN_MAIN_PANEL_WIDTH
+
+    await dragHandleTo(window, innerWidth + 500);
+
+    const width = await elementWidth(window, '#tree-panel');
+    // Proves live window.innerWidth (not the original 900px-window-derived
+    // max of 600, and not a value snapshotted once at drag-start) drives the
+    // cap -- the whole point of guardrail #34.
+    expect(width).toBe(expectedMaxTreeWidth);
+
+    const mainWidth = await elementWidth(window, '#main-panel');
+    // MIN_MAIN_PANEL_WIDTH (300) minus a few px of slack for
+    // #tree-resize-handle's own width (the clamp formula caps at
+    // windowWidth - MIN_MAIN_PANEL_WIDTH without separately subtracting the
+    // handle's own few-px footprint from the row) -- still far above the
+    // near-zero width the FI-2 fault (a fixed maxTreeWidth) produces here.
+    expect(mainWidth).toBeGreaterThan(280);
+  });
+
+  test('resized width does not persist -- a fresh relaunch shows the 260px CSS default', async () => {
+    // Two full, sequential Electron launches sharing one on-disk profile
+    // (mkdtempSync userDataDir), same shape as view-menu.spec.ts's (d) test
+    // -- the standard one-launch-per-test `electronApp` fixture doesn't fit
+    // "close, then relaunch the same profile" by construction.
+    const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-view-e2e-'));
+    const childEnv = { ...process.env };
+    delete childEnv.ELECTRON_RUN_AS_NODE;
+
+    try {
+      const app = await electron.launch({ args: [ENTRY_POINT, fixtureNotesFile], env: childEnv, userDataDir });
+      const window = await app.firstWindow();
+      await expect(window.locator('#tree-root')).toBeVisible();
+
+      await dragHandleTo(window, 400);
+      const widthAfterDrag = await elementWidth(window, '#tree-panel');
+      expect(widthAfterDrag).not.toBe(260);
+
+      await app.close();
+
+      const secondApp = await electron.launch({ args: [ENTRY_POINT, fixtureNotesFile], env: childEnv, userDataDir });
+      const secondWindow = await secondApp.firstWindow();
+      await expect(secondWindow.locator('#tree-root')).toBeVisible();
+
+      const widthAfterRelaunch = await elementWidth(secondWindow, '#tree-panel');
+      expect(widthAfterRelaunch).toBe(260);
+
+      await secondApp.close();
+    } finally {
+      fs.rmSync(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  test('dragging the handle does not trigger tree-node click/expand behavior (guardrail #35)', async ({
+    electronApp,
+  }) => {
+    const window = await electronApp.firstWindow();
+    await expect(window.locator('#tree-root')).toBeVisible();
+
+    const subChildren = treeChildren(window, 'sub');
+    await expect(subChildren).toBeHidden();
+
+    await dragHandleTo(window, 350);
+
+    await expect(subChildren).toBeHidden();
+  });
 });

@@ -25,10 +25,33 @@ body {
   width: var(--tree-panel-width);
   box-sizing: border-box;
   overflow-y: auto;
-  border-right: 1px solid #d0d7de;
   background: #f6f8fa;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
   font-size: 0.85rem;
+}
+
+/* Task 23: drag handle between #tree-panel and #main-panel. A multi-pixel
+   hit area (not a literal 1px target) with a thin 1px visible divider line
+   centered inside it -- this internal line replaces #tree-panel's former
+   border-right as the single divider between the two panels, so the two
+   never compete visually. */
+#tree-resize-handle {
+  flex: 0 0 auto;
+  width: 6px;
+  cursor: col-resize;
+  background: linear-gradient(to right, transparent 2px, #d0d7de 2px, #d0d7de 3px, transparent 3px);
+}
+
+#tree-resize-handle:hover {
+  background: linear-gradient(to right, transparent 1px, #0969da 1px, #0969da 4px, transparent 4px);
+}
+
+/* Applied to the whole document only for the duration of an active drag
+   (guardrail #38) -- keeps the cursor/no-select behavior consistent even
+   when a fast drag momentarily moves the pointer off the thin handle. */
+body.resizing-tree-panel {
+  cursor: col-resize;
+  user-select: none;
 }
 
 /* flex: 1 1 auto lets #main-panel take the remaining row width;
@@ -255,7 +278,14 @@ body.dark-mode.drag-over {
 
 body.dark-mode #tree-panel {
   background: #161b22;
-  border-right-color: #30363d;
+}
+
+body.dark-mode #tree-resize-handle {
+  background: linear-gradient(to right, transparent 2px, #30363d 2px, #30363d 3px, transparent 3px);
+}
+
+body.dark-mode #tree-resize-handle:hover {
+  background: linear-gradient(to right, transparent 1px, #58a6ff 1px, #58a6ff 4px, transparent 4px);
 }
 
 body.dark-mode #tree-empty-state {

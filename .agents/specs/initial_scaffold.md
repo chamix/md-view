@@ -3198,3 +3198,144 @@ symptom specifically and explicitly does not claim to resolve Task 19's
 broader, still-open concurrent-process contention question.
 
 ---
+
+## Task 23: Tree Panel — Drag-to-Resize
+
+### The Inward Dependency Rule
+
+This task has no core-domain component to speak of — `clampWidth` (the
+one pure transformation, per `functional_domain.md` Task 23) is trivial
+enough to inline at its single call site rather than extract to a
+separate module; extracting it would be ceremony without a second
+caller. The dependency direction that matters here is narrower: the DOM
+event-wiring (`renderer.js`) is the only outer layer touched, and it
+does not reach into main-process or IPC code at all (a first for the
+tree-panel line of tasks) — confirming this is a leaf, presentation-only
+concern.
+
+### SOLID Boundary Scan
+
+- **SRP.** Three concerns stay visually and structurally separate:
+  (1) the handle's own layout/paint (CSS), (2) drag-lifecycle wiring —
+  when tracking starts/stops (the `mousedown`/`mouseup` listeners),
+  (3) the width computation itself (the clamp math on `mousemove`). All
+  three already read as separable in the task's own reference JS; no
+  restructuring needed to keep them separable in the real diff.
+- **OCP.** `MIN_TREE_WIDTH`/`MIN_MAIN_PANEL_WIDTH` are named constants at
+  the top of the wiring code, not inlined into the clamp expression —
+  changing either bound later is a one-line edit, not a re-derivation.
+- **DIP.** N/A at this scale — no abstraction/interface boundary is
+  warranted for two DOM listeners and one arithmetic clamp. Introducing
+  an interface here would violate the repo's own stated bias (`CLAUDE.md`
+  — prefer composition, avoid speculative abstraction) for zero benefit,
+  since there is exactly one concrete implementation and no reason to
+  expect a second.
+
+### Pattern Application
+
+No GoF pattern is introduced. This is intentional, not an omission:
+Task 21's tree rendering already uses a Composite-shaped-without-a-class
+recursive function where the recursion itself does the pattern's job;
+this task's drag logic is a standard, well-known "attach/detach
+document-level listeners across a drag lifecycle" idiom with no
+structural decision point that a pattern would clarify. Forcing a
+Strategy/Command wrapper around one clamp function would be pattern
+application for its own sake.
+
+### HTML — `src/renderer/index.html`
+
+Insert `<div id="tree-resize-handle"></div>` as a new sibling between
+the existing `#tree-panel` and `#main-panel` divs inside `#app-body`.
+No other markup changes.
+
+### CSS — `src/renderer/app.css`
+
+- New `#tree-resize-handle` rule block: `flex: 0 0 auto`, a multi-pixel
+  hit area (not a literal 1px target) with cursor `col-resize`, a thin
+  1px visible divider line inside the hit area, and a hover state
+  (subtle background/line-color shift).
+- **Divider-line decision: the handle replaces `#tree-panel`'s existing
+  `border-right`, rather than sitting alongside it.** Keeping both would
+  put two visually competing divider lines directly adjacent to each
+  other for no benefit — the handle's own internal 1px line is the
+  single divider going forward. `#tree-panel`'s `border-right: 1px solid
+  #d0d7de;` (and its `body.dark-mode #tree-panel` `border-right-color`
+  counterpart) is removed as part of this change.
+- New `body.resizing-tree-panel` rule: forces `cursor: col-resize` and
+  `user-select: none` at the document level, added only for the
+  duration of an active drag (guardrail #38).
+- `body.dark-mode #tree-resize-handle` (rest + hover) rules, following
+  the file's existing per-ID dark-mode convention (guardrail #39).
+
+### JS — `src/renderer/renderer.js`
+
+Added in the same `Task 21: tree sidebar` region as the existing
+`treePanelEl`/`treeEmptyStateEl`/`treeRootEl` lookups (around line 216):
+a `treeResizeHandleEl` lookup, two named constants
+(`MIN_TREE_WIDTH = 180`, `MIN_MAIN_PANEL_WIDTH = 300`), and one
+`mousedown` listener on the handle that, per-drag, attaches/detaches
+`document`-level `mousemove`/`mouseup` listeners exactly as specified in
+the task assignment's reference implementation (`clientX` maps directly
+to width, `maxTreeWidth` recomputed from live `window.innerWidth` on
+every `mousemove`, width written via
+`document.documentElement.style.setProperty('--tree-panel-width', ...)`).
+This is a direct, unmodified application of the task assignment's own
+code — no deviation from that reference is warranted or introduced.
+
+### Required proof (fault injection — authoritative per task assignment)
+
+- **FI-1:** temporarily delete the `Math.min`/`Math.max` clamp → a test
+  dragging past both `MIN_TREE_WIDTH` and the dynamic max must fail
+  (catching an out-of-clamp computed width) → restore → GREEN.
+- **FI-2** (protects guardrail #34 specifically): temporarily replace the
+  dynamic `maxTreeWidth` with a fixed constant (e.g. `600`) → a test that
+  first shrinks the `BrowserWindow` to `480×640` (`electronApp.evaluate`
+  + `setBounds`, the same pattern `ui-shell.spec.ts` already uses) then
+  drags toward the old fixed max must show `#main-panel`'s computed width
+  fall below `MIN_MAIN_PANEL_WIDTH` → restore → GREEN.
+
+### Tests — `tests/e2e/tree-panel.spec.ts`
+
+Playwright real-mouse simulation (`page.mouse.down/move/up`) driving an
+actual drag, then reading `#tree-panel`'s computed width — never a
+synthetic `style.setProperty()` standing in for a real drag. Coverage:
+normal mid-range resize; drag past `MIN_TREE_WIDTH`; drag past the
+dynamic max at both the default and a shrunk (480px) window width; FI-1
+and FI-2's fault-injection proofs; width back to `260px` (no
+persistence) after a fresh `electronApp` relaunch.
+
+### File tree — Task 23 additions/changes
+
+```
+md-view/
+├── src/
+│   └── renderer/
+│       ├── index.html         # ~ new #tree-resize-handle sibling div
+│       ├── app.css             # ~ handle styles, body.resizing-tree-panel,
+│       │                       #   border-right removed from #tree-panel,
+│       │                       #   dark-mode counterparts
+│       └── renderer.js         # ~ drag wiring, Task 21's tree-sidebar region
+├── tests/
+│   └── e2e/
+│       └── tree-panel.spec.ts  # ~ new resize describe block (or a new
+│                                #   sibling spec file — engineer's call)
+├── .agents/
+│   ├── specs/
+│   │   ├── functional_domain.md   # ~ Task 23 section (done, this pass)
+│   │   ├── initial_scaffold.md    # ~ Task 23 section (this section)
+│   │   └── backlog.md             # ~ Task 23 note if any deferred item
+│   │                                #   surfaces during implementation
+│   ├── DEVLOG.md                  # ~ brief entry
+│   └── metrics/RUN_LOG.md         # ~ append-only row, held until Lead
+│                                    #   sign-off per process notes
+```
+
+### Governance note
+
+No ADR — same tier as Task 21 (real interactive feature, single-file
+concentrated change, no new architectural boundary or cross-cutting
+concern introduced). Normal-weight spec entries apply, per the task
+assignment's own framing ("real interactive behavior, not a one-line
+fix").
+
+---

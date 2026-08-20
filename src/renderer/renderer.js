@@ -217,6 +217,32 @@ if (typeof document !== 'undefined') {
   const treeEmptyStateEl = document.getElementById('tree-empty-state');
   const treeRootEl = document.getElementById('tree-root');
 
+  // Task 23: drag-to-resize handle. #tree-panel is the flex row's first
+  // child (left edge always at viewport x=0), so a live pointer clientX
+  // *is* the desired panel width -- no delta/offset tracking needed. See
+  // functional_domain.md Task 23 for the full domain rationale.
+  const treeResizeHandleEl = document.getElementById('tree-resize-handle');
+  const MIN_TREE_WIDTH = 180;
+  const MIN_MAIN_PANEL_WIDTH = 300;
+
+  treeResizeHandleEl.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    document.body.classList.add('resizing-tree-panel');
+
+    const onMouseMove = (moveEvent) => {
+      const maxTreeWidth = window.innerWidth - MIN_MAIN_PANEL_WIDTH;
+      const clamped = Math.min(maxTreeWidth, Math.max(MIN_TREE_WIDTH, moveEvent.clientX));
+      document.documentElement.style.setProperty('--tree-panel-width', `${clamped}px`);
+    };
+    const onMouseUp = () => {
+      document.body.classList.remove('resizing-tree-panel');
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  });
+
   const TREE_EMPTY_STATE_DEFAULT_TEXT = 'No folder open.';
 
   const createTreeRow = (labelText, extraClassName) => {
