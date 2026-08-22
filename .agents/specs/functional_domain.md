@@ -1453,3 +1453,69 @@ it calls.
     already expanded stays expanded, no highlight applied, no crash.
 
 ---
+
+## Task 25: Dropped/Opened Directory Establishes Tree Root Instead of Rejecting
+
+`REQUEST_OPEN_FILE` is the one shared entry point for both drag-and-drop
+(`openDroppedFile`) and tree-panel file clicks (`openFileByPath`). Today
+it has exactly one input contract — "this is a file path" — and any
+directory that reaches it is misrouted into `renderFile`'s Markdown-only
+check, which correctly rejects it, but as a *document* error rather than
+recognizing the input was never a document candidate to begin with. The
+domain fix is not a new capability; it's correcting the input contract
+so a directory is classified and dispatched to the *existing* directory-
+establishment behavior ("Open Folder…" / Task 17-18's
+`establishTreeRoot`) instead of being force-fit through the file-only
+path.
+
+### Abstract Schema Contracts
+
+- **`REQUEST_OPEN_FILE`'s payload is not "a file path" — it is "a
+  filesystem path of unknown kind."** The classification (file vs.
+  directory vs. neither) must happen before any document-rendering logic
+  runs, not be inferred after the fact from a rendering error. This
+  mirrors the same "classify before acting" shape `establishTreeRoot`
+  itself already applies via `realpath`/stat-adjacent handling.
+- **A directory reaching this entry point is not an error condition —
+  it is a valid alternate input with its own valid output**: "establish
+  this as the tree root," the identical output `openFolderViaDialog`
+  already produces for the same kind of input. There is exactly one
+  domain meaning for "a directory was opened," regardless of which of
+  the two entry points (dialog vs. drag/click) produced it.
+- **A path that is neither a readable file nor a readable directory**
+  (nonexistent, permission error) retains its existing single meaning:
+  a rendering failure, reported exactly as today. This task adds a
+  branch, not a new failure mode — a stat failure falls through to the
+  behavior that already exists for every other unreadable path.
+
+### Pure Transformation Logic
+
+None. Classifying a path as file/directory/unreadable is an inherently
+impure filesystem query (`fs.stat`), not a pure transformation — there
+is no new pure predicate this task introduces, unlike Task 24's
+`isPathUnder`. The only "logic" is a two-way dispatch on the result of
+that one impure check, structurally identical to the dispatch
+`establishTreeRoot` already performs after its own `realpath` call.
+
+### Edge-Case Invariant Guardrails
+
+(Continuing the sequential numbering from Task 24's #44.)
+
+45. A directory path reaching `REQUEST_OPEN_FILE` (via drag-and-drop or
+    a future non-`.md` tree-click) establishes it as the tree root via
+    the existing `establishTreeRoot` — never a second, parallel
+    directory-handling implementation.
+46. A file path reaching `REQUEST_OPEN_FILE` behaves byte-identically to
+    before this task — the stat check is additive, never a behavior
+    change on the file path.
+47. Establishing the tree root from this entry point must not render,
+    re-render, or clear the currently displayed document, and must not
+    touch watcher state — no `renderFile` call, no `FILE_RENDERED`
+    event, on the directory branch (same invariant as Task 17's
+    guardrail #5 for "Open Folder…", now proven true from this second
+    entry point).
+48. A stat failure on the incoming path (nonexistent, permission error)
+    is not a new, third outcome — it falls through to the pre-existing
+    `renderFile`-driven error path, unchanged in message or behavior.
+
+---

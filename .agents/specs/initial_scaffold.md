@@ -3537,3 +3537,112 @@ in `renderer.js` + `app.css`, no new architectural boundary or IPC
 surface introduced). Normal-weight spec entries apply.
 
 ---
+
+## Task 25: Dropped/Opened Directory Establishes Tree Root Instead of Rejecting
+
+### The Inward Dependency Rule
+
+No new boundary crossed. The fix is entirely within `src/main/index.ts`'s
+existing `REQUEST_OPEN_FILE` handler — a peripheral I/O dispatch point
+that already owns exactly this kind of classify-then-route decision
+(it already routes to `renderAndWatch`, unconditionally, today). No new
+IPC channel, no new preload surface, no renderer change: this is a
+main-process dispatch correction, not a new capability crossing a layer
+boundary.
+
+### SOLID Boundary Scan
+
+- **SRP.** The handler's one responsibility — "route an opened path to
+  the correct handling" — was previously incomplete (it silently assumed
+  "file"). Adding the directory branch completes that single
+  responsibility rather than adding a second one. `establishTreeRoot`
+  keeps its existing, sole responsibility ("make this directory the tree
+  root"); this task adds a second *caller* of it, not new behavior
+  inside it.
+- **OCP.** `establishTreeRoot` and `renderAndWatch`/`renderFile` are
+  unmodified — both are extended in applicability (one more caller,
+  respectively for directory and file inputs at this entry point)
+  without modifying their internals.
+- **LSP/ISP.** N/A at this scale — no interfaces or class hierarchies
+  are introduced or affected.
+- **DIP.** The handler depends on the same two existing abstractions
+  (`establishTreeRoot`, `renderAndWatch`) it always could have; the only
+  change is which one gets invoked for which input shape, decided by one
+  `fs.stat` check. No new concrete dependency is introduced — `fs` is
+  already imported in this file.
+
+### Pattern Application
+
+Plain conditional dispatch on a classification result — not a GoF
+pattern by name, and not worth dressing up as one. This is the same
+"intentional non-pattern" call Task 24 made for its supersession token:
+a two-way branch on one stat result does not warrant Strategy/Command
+machinery. `establishTreeRoot` itself is reused verbatim (no
+Factory/Template Method needed — it already is the one correct way to
+turn a directory path into a tree-root event, per Task 17/18).
+
+### TS — `src/main/index.ts`
+
+- **`REQUEST_OPEN_FILE` listener** (currently lines 317-321): becomes
+  `async`, gains a leading `fs.stat(filePath)` classification (wrapped
+  in try/catch — a stat failure leaves `isDirectory` `false`, falling
+  through unchanged to `renderAndWatch`, which independently re-derives
+  and reports the same failure it does today). On `isDirectory === true`,
+  call `await establishTreeRoot(filePath)` and `return` — no
+  `renderAndWatch` call on that branch. On `false`, fall through to the
+  existing `renderAndWatch(filePath)` call, unchanged.
+- No other function in this file is touched. `establishTreeRoot`,
+  `renderAndWatch`, `renderFile`, `openFileByPath`'s preload wiring, and
+  the argv-open and File>Open dialog paths are all untouched, per the
+  task's own "Out of scope" section.
+
+### Tests — `tests/e2e/drag-drop.spec.ts`
+
+Extend the existing file (no new spec file — this is additive to an
+established suite, same posture as adding a `describe` block within it):
+
+- New case: dragging a folder onto the window asserts `FOLDER_TREE_ROOT`
+  fires with the correct `rootPath`/`entries` for that folder (reusing
+  the file's existing dialog-mock-independent drag-simulation helper),
+  and asserts zero `FILE_RENDERED` events fire — the direct proof of
+  guardrail #47, mirrored from Task 17's original "Open Folder…" test
+  shape.
+- Regression proof (run, not assumed): the existing `drag-drop.spec.ts`
+  and `tree-panel.spec.ts` suites pass unmodified, confirming zero
+  behavior change for real file drops and tree clicks (guardrail #46).
+- New case: a dropped path that cannot be stat'd (nonexistent) still
+  produces today's existing error behavior — confirmed by an actual test
+  run against the new code path, not inferred from the try/catch shape
+  alone (guardrail #48).
+
+### File tree — Task 25 additions/changes
+
+```
+md-view/
+├── src/
+│   └── main/
+│       └── index.ts               # ~ REQUEST_OPEN_FILE listener: async,
+│                                    #   fs.stat classification, directory
+│                                    #   branch → establishTreeRoot
+├── tests/
+│   └── e2e/
+│       └── drag-drop.spec.ts      # ~ + folder-drop→tree-root case,
+│                                    #   + stat-failure regression case
+├── .agents/
+│   ├── specs/
+│   │   ├── functional_domain.md   # ~ Task 25 section (done, this pass)
+│   │   ├── initial_scaffold.md    # ~ Task 25 section (this section)
+│   │   └── backlog.md             # ~ Task 25 note: this bug shipped
+│   │                                #   through Tasks 16-24's full review
+│   │                                #   cycle undetected — same class as
+│   │                                #   the Task 1-4 broken-image finding
+│   └── DEVLOG.md                  # ~ brief entry, same backlog note angle
+```
+
+### Governance note
+
+No ADR — this is a bug fix within an existing, already-governed dispatch
+point (no new architectural boundary, no new IPC surface, no new pattern).
+Normal-weight spec entries apply, sized to the change's actual scope.
+
+---

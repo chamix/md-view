@@ -453,3 +453,27 @@ packaging — not assumed fine just because Windows was.
   scoped `test:unit`/targeted-e2e-file policy would — worth considering
   when this bucket's own dedicated investigation (already requested by
   the Task 18 reviewer, still pending) is eventually scoped.
+
+- [Resolved 2026-08-22] Task 25: `REQUEST_OPEN_FILE`'s listener in
+  `src/main/index.ts` unconditionally called `renderAndWatch(filePath)` for
+  any incoming path -- a dropped/opened *directory* was misrouted into
+  `renderFile`'s Markdown-only check and rejected as "Not a Markdown file:
+  <folder>" instead of being established as the tree root, the outcome
+  "Open Folder…" already produces for the same kind of input (Task 17-18's
+  `establishTreeRoot`). Went unnoticed through Tasks 16-24's full
+  governance/review cycle -- same class of finding as the Task 1-4
+  broken-image story documented in DEVLOG.md: real usage catching what a
+  fixture-scale e2e suite structurally can't (every drag-drop fixture is a
+  real file, by construction). Fixed with a single `fs.stat` classification
+  ahead of the existing dispatch, calling the existing `establishTreeRoot`
+  on the directory branch -- no second, parallel directory-handling
+  implementation. A stat failure falls through unchanged to the pre-existing
+  `renderAndWatch` error path. Two new `tests/e2e/drag-drop.spec.ts` cases
+  cover the folder-drop → tree-root path (with a zero-`FILE_RENDERED`
+  side-effect assertion, mirroring Task 17's original "Open Folder…" proof)
+  and the stat-failure regression; the full `drag-drop.spec.ts` +
+  `tree-panel.spec.ts` + `file-tree.spec.ts` suites (32 tests) and the full
+  57-test e2e suite were run and pass. No new backlog item surfaces beyond
+  this entry itself -- the explicitly out-of-scope "navigate up"/breadcrumb
+  gap noted in the task's own spec remains just that, out of scope, not a
+  new finding.

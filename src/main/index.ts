@@ -314,10 +314,26 @@ app.whenReady().then(() => {
   // duplicated here. The only new logic is the empty-string guard below,
   // covering a documented possible return from getPathForFile() on some
   // platforms; that case is a silent no-op, not a user-facing error.
-  ipcMain.on(IPC_CHANNELS.REQUEST_OPEN_FILE, (_event, filePath: string) => {
-    if (typeof filePath === 'string' && filePath.length > 0) {
-      renderAndWatch(filePath);
+  ipcMain.on(IPC_CHANNELS.REQUEST_OPEN_FILE, async (_event, filePath: string) => {
+    if (typeof filePath !== 'string' || filePath.length === 0) return;
+
+    let isDirectory = false;
+    try {
+      const stats = await fs.stat(filePath);
+      isDirectory = stats.isDirectory();
+    } catch {
+      // Stat failed (nonexistent path, permission error, etc.) -- fall
+      // through to the existing renderAndWatch/renderFile error path
+      // below, unchanged from today's behavior. Do not add a second,
+      // parallel error-handling branch here.
     }
+
+    if (isDirectory) {
+      await establishTreeRoot(filePath);
+      return;
+    }
+
+    renderAndWatch(filePath);
   });
 
   // Task 17: first request-response IPC pair in the app (ipcMain.handle /
