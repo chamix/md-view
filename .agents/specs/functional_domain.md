@@ -1351,3 +1351,105 @@ unnecessary and a source of drift if the window is resized mid-drag.
     (Task 21) — no new theming mechanism introduced.
 
 ---
+
+## Task 24: Tree Panel — Auto-Expand + Highlight Active File
+
+Closes the three-part sidebar plan (21/23/24). Two facts arrive
+independently over time — "this is now the tree root" (`FOLDER_TREE_ROOT`)
+and "this is now the open file" (`FILE_RENDERED`) — and must be
+reconciled into a single derived display fact: which row, if any, is
+currently "the active file," and is every ancestor folder on the path to
+it expanded so that row is actually visible. Neither source event alone
+carries enough information to answer that; a `FILE_RENDERED` message says
+nothing about the tree, and a `FOLDER_TREE_ROOT` message says nothing
+about what's open. The domain problem is reconciliation-under-partial-
+information, not either event individually.
+
+### Abstract Schema Contracts
+
+- **Reveal state is two independently-arriving facts, reconciled into
+  one derived display fact.** `currentTreeRootPath` (set by
+  `FOLDER_TREE_ROOT`) and `activeFilePath` (set by `FILE_RENDERED`) are
+  each simple scalars, tracked exactly like the existing
+  `lastMessage`/`lastViewSettings` pair (guardrail-adjacent precedent:
+  functional_domain.md's Task 8 section already establishes "latest
+  value of each independent channel, recomputed whenever either
+  changes" as this app's standing pattern for exactly this shape of
+  problem). The derived fact — "highlight this specific row, with this
+  specific ancestor chain expanded" — is never stored; it's recomputed
+  from the two scalars on every relevant change, same as
+  `updateFrontmatterVisibility()` recomputes rather than caches.
+- **Containment is a pure, separator-aware string relation:**
+  `isPathUnder(childPath, parentPath) -> boolean`. This is the one new
+  pure domain rule this task introduces. It must reject the false-
+  prefix trap (`/foo/bar2` is not under `/foo/bar` merely because the
+  string `/foo/bar` is a character-prefix of `/foo/bar2`) and must
+  treat `/` and `\` as equally valid separators, since `entry.path`
+  values on Windows use OS-native separators (Task 17/18) while this
+  logic must not assume which platform it runs on.
+- **The reveal walk is a level-by-level descent through the same
+  Composite-shaped tree `renderTreeLevel` already built**, not a
+  separate parallel data structure. At each level there is exactly one
+  of three outcomes for the "next" node: exact match (done), proper
+  ancestor (descend, expanding if necessary), or no match (stop, leave
+  whatever's already expanded as-is). This mirrors the physical DOM
+  tree Task 21 already renders — there is no abstract "path tree"
+  model separate from the DOM being walked.
+- **A reveal request is supersedable, not queueable.** Two reveal
+  triggers can legitimately fire in close succession (opening any file
+  fires both `FOLDER_TREE_ROOT`-adjacent and `FILE_RENDERED` paths in
+  the common case, per the task's own framing). The domain rule is
+  "only the most recent request's outcome may ever be applied" — a
+  monotonically increasing token compared after every `await` boundary,
+  the standard shape for this exact problem (already implicitly
+  present in spirit wherever this app already treats "latest wins" as
+  correct — e.g. `lastMessage`/`lastViewSettings` themselves are a
+  last-write-wins pair, just without an async race to guard against).
+- **Auto-expansion during a reveal must be indistinguishable, at the
+  fetch layer, from a manual click.** There is exactly one path that
+  turns "folder not yet fetched" into "folder fetched and rendered" —
+  `handleDirectoryRowClick` plus its `needsFetch` gate (Task 21). This
+  task does not introduce a second such path; it calls the existing one
+  programmatically. This is the direct domain consequence of Task 21's
+  own guardrail #21 ("exactly one `listDirectory` call per folder,
+  ever") — a parallel reveal-only fetch path would silently violate
+  that invariant the moment a user expanded a folder by hand before (or
+  during) a reveal walk touching the same folder.
+
+### Pure Transformation Logic
+
+One new pure function: `isPathUnder(childPath, parentPath) -> boolean`,
+testable with plain string fixtures, zero DOM. Everything else in this
+task — the reveal walk's level-by-level traversal, the token-guarded
+async orchestration, the DOM highlight/unhighlight — is inherently
+impure (it reads and mutates live DOM state and awaits IPC), but each
+of those impure steps *consults* the one pure predicate to decide
+"match / descend / stop" at every level, exactly the same relationship
+`updateFrontmatterVisibility()` has with the pure `shouldShowFrontmatter`
+it calls.
+
+### Edge-Case Invariant Guardrails
+
+(Continuing the sequential numbering from Task 23's #39.)
+
+40. Highlighting only ever reflects the **latest** `onFileRendered` ok
+    message — an in-flight reveal walk superseded by a newer file open
+    must never apply its (by-then-stale) match/expand/highlight result
+    once it resumes from an `await`.
+41. A file whose path is not under the current tree root produces zero
+    highlight and zero crash — the normal, expected outcome whenever
+    Open Folder… points at a folder that doesn't contain whatever file
+    happens to be open, not an error condition.
+42. Auto-expanding a folder to reveal the active file must go through
+    the exact same fetch-once-ever path as a manual click
+    (`handleDirectoryRowClick` / `needsFetch`) — no separate, parallel
+    `listDirectory` call path that could double-fetch the same folder,
+    per Task 21's guardrail #21.
+43. Un-highlighting the previous active row is O(1) (a direct element
+    reference held in state), never a fresh DOM query across the whole
+    tree.
+44. A `listDirectory` failure encountered mid-walk (folder deleted
+    between render and reveal) stops the walk gracefully — whatever was
+    already expanded stays expanded, no highlight applied, no crash.
+
+---

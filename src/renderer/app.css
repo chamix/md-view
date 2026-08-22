@@ -241,6 +241,24 @@ body.dark-mode.drag-over {
   background: rgba(208, 215, 222, 0.32);
 }
 
+/* Task 24: highlights whichever row corresponds to the currently open file.
+   An accent-colored background + left border, distinct from both
+   .tree-row:hover's neutral gray wash and .tree-toggle-expanded's rotation
+   affordance -- stays unambiguous even when the active row is simultaneously
+   hovered (this rule intentionally comes after :hover so it wins the
+   background property on specificity-tie, and the border-left is a signal
+   :hover never produces at all). */
+.tree-row-active {
+  background: rgba(9, 105, 218, 0.15);
+  border-left: 2px solid #0969da;
+  padding-left: calc(0.5rem - 2px);
+  font-weight: 600;
+}
+
+.tree-row-active:hover {
+  background: rgba(9, 105, 218, 0.22);
+}
+
 .tree-toggle {
   display: inline-block;
   width: 0.85rem;
@@ -298,6 +316,23 @@ body.dark-mode .tree-row {
 
 body.dark-mode .tree-row:hover {
   background: rgba(48, 54, 61, 0.6);
+}
+
+/* Task 24 fix (review_report_task24.md §10): body.dark-mode .tree-row:hover
+   above (body + .dark-mode + .tree-row + :hover) has strictly higher
+   specificity than .tree-row-active:hover's two class-level selectors, so it
+   silently wins the background property in dark mode -- the active row's
+   accent background disappeared entirely on hover. These two dark-mode-scoped
+   rules restore it at matching specificity, and must stay *after*
+   body.dark-mode .tree-row:hover in source order to win the specificity tie
+   against it. */
+body.dark-mode .tree-row-active {
+  background: rgba(88, 166, 255, 0.18);
+  border-left-color: #58a6ff;
+}
+
+body.dark-mode .tree-row-active:hover {
+  background: rgba(88, 166, 255, 0.28);
 }
 
 body.dark-mode .tree-loading,

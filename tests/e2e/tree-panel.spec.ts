@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import type { Page } from '@playwright/test';
+import type { Page, ElectronApplication } from '@playwright/test';
 import { _electron as electron } from '@playwright/test';
 import { test, expect } from './support/fixtures';
 import { IPC_CHANNELS } from '../../src/preload/api';
@@ -359,5 +359,162 @@ test.describe('Task 23: tree panel drag-to-resize', () => {
     await dragHandleTo(window, 350);
 
     await expect(subChildren).toBeHidden();
+  });
+});
+
+// Task 24: auto-expand + highlight the tree row for whichever file is
+// currently active. establishTreeRoot() (src/main/index.ts) recomputes the
+// tree root as path.dirname() of *whatever file was just opened*, on every
+// single file open (File>Open, drag-drop, argv, and tree-row clicks all
+// funnel through the same REQUEST_OPEN_FILE -> renderAndWatch path) -- so a
+// freshly-opened file is, by construction, always a *direct* child of the
+// tree root immediately afterward, never a multi-level-nested one. The only
+// way a multi-level auto-expand walk is ever actually exercised is the
+// inverse order: a file is already active, and *then* the tree root is
+// pointed at one of its ancestor folders via Open Folder... (which never
+// touches activeFilePath) -- these helpers construct exactly that sequence.
+test.describe('Task 24: tree panel auto-expand + highlight active file', () => {
+  const deepFile = path.join(fixtureTreeDir, 'sub', 'deep.md');
+
+  async function mockOpenDialog(electronApp: ElectronApplication, target: string) {
+    await electronApp.evaluate(({ dialog }, targetPath) => {
+      dialog.showOpenDialog = (async () => ({
+        canceled: false,
+        filePaths: [targetPath],
+      })) as typeof dialog.showOpenDialog;
+    }, target);
+  }
+
+  async function openFolderTo(electronApp: ElectronApplication, dirPath: string) {
+    await mockOpenDialog(electronApp, dirPath);
+    await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open-folder')?.click());
+  }
+
+  async function openFileViaMenu(electronApp: ElectronApplication, filePath: string) {
+    await mockOpenDialog(electronApp, filePath);
+    await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open')?.click());
+  }
+
+  test.describe('with deep.md already open (root = its own parent, sub/, per establishTreeRoot)', () => {
+    test.use({ electronArgs: [deepFile] });
+
+    test('pointing the tree root at an ancestor folder (Open Folder…) auto-expands sub/ and highlights deep.md', async ({
+      electronApp,
+    }) => {
+      const window = await electronApp.firstWindow();
+      await expect(window.locator('#content')).toContainText('deep', { timeout: 10000 });
+
+      await openFolderTo(electronApp, fixtureTreeDir);
+
+      await expect(treeRow(window, 'notes.md')).toBeVisible();
+      await expect(treeChildren(window, 'sub')).toBeVisible();
+      await expect(treeRow(window, 'deep.md')).toHaveClass(/tree-row-active/);
+      await expect(window.locator('.tree-row-active')).toHaveCount(1);
+    });
+
+    test('clicking a different top-level file moves the highlight via the exact same onFileRendered -> revealAndHighlight path', async ({
+      electronApp,
+    }) => {
+      const window = await electronApp.firstWindow();
+      await expect(window.locator('#content')).toContainText('deep', { timeout: 10000 });
+
+      await openFolderTo(electronApp, fixtureTreeDir);
+      await expect(treeRow(window, 'deep.md')).toHaveClass(/tree-row-active/);
+
+      await treeRow(window, 'notes.md').click();
+      await expect(window.locator('#content')).toContainText('notes', { timeout: 10000 });
+
+      await expect(treeRow(window, 'notes.md')).toHaveClass(/tree-row-active/);
+      await expect(treeRow(window, 'deep.md')).not.toHaveClass(/tree-row-active/);
+      await expect(window.locator('.tree-row-active')).toHaveCount(1);
+    });
+  });
+
+  test('opening a file that establishes a fresh tree root still ends up correctly expanded+highlighted in the new tree', async ({
+    electronApp,
+  }) => {
+    const window = await electronApp.firstWindow();
+    await expect(window.locator('#content')).toContainText('notes', { timeout: 10000 });
+    await expect(treeRow(window, 'notes.md')).toHaveClass(/tree-row-active/);
+
+    // deep.md lives in a different directory than the current root
+    // (fixtureTreeDir) -- opening it re-establishes FOLDER_TREE_ROOT
+    // (guardrail #27: old tree fully cleared, brand-new DOM nodes), exactly
+    // this suite's already-established "open a file in a different folder"
+    // trigger (see file-tree.spec.ts's guardrail #4 test).
+    await openFileViaMenu(electronApp, deepFile);
+    await expect(window.locator('#content')).toContainText('deep', { timeout: 10000 });
+
+    await expect(treeRow(window, 'deep.md')).toHaveClass(/tree-row-active/);
+    await expect(window.locator('.tree-row-active')).toHaveCount(1);
+    // The old root's notes.md node is gone entirely, not merely unhighlighted.
+    await expect(window.locator('.tree-label', { hasText: /^notes\.md$/ })).toHaveCount(0);
+  });
+
+  test('Open Folder… to a folder that does not contain the currently-open file renders cleanly with zero highlight', async ({
+    electronApp,
+  }) => {
+    const window = await electronApp.firstWindow();
+    await expect(window.locator('#content')).toContainText('notes', { timeout: 10000 });
+    await expect(treeRow(window, 'notes.md')).toHaveClass(/tree-row-active/);
+
+    await openFolderTo(electronApp, path.join(fixtureTreeDir, 'sub'));
+
+    await expect(treeRow(window, 'deep.md')).toBeVisible();
+    await expect(window.locator('.tree-row-active')).toHaveCount(0);
+  });
+
+  test.describe('with deep.md already open (root = its own parent, sub/, per establishTreeRoot)', () => {
+    test.use({ electronArgs: [deepFile] });
+
+    test('FI-1: a reveal walk superseded mid-await by a newer file open never applies its stale expand/highlight result', async ({
+      electronApp,
+    }) => {
+      const window = await electronApp.firstWindow();
+      await expect(window.locator('#content')).toContainText('deep', { timeout: 10000 });
+
+      // Artificially slow down every REQUEST_LIST_DIRECTORY response so the
+      // reveal walk triggered by the Open Folder… call below is still
+      // awaiting its expand-fetch of "sub" when the second file-open fires
+      // immediately after -- manufactures the exact race window
+      // deterministically rather than hoping for natural timing luck. Same
+      // ipcMain._invokeHandlers technique as the "exactly one listDirectory
+      // call" FI-1 test above in this file (electronApp.evaluate() has no
+      // require()/module scope -- see that test's own comment for the full
+      // rationale).
+      await electronApp.evaluate(({ ipcMain }, channel) => {
+        const invokeHandlers = (
+          ipcMain as unknown as { _invokeHandlers: Map<string, (...args: unknown[]) => unknown> }
+        )._invokeHandlers;
+        const originalHandler = invokeHandlers.get(channel);
+        if (!originalHandler) {
+          throw new Error('production REQUEST_LIST_DIRECTORY handler not found -- test setup assumption broken');
+        }
+        ipcMain.removeHandler(channel);
+        ipcMain.handle(channel, async (event: unknown, dirPath: string) => {
+          await new Promise((resolve) => setTimeout(resolve, 600));
+          return originalHandler(event, dirPath);
+        });
+      }, IPC_CHANNELS.REQUEST_LIST_DIRECTORY);
+
+      // File A's trigger: point the tree root at deep.md's ancestor -- the
+      // reveal walk this kicks off must expand "sub" (now artificially
+      // slow) before it can find+highlight deep.md.
+      await openFolderTo(electronApp, fixtureTreeDir);
+
+      // File B, fired immediately after -- well before file A's 600ms-
+      // delayed listDirectory call would resolve.
+      await openFileViaMenu(electronApp, path.join(fixtureTreeDir, 'notes.md'));
+
+      await expect(window.locator('#content')).toContainText('notes', { timeout: 10000 });
+
+      // Let file A's artificially-delayed reveal walk fully settle before
+      // asserting the final state.
+      await window.waitForTimeout(1000);
+
+      await expect(window.locator('.tree-row-active')).toHaveCount(1);
+      await expect(treeRow(window, 'notes.md')).toHaveClass(/tree-row-active/);
+      await expect(treeRow(window, 'deep.md')).not.toHaveClass(/tree-row-active/);
+    });
   });
 });

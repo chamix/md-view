@@ -3339,3 +3339,201 @@ assignment's own framing ("real interactive behavior, not a one-line
 fix").
 
 ---
+
+## Task 24: Tree Panel — Auto-Expand + Highlight Active File
+
+### The Inward Dependency Rule
+
+No new outward boundary is crossed. `revealAndHighlight` and
+`isPathUnder` live in the same peripheral layer as the rest of
+`renderer.js`'s DOM-touching code — this app's Clean Architecture
+boundary (main process I/O vs. renderer presentation) is unchanged by
+this task. No new `BridgeApi` member, no new IPC channel: reveal logic
+consumes the two IPC contracts that already exist
+(`onFolderTreeRoot`/`onFileRendered` inbound, `listDirectory` outbound
+via the existing `handleDirectoryRowClick`), the same "no new main↔
+renderer contract" posture Task 23 documented for drag-resize.
+
+### SOLID Boundary Scan
+
+- **SRP.** Three responsibilities stay in three places, matching the
+  functional-domain split: `isPathUnder` (pure containment predicate),
+  `revealAndHighlight` (orchestration — walk the tree, decide
+  match/descend/stop per level, manage the supersession token), and
+  `handleDirectoryRowClick` (fetch-or-toggle a single folder, reused
+  unmodified in spirit). None of these absorb another's job — in
+  particular, `revealAndHighlight` never reimplements fetch-or-toggle
+  logic; it calls the existing function.
+- **OCP.** `handleDirectoryRowClick`'s signature changes
+  (`entry`→`folderPath`), but per the task assignment this is a
+  same-behavior simplification (the function already only ever reads
+  `entry.path`), not a behavior change — its one existing call site is
+  updated in place, and its internal logic (the `needsFetch` gate, the
+  loading-row lifecycle, the ok/error branches) is untouched. This
+  task *extends* what can drive that function (a programmatic reveal
+  walk, not just a click handler) without modifying what it does.
+- **LSP/ISP.** N/A at this scale — no class hierarchies or multi-method
+  interfaces are introduced or affected.
+- **DIP.** The concrete dependency worth naming: `revealAndHighlight`
+  depends on `handleDirectoryRowClick` as the *only* sanctioned way to
+  turn "not yet fetched" into "fetched" (functional domain guardrail
+  #42) — a duplicated inline `listDirectory` call inside the reveal
+  walk would be a DIP-shaped violation in spirit (a second concrete
+  implementation of the same abstraction, drifting from the original
+  the moment either one changes), even though no formal interface
+  exists to name it. No new interface/abstraction is warranted beyond
+  "call the one function" — same "N/A at this scale" reasoning Task 23
+  gave for its own single-implementation drag logic.
+
+### Pattern Application
+
+- **Traversal mirrors Task 21's existing Composite-shaped-without-a-
+  class rendering** — the reveal walk descends the same physical DOM
+  tree `renderTreeLevel` built, level by level, rather than maintaining
+  a second parallel "path tree" model. No new Composite is introduced;
+  this task's walk is a *consumer* of the structure Task 21 already
+  produced.
+- **The supersession token is the standard cancellation-token /
+  sequence-lock idiom** for "only the latest of several overlapping
+  async operations may apply its result" — not a GoF pattern by name.
+  Documented explicitly as an intentional non-pattern, same as Task
+  23's call not to wrap its drag clamp in Strategy/Command: introducing
+  a formal Observer/Mediator around two DOM event handlers calling one
+  shared function would be structure for its own sake here.
+
+### JS — `src/renderer/renderer.js`
+
+- **Refactor (behavior-preserving):** `handleDirectoryRowClick(entry,
+  childrenEl, toggleEl)` → `handleDirectoryRowClick(folderPath,
+  childrenEl, toggleEl)`. Body unchanged except substituting
+  `folderPath` for `entry.path`. The one existing call site in
+  `renderTreeLevel` (`row.addEventListener('click', () => { ... })`)
+  passes `entry.path` instead of `entry`.
+- **`renderTreeLevel`:** one addition — `node.dataset.path = entry.path;`
+  set on every `.tree-node`, directory or file, right after `node` is
+  created. This is the only new DOM-queryable state the reveal walk
+  needs; no other attribute or data structure is introduced.
+- **New pure function**, placed alongside `applyRenderedContent` /
+  `statusBarText` / `shouldShowFrontmatter` / `firstDroppedFile` /
+  `needsFetch` at the top of the file (above the `typeof document`
+  guard, per the file's existing convention of keeping pure/testable
+  functions outside the DOM-guarded block): `isPathUnder(childPath,
+  parentPath)`, exactly as specified in the task assignment. Added to
+  the `module.exports` object at the bottom alongside the other five.
+- **New state**, inside the `typeof document !== 'undefined'` block,
+  alongside the existing `dragDepth`/`lastMessage`/`lastViewSettings`
+  declarations: `currentTreeRootPath`, `activeFilePath`, `activeRowEl`,
+  `revealToken` — all `let`, all initialized as specified in the task
+  assignment.
+- **New function `revealAndHighlight()`**, async, implementing the
+  five-step algorithm from the task assignment verbatim: increment-and-
+  capture the token; clear the existing highlight (O(1), via
+  `activeRowEl`); early-return on unset root/file or
+  `!isPathUnder(...)`; walk `treeRootEl` level by level using
+  `dataset.path` and `isPathUnder` to decide match/descend/stop,
+  calling `handleDirectoryRowClick(node.dataset.path, childrenEl,
+  toggleEl)` (the refactored signature) to expand an unfetched
+  ancestor, and just unhiding an already-fetched-but-collapsed one;
+  re-checking `myToken === revealToken` after every `await` before
+  continuing or applying anything; applying `.tree-row-active` and
+  `scrollIntoView({block:'nearest'})` on an exact match; returning
+  quietly on a no-match level.
+- **Wiring:**
+  - `onFolderTreeRoot`'s handler: after the existing
+    `renderTreeLevel(message.entries, treeRootEl)` call on the
+    `{ok:true}` branch, set `currentTreeRootPath = message.rootPath;`
+    then call `revealAndHighlight()`. On the `{ok:false}` branch, set
+    `currentTreeRootPath = null;` (no `renderTreeLevel` call happens on
+    that branch already, so there is nothing to reveal against).
+  - `onFileRendered`'s handler: at the end (after the existing
+    `renderHtml`/`renderError` branch), unconditionally set
+    `activeFilePath = message.ok ? message.filePath : null;` then call
+    `revealAndHighlight()` — unconditional per the task assignment,
+    since the function's own guard correctly no-ops (after clearing any
+    stale highlight) when `activeFilePath` is `null`.
+
+### CSS — `src/renderer/app.css`
+
+New `.tree-row-active` rule, placed near the existing `.tree-row` /
+`.tree-row:hover` / `.tree-toggle-expanded` block (around line 227-253):
+a background/text treatment visually distinct from both
+`.tree-row:hover`'s subtle gray wash and `.tree-toggle-expanded`'s
+rotation affordance — an accent-colored background plus (optionally)
+a left border or bolded label, so the three states (default, hovering,
+active) never look ambiguous when combined (an active row can still be
+hovered). Matching `body.dark-mode .tree-row-active` rule following the
+file's existing per-selector dark-mode convention (guardrail #39's
+precedent, now applied to a class selector rather than an id).
+
+### Tests — `tests/unit/isPathUnder.test.ts`
+
+New file, same shape as `tests/unit/needsFetch.test.ts` (plain
+`describe`/`it`, importing from `../../src/renderer/renderer.js`, zero
+DOM). Cases: exact match; a real nested child (`/foo/bar/baz.md` under
+`/foo/bar`); the false-prefix trap (`/foo/bar2` is NOT under
+`/foo/bar`); both separators (`\` on one side, `/` on the other, since
+`entry.path` is OS-native and this predicate must not assume a
+platform).
+
+### Tests — `tests/e2e/tree-panel.spec.ts`
+
+New `describe` block (mirroring Task 23's own `describe('Task 23: ...')`
+convention), reusing this file's existing `treeRow`/`treeNode`/
+`treeChildren` helpers and the `tests/e2e/fixtures/tree` fixture set
+(`sub/deep.md` already exists as the nested fixture the task assignment
+calls for). Coverage, per the task assignment: nested-file auto-expand
++ highlight; re-highlight on a second top-level file click (old row
+loses `.tree-row-active`, new row gains it); a fresh `FOLDER_TREE_ROOT`
+(new root) still ends up correctly expanded+highlighted; Open Folder…
+to a root that does not contain the currently-open file → no crash, no
+highlight; FI-1's rapid-double-open proof (open file A, immediately
+open file B before A's awaited `listDirectory` call(s) resolve, assert
+only B's path ends up expanded/highlighted).
+
+### Required proof (fault injection — authoritative per task assignment)
+
+**FI-1:** temporarily remove the `myToken !== revealToken` checks in
+`revealAndHighlight` → a test that opens file A then immediately opens
+file B (before A's reveal walk's awaited `listDirectory` call(s) would
+resolve) must fail RED (stale expansion/highlight artifacts from A's
+superseded walk visible in the final state) → restore the checks →
+same test GREEN (only B's path expanded/highlighted).
+
+### File tree — Task 24 additions/changes
+
+```
+md-view/
+├── src/
+│   └── renderer/
+│       ├── renderer.js         # ~ handleDirectoryRowClick signature
+│       │                       #   simplification, node.dataset.path,
+│       │                       #   isPathUnder, reveal/highlight state,
+│       │                       #   revealAndHighlight(), wiring into
+│       │                       #   onFolderTreeRoot/onFileRendered
+│       └── app.css             # ~ .tree-row-active + dark-mode counterpart
+├── tests/
+│   ├── unit/
+│   │   └── isPathUnder.test.ts # + new, plain-string fixtures, no DOM
+│   └── e2e/
+│       └── tree-panel.spec.ts  # ~ new describe block: auto-expand,
+│                                #   re-highlight on click, new-root reveal,
+│                                #   out-of-root no-op, FI-1 proof
+├── .agents/
+│   ├── specs/
+│   │   ├── functional_domain.md   # ~ Task 24 section (done, this pass)
+│   │   ├── initial_scaffold.md    # ~ Task 24 section (this section)
+│   │   └── backlog.md             # ~ Task 24 note if any deferred item
+│   │                                #   surfaces during implementation
+│   ├── DEVLOG.md                  # ~ brief entry, noting this closes the
+│   │                                #   21/23/24 sidebar milestone
+│   └── metrics/RUN_LOG.md         # ~ append-only row, held until Lead
+│                                    #   sign-off per process notes
+```
+
+### Governance note
+
+No ADR — same tier as Task 21/23 (real interactive feature, concentrated
+in `renderer.js` + `app.css`, no new architectural boundary or IPC
+surface introduced). Normal-weight spec entries apply.
+
+---

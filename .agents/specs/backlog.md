@@ -430,3 +430,26 @@ packaging — not assumed fine just because Windows was.
   state a given Bash invocation inherits, not a deterministic repo bug —
   low priority, but flagging the pattern explicitly rather than letting
   each task re-raise it as a fresh unknown.
+
+- [Pending] Task 24: another data point for the already-tracked e2e
+  parallel-contention flakiness entries above. The repo's own
+  `run-tests-if-src.mjs` PostToolUse hook re-runs the *entire* `npm run
+  test:all` suite (default worker count) after every single `Edit` to a
+  file under `src/`, which during this task's implementation surfaced a
+  rotating set of 5-6 failing tests per run (`file-tree.spec.ts`'s dialog-
+  mock-dependent tests, `tree-panel.spec.ts`'s "clicking a file row..."
+  test, and once a hard worker crash, `code=3221226505`, same class
+  already logged under Task 19) — never the same failing set twice, and
+  never a test this task's diff actually touches. Targeted re-runs of the
+  same specs at `--workers=1` (both `tests/e2e/tree-panel.spec.ts` alone
+  and the full 55-test e2e suite) were 100% clean, both before and after
+  this task's changes landed — confirming, same as every prior entry in
+  this bucket, that this is pre-existing resource-contention flakiness
+  under the hook's default parallelism, not a Task 24 regression. Not
+  independently investigated further (out of this task's scope); noted
+  mainly because the hook's blanket "run everything on every src edit"
+  policy makes this bucket of flakiness surface far more often, and far
+  more noisily (mid-implementation, not just at review time), than a
+  scoped `test:unit`/targeted-e2e-file policy would — worth considering
+  when this bucket's own dedicated investigation (already requested by
+  the Task 18 reviewer, still pending) is eventually scoped.

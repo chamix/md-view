@@ -40,6 +40,16 @@ function needsFetch(childElementCount) {
   return childElementCount === 0;
 }
 
+// Task 24: separator-aware "is childPath located under parentPath"
+// check -- must not mistake /foo/bar2 as being under /foo/bar.
+function isPathUnder(childPath, parentPath) {
+  if (childPath === parentPath) return true;
+  return (
+    childPath.startsWith(parentPath.replace(/[/\\]$/, '') + '/') ||
+    childPath.startsWith(parentPath.replace(/[/\\]$/, '') + '\\')
+  );
+}
+
 // Everything below touches real DOM/window globals, which don't exist when
 // this file is `require()`d under plain Node (e.g. by
 // tests/unit/renderer-order.test.ts, tests/unit/statusBarText.test.ts,
@@ -140,6 +150,12 @@ if (typeof document !== 'undefined') {
   let lastMessage = null;
   let lastViewSettings = null;
 
+  // Task 24: tree-panel auto-expand + highlight-active-file state.
+  let currentTreeRootPath = null;
+  let activeFilePath = null;
+  let activeRowEl = null;
+  let revealToken = 0;
+
   const updateFrontmatterVisibility = () => {
     if (!frontmatterEl) return;
     if (shouldShowFrontmatter(lastMessage, lastViewSettings)) {
@@ -164,6 +180,9 @@ if (typeof document !== 'undefined') {
     } else {
       renderError(message.error);
     }
+
+    activeFilePath = message.ok ? message.filePath : null;
+    revealAndHighlight();
   });
 
   window.mdview.onViewSettings((settings) => {
@@ -260,6 +279,7 @@ if (typeof document !== 'undefined') {
     entries.forEach((entry) => {
       const node = document.createElement('div');
       node.className = 'tree-node';
+      node.dataset.path = entry.path;
 
       const row = document.createElement('div');
       row.className = 'tree-row';
@@ -283,7 +303,7 @@ if (typeof document !== 'undefined') {
         node.appendChild(childrenEl);
 
         row.addEventListener('click', () => {
-          handleDirectoryRowClick(entry, childrenEl, toggle);
+          handleDirectoryRowClick(entry.path, childrenEl, toggle);
         });
       } else {
         node.classList.add('tree-file');
@@ -306,7 +326,7 @@ if (typeof document !== 'undefined') {
     });
   };
 
-  const handleDirectoryRowClick = async (entry, childrenEl, toggleEl) => {
+  const handleDirectoryRowClick = async (folderPath, childrenEl, toggleEl) => {
     // Guardrail #21: exactly one listDirectory call per folder, ever, across
     // any number of collapse/re-expand cycles. Once populated (real entries,
     // an error row, or the empty-folder indicator row), every subsequent
@@ -322,7 +342,7 @@ if (typeof document !== 'undefined') {
     childrenEl.hidden = false;
     toggleEl.classList.add('tree-toggle-expanded');
 
-    const result = await window.mdview.listDirectory(entry.path);
+    const result = await window.mdview.listDirectory(folderPath);
 
     childrenEl.removeChild(loadingRow);
 
@@ -342,6 +362,65 @@ if (typeof document !== 'undefined') {
     }
   };
 
+  // Task 24: walks the just-rendered tree, level by level, to reveal +
+  // highlight whichever file is currently active -- reused (via the token
+  // guard) as the single source of truth for both "a new tree root arrived"
+  // and "a new file was opened" triggers, since either one alone can make
+  // the previous highlight stale.
+  const revealAndHighlight = async () => {
+    revealToken += 1;
+    const myToken = revealToken;
+
+    if (activeRowEl) {
+      activeRowEl.classList.remove('tree-row-active');
+      activeRowEl = null;
+    }
+
+    if (!currentTreeRootPath || !activeFilePath || !isPathUnder(activeFilePath, currentTreeRootPath)) {
+      return;
+    }
+
+    let containerEl = treeRootEl;
+    let remainingPath = activeFilePath;
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      if (!containerEl) return;
+
+      const candidates = Array.from(containerEl.children).filter((child) => child.classList.contains('tree-node'));
+      const targetNode = candidates.find((node) => node.dataset.path === remainingPath);
+
+      if (targetNode) {
+        const row = targetNode.querySelector(':scope > .tree-row');
+        if (row) {
+          row.classList.add('tree-row-active');
+          activeRowEl = row;
+          row.scrollIntoView({ block: 'nearest' });
+        }
+        return;
+      }
+
+      const ancestorNode = candidates.find(
+        (node) => node.dataset.path && isPathUnder(remainingPath, node.dataset.path)
+      );
+
+      if (!ancestorNode) return;
+
+      const childrenEl = ancestorNode.querySelector(':scope > .tree-children');
+      const toggleEl = ancestorNode.querySelector(':scope > .tree-row > .tree-toggle');
+
+      if (needsFetch(childrenEl.childElementCount)) {
+        await handleDirectoryRowClick(ancestorNode.dataset.path, childrenEl, toggleEl);
+        if (myToken !== revealToken) return;
+      } else if (childrenEl.hidden) {
+        childrenEl.hidden = false;
+        toggleEl.classList.add('tree-toggle-expanded');
+      }
+
+      containerEl = childrenEl;
+    }
+  };
+
   window.mdview.onFolderTreeRoot((message) => {
     // Guardrail #27: full replace, never append -- no stale nodes from a
     // previous root ever remain visible or in the DOM after a folder
@@ -354,6 +433,7 @@ if (typeof document !== 'undefined') {
         treeEmptyStateEl.textContent = 'Could not open folder: ' + message.error;
         treeEmptyStateEl.hidden = false;
       }
+      currentTreeRootPath = null;
       return;
     }
 
@@ -365,6 +445,9 @@ if (typeof document !== 'undefined') {
       renderTreeLevel(message.entries, treeRootEl);
       treeRootEl.hidden = false;
     }
+
+    currentTreeRootPath = message.rootPath;
+    revealAndHighlight();
   });
 
   void treePanelEl; // referenced for clarity/future use; no direct manipulation needed today
@@ -374,5 +457,12 @@ if (typeof document !== 'undefined') {
 // `require()` this file under Node without needing jsdom, a bundler, or
 // converting the file to an ES module the <script> tag would need updating for.
 if (typeof module !== 'undefined') {
-  module.exports = { applyRenderedContent, statusBarText, shouldShowFrontmatter, firstDroppedFile, needsFetch };
+  module.exports = {
+    applyRenderedContent,
+    statusBarText,
+    shouldShowFrontmatter,
+    firstDroppedFile,
+    needsFetch,
+    isPathUnder,
+  };
 }
