@@ -707,3 +707,196 @@ test.describe('Task 26: independent viewport-fixed tree panel sizing', () => {
     await expectTreePanelBottomMeetsStatusBarTop(window);
   });
 });
+
+// Task 27: "Up one level" tree navigation. Clicking the new .tree-row-up row
+// sends REQUEST_TREE_PARENT (fire-and-forget) -- the main process re-points
+// the tree root at path.dirname(currentTreeRoot) via the existing
+// establishTreeRoot(), and the result comes back through the existing
+// FOLDER_TREE_ROOT push channel, exactly like Open Folder…/dropped-folder
+// already work (never a new request-response round trip).
+test.describe('Task 27: tree panel "up one level" navigation', () => {
+  const deepFile = path.join(fixtureTreeDir, 'sub', 'deep.md');
+
+  // Same accumulate-events-and-poll idiom as file-tree.spec.ts's
+  // __treeRootEvents helpers (search that file for the term) -- a
+  // test-only, coexisting second subscription to onFolderTreeRoot, since
+  // ipcRenderer supports multiple listeners per push channel.
+  async function collectTreeRootEvents(window: Page): Promise<void> {
+    await window.evaluate(() => {
+      (window as unknown as { __treeRootEvents: unknown[] }).__treeRootEvents = [];
+      (
+        window as unknown as { mdview: { onFolderTreeRoot: (cb: (m: unknown) => void) => void } }
+      ).mdview.onFolderTreeRoot((message) => {
+        (window as unknown as { __treeRootEvents: unknown[] }).__treeRootEvents.push(message);
+      });
+    });
+  }
+
+  function treeRootEventCount(window: Page): Promise<number> {
+    return window.evaluate(() => (window as unknown as { __treeRootEvents: unknown[] }).__treeRootEvents.length);
+  }
+
+  function treeRootEvents(
+    window: Page
+  ): Promise<Array<{ ok: boolean; rootPath: string; entries: Array<{ name: string }> }>> {
+    return window.evaluate(
+      () => (window as unknown as { __treeRootEvents: unknown[] }).__treeRootEvents
+    ) as Promise<Array<{ ok: boolean; rootPath: string; entries: Array<{ name: string }> }>>;
+  }
+
+  function clickUpRow(window: Page) {
+    return window.locator('.tree-row-up').click();
+  }
+
+  test.describe('with deep.md already open (root = its own parent, sub/, per establishTreeRoot)', () => {
+    test.use({ electronArgs: [deepFile] });
+
+    test('clicking "Up" re-establishes the tree root at the parent directory, with correctly filtered/sorted entries', async ({
+      electronApp,
+    }) => {
+      const window = await electronApp.firstWindow();
+      await expect(window.locator('#content')).toContainText('deep', { timeout: 10000 });
+      await expect(window.locator('.tree-row-up')).toBeVisible();
+
+      await collectTreeRootEvents(window);
+      await clickUpRow(window);
+
+      await expect.poll(() => treeRootEventCount(window)).toBeGreaterThanOrEqual(1);
+
+      const events = await treeRootEvents(window);
+      expect(events).toHaveLength(1);
+      expect(events[0].ok).toBe(true);
+      expect(events[0].rootPath).toBe(fixtureTreeDir);
+      expect(events[0].entries.map((e) => e.name)).toEqual(['empty-of-md', 'sub', 'notes.md']);
+      expect(events[0].entries.map((e) => e.name)).not.toContain('ignored.txt');
+    });
+  });
+
+  test('clicking "Up" at a real filesystem root is a harmless no-op — zero new/different FOLDER_TREE_ROOT broadcast (establishTreeRoot\'s own existing same-root guard, guardrail #1/#4)', async ({
+    electronApp,
+  }) => {
+    const window = await electronApp.firstWindow();
+    await expect(window.locator('#tree-root')).toBeVisible();
+
+    // Cross-platform-safe -- never hardcode 'C:\\'.
+    const filesystemRoot = path.parse(process.cwd()).root;
+
+    await electronApp.evaluate(({ dialog }, dirPath) => {
+      dialog.showOpenDialog = (async () => ({
+        canceled: false,
+        filePaths: [dirPath],
+      })) as typeof dialog.showOpenDialog;
+    }, filesystemRoot);
+
+    await collectTreeRootEvents(window);
+
+    await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open-folder')?.click());
+    await expect.poll(() => treeRootEventCount(window)).toBeGreaterThanOrEqual(1);
+
+    const rootEstablishedEvents = await treeRootEvents(window);
+    expect(rootEstablishedEvents[0].ok).toBe(true);
+    expect(rootEstablishedEvents[0].rootPath).toBe(filesystemRoot);
+
+    await clickUpRow(window);
+
+    // Give any (incorrect) second broadcast time to arrive before asserting
+    // the count stayed at exactly one -- path.dirname() of an actual
+    // filesystem root returns that same root unchanged (Node's own
+    // documented behavior), so establishTreeRoot's own pre-existing
+    // resolvedRootPath === currentTreeRoot no-op guard must fire (same
+    // "accumulate, then poll, then wait, then assert final count" idiom as
+    // file-tree.spec.ts's guardrail #4 FI-1 proof).
+    await window.waitForTimeout(500);
+
+    const events = await treeRootEvents(window);
+    expect(events).toHaveLength(1);
+  });
+
+  test.describe('with no folder open', () => {
+    // Overrides the file-level default electronArgs (which always opens a
+    // fixture file, and so always establishes a tree root) -- same "with no
+    // folder open" pattern Task 26's suite already uses in this file.
+    test.use({ electronArgs: [] });
+
+    test('the "up one level" row is absent when no folder/file has ever been opened', async ({ electronApp }) => {
+      const window = await electronApp.firstWindow();
+      await expect(window.locator('#tree-empty-state')).toBeVisible();
+      await expect(window.locator('.tree-row-up')).toHaveCount(0);
+    });
+  });
+
+  test.describe('with deep.md already open (root = its own parent, sub/, per establishTreeRoot)', () => {
+    test.use({ electronArgs: [deepFile] });
+
+    test('FI-1: a test asserting "Up" moves the root to the parent goes RED under a fault-injected no-op REQUEST_TREE_PARENT handler, then GREEN once the real production handler is restored', async ({
+      electronApp,
+    }) => {
+      const window = await electronApp.firstWindow();
+      await expect(window.locator('#content')).toContainText('deep', { timeout: 10000 });
+
+      // Runtime fault injection into the main process, not a hand-edit.
+      // The described bug ("forgot to compute dirname", i.e. calling
+      // establishTreeRoot(currentTreeRoot) instead of
+      // establishTreeRoot(path.dirname(currentTreeRoot))) is, by
+      // construction, a pure no-op: establishTreeRoot's own pre-existing
+      // resolvedRootPath === currentTreeRoot guard fires immediately (no
+      // re-fetch, no broadcast) — that IS guardrail #1's whole point.
+      // Reproducing that exact no-op observable effect only requires
+      // ipcMain's public EventEmitter API (rawListeners/removeAllListeners/
+      // on) — no need to reach into main/index.ts's unexported
+      // currentTreeRoot/establishTreeRoot closures, which (per this file's
+      // sibling FI-1 test's own documented probe, above) are not reachable
+      // from electronApp.evaluate()'s eval context anyway (no require/
+      // module/process.mainModule in scope there).
+      const swapped = await electronApp.evaluate(({ ipcMain }, channel) => {
+        const listeners = ipcMain.rawListeners(channel);
+        if (listeners.length !== 1) {
+          throw new Error(
+            'expected exactly one production REQUEST_TREE_PARENT listener -- test setup assumption broken'
+          );
+        }
+        (globalThis as unknown as { __mdviewOriginalTreeParentListener: unknown }).__mdviewOriginalTreeParentListener =
+          listeners[0];
+        ipcMain.removeAllListeners(channel);
+        ipcMain.on(channel, () => {
+          // Fault: does nothing -- the exact observable effect of
+          // establishTreeRoot(currentTreeRoot) (same root -> its own no-op
+          // guard fires immediately).
+        });
+        return true;
+      }, IPC_CHANNELS.REQUEST_TREE_PARENT);
+      expect(swapped).toBe(true);
+
+      await collectTreeRootEvents(window);
+      await clickUpRow(window);
+
+      // RED: give the (faulty) handler ample time to have broadcast a new
+      // root, then confirm it did not -- a test asserting "rootPath actually
+      // changes to the parent after one click" would fail here exactly as
+      // the task's required proof describes (rootPath stays identical
+      // instead of becoming the parent).
+      await window.waitForTimeout(500);
+      const redEvents = await treeRootEvents(window);
+      expect(redEvents).toHaveLength(0); // RED
+
+      // Restore the real production listener.
+      await electronApp.evaluate(({ ipcMain }, channel) => {
+        const original = (
+          globalThis as unknown as { __mdviewOriginalTreeParentListener: (...args: unknown[]) => void }
+        ).__mdviewOriginalTreeParentListener;
+        ipcMain.removeAllListeners(channel);
+        ipcMain.on(channel, original as (...args: unknown[]) => void);
+      }, IPC_CHANNELS.REQUEST_TREE_PARENT);
+
+      await clickUpRow(window);
+
+      // GREEN: the real listener computes path.dirname(currentTreeRoot) and
+      // the root genuinely moves to the parent directory.
+      await expect.poll(() => treeRootEventCount(window)).toBeGreaterThanOrEqual(1);
+      const greenEvents = await treeRootEvents(window);
+      expect(greenEvents).toHaveLength(1);
+      expect(greenEvents[0].ok).toBe(true);
+      expect(greenEvents[0].rootPath).toBe(fixtureTreeDir); // GREEN
+    });
+  });
+});

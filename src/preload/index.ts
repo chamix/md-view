@@ -23,6 +23,9 @@ const api: BridgeApi = {
   openFileByPath: (filePath) => {
     ipcRenderer.send(IPC_CHANNELS.REQUEST_OPEN_FILE, filePath);
   },
+  requestTreeParent: () => {
+    ipcRenderer.send(IPC_CHANNELS.REQUEST_TREE_PARENT);
+  },
 };
 
 contextBridge.exposeInMainWorld('mdview', api);

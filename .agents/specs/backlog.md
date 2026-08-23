@@ -477,3 +477,25 @@ packaging — not assumed fine just because Windows was.
   this entry itself -- the explicitly out-of-scope "navigate up"/breadcrumb
   gap noted in the task's own spec remains just that, out of scope, not a
   new finding.
+
+- [Resolved 2026-08-23] The "navigate up"/breadcrumb gap noted as
+  out-of-scope in Task 25's entry above is now closed by Task 27's
+  "Up one level" tree-panel row (`.tree-row-up`, wired to a new
+  `REQUEST_TREE_PARENT` IPC channel calling the pre-existing
+  `establishTreeRoot(path.dirname(currentTreeRoot))` verbatim). One
+  level per click only -- no breadcrumb, no multi-level jump; those
+  remain deliberately out of scope, not deferred findings.
+
+- [Pending] `tests/integration/preload-api-contract.test.ts`'s
+  hand-written `BridgeApi` object literals (lines ~61, ~101) are
+  missing `openFileByPath` (pre-existing since Task 16/21) and, as of
+  Task 27, also `requestTreeParent`. This file sits outside
+  `tsconfig.json`'s `include` (`src/main/**`, `src/preload/**`,
+  `src/renderer/**` only) and Vitest does not type-check test files, so
+  these are latent `TS2739` "missing property" errors that never
+  surface in CI -- confirmed via a direct `npx tsc --noEmit` probe
+  against the file during Task 27's independent review
+  (`review_report_task27.md` §6). Not fixed as part of Task 27 (file is
+  outside that task's declared scope); needs its own small scoped task
+  to either bring `tests/**` under a type-checking pass or update the
+  literals directly.

@@ -317,6 +317,15 @@ body.dark-mode.drag-over {
   white-space: normal;
 }
 
+/* Task 27: "Up one level" row -- no expand toggle (not expandable), so it
+   does not share .tree-toggle's reserved indent; visually muted/italic to
+   read as a navigation affordance distinct from real folder/file rows. */
+.tree-row-up {
+  padding-left: 1.85rem;
+  color: #57606a;
+  font-style: italic;
+}
+
 body.dark-mode #tree-panel {
   background: #161b22;
 }
@@ -365,4 +374,8 @@ body.dark-mode .tree-empty {
 
 body.dark-mode .tree-error {
   color: #ff7b72;
+}
+
+body.dark-mode .tree-row-up {
+  color: #8b949e;
 }

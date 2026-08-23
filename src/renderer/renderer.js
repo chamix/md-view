@@ -444,6 +444,18 @@ if (typeof document !== 'undefined') {
       treeEmptyStateEl.hidden = true;
     }
     if (treeRootEl) {
+      // Task 27: "Up one level" row -- unconditionally rendered first, every
+      // time a root is successfully established, regardless of whether that
+      // root happens to already be a filesystem root (a click there is a
+      // harmless no-op via establishTreeRoot's own existing same-root guard
+      // in the main process -- guardrail #4). Deliberately NOT `.tree-node`:
+      // Task 24's revealAndHighlight walk filters specifically on that class
+      // (see its own comment), so this row stays invisible to it without any
+      // change there.
+      const upRow = createTreeRow('.. (up one level)', 'tree-row-up');
+      upRow.addEventListener('click', () => window.mdview.requestTreeParent());
+      treeRootEl.appendChild(upRow);
+
       renderTreeLevel(message.entries, treeRootEl);
       treeRootEl.hidden = false;
     }

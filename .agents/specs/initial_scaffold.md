@@ -3802,3 +3802,132 @@ architectural boundary, no new IPC surface, no new pattern). Normal-
 weight spec entries apply.
 
 ---
+
+## Task 27: Tree Panel — "Up One Level" Navigation
+
+### The Inward Dependency Rule
+
+No new architectural boundary. The renderer (outermost, UI) already
+depends only on the `BridgeApi` interface (`window.mdview.*`), never on
+`ipcRenderer` directly — Task 27's new `requestTreeParent()` method
+slots into that same existing crossing, unchanged in shape from
+`openFileByPath`. The main process's new `REQUEST_TREE_PARENT` listener
+is a thin adapter that computes one derived value (`path.dirname`) and
+hands it straight to the existing `establishTreeRoot` domain function —
+it adds no new domain logic of its own, so dependencies still point the
+same direction they always have: renderer → preload bridge → main
+adapter → `establishTreeRoot`.
+
+### SOLID Boundary Scan
+
+- **SRP.** The new `ipcMain.on(REQUEST_TREE_PARENT, ...)` listener has
+  exactly one reason to change: how the parent path is derived. It does
+  not re-implement any part of `establishTreeRoot`'s no-op/canonicalize/
+  broadcast responsibility — that stays owned entirely by the existing
+  function, called verbatim.
+- **OCP.** `establishTreeRoot` is extended by a new *caller* (a third
+  entry point, alongside "Open Folder…" and the drag/argv file-to-
+  directory path), not by modifying its body. Zero lines inside
+  `establishTreeRoot` change.
+- **DIP.** The renderer depends on the `BridgeApi` abstraction
+  (`requestTreeParent(): void`), never on `ipcRenderer.send` or the raw
+  channel string — identical discipline to every existing bridge
+  method.
+- **ISP/LSP.** Not implicated — no class hierarchy or role interface is
+  introduced or narrowed by this task.
+
+### Pattern Application
+
+Same **Facade/Gateway** shape the preload bridge has used since the
+scaffold (`contextBridge.exposeInMainWorld`), extended with one more
+fire-and-forget **Command**-message method — the identical shape
+`openFileByPath` already established (a bare `ipcRenderer.send`, no
+request/response, result delivered later through the pre-existing
+`FOLDER_TREE_ROOT` push channel). No new pattern is introduced; this is
+the same message shape reused a third time (after "Open Folder…" and
+drag/argv-file-to-directory).
+
+### File tree — Task 27 additions/changes
+
+```
+md-view/
+├── src/
+│   ├── preload/
+│   │   ├── api.ts        # + REQUEST_TREE_PARENT channel, +
+│   │   │                 #   requestTreeParent() on BridgeApi
+│   │   └── index.ts      # + requestTreeParent bridge implementation
+│   │                     #   (plain ipcRenderer.send, same shape as
+│   │                     #   openFileByPath)
+│   ├── main/
+│   │   └── index.ts      # + ipcMain.on(REQUEST_TREE_PARENT, ...)
+│   │                     #   registered alongside REQUEST_OPEN_FILE /
+│   │                     #   REQUEST_LIST_DIRECTORY in app.whenReady();
+│   │                     #   calls establishTreeRoot(path.dirname(
+│   │                     #   currentTreeRoot)) verbatim, no-ops via
+│   │                     #   guardrail #54 if !currentTreeRoot
+│   └── renderer/
+│       ├── renderer.js   # ~ onFolderTreeRoot's ok:true branch: render
+│       │                 #   one up-row (createTreeRow, class
+│       │                 #   tree-row-up, NOT tree-node) above
+│       │                 #   renderTreeLevel's output, click ->
+│       │                 #   window.mdview.requestTreeParent()
+│       └── app.css       # + .tree-row-up (muted/italic, no toggle),
+│                         #   + body.dark-mode .tree-row-up
+├── tests/
+│   └── e2e/
+│       └── tree-panel.spec.ts   # + Up-click changes root to parent
+│                                 #   with correct entries, + no-op at
+│                                 #   a real filesystem root (counting-
+│                                 #   listener pattern, Task 17/18
+│                                 #   style), + up-row absent with no
+│                                 #   root ever established, + FI-1
+├── .agents/
+│   ├── specs/
+│   │   ├── functional_domain.md   # ~ Task 27 section (done, this pass)
+│   │   ├── initial_scaffold.md    # ~ Task 27 section (this section)
+│   │   └── backlog.md             # ~ Task 27 note if anything defers
+│   └── DEVLOG.md                  # ~ entry tying this to manual-
+│                                     #   testing pass point 6
+```
+
+### Tests — `tests/e2e/tree-panel.spec.ts`
+
+Extend the existing file (no new spec file):
+
+- Open a nested fixture file (root establishes at its parent
+  directory), click the up-row once: assert a `FOLDER_TREE_ROOT`
+  broadcast fires with `rootPath` equal to the grandparent directory
+  and `entries` matching what `listDirectoryEntries` independently
+  returns for that path.
+- Establish the root directly at the platform's real filesystem root
+  (`path.parse(process.cwd()).root` — never a hardcoded `'C:\\'`),
+  click the up-row: assert no new/different `FOLDER_TREE_ROOT`
+  broadcast fires. Reuse the exact counting-listener idiom Task 17/18's
+  own tests already use for this shape (a second, test-only
+  `window.mdview.onFolderTreeRoot` subscription pushing into
+  `window.__treeRootEvents`, coexisting with the production listener;
+  wait, then assert the count didn't grow) rather than inventing a new
+  mechanism.
+- The up-row is absent when no folder/file has ever been opened
+  (`test.use({ electronArgs: [] })`, matching guardrail #58 / Task 17
+  guardrail #8's existing "no tree content before a root exists" test
+  shape).
+- FI-1 proof (guardrail #54): temporarily change the new listener to
+  call `establishTreeRoot(currentTreeRoot)` (the same root, not its
+  parent) → the "root changes to parent after one click" assertion
+  goes RED (`rootPath` stays identical) → restore → GREEN.
+- Full existing `tree-panel.spec.ts` suite (Tasks 17/21/23/24/26, all
+  in this one file) re-run and confirmed green unmodified — the
+  concrete proof for guardrail #55 (revealAndHighlight unaffected) and
+  guardrail #56 (no watcher/render/FILE_RENDERED side effect).
+
+### Governance note
+
+No ADR — same tier as Tasks 21/23/24/25/26: one new fire-and-forget IPC
+channel following an already-established message shape, one new main-
+process listener that adds no new domain logic, one new renderer row,
+CSS-only visual treatment. No new architectural boundary, no new
+pattern beyond the existing Facade/Command shape. Normal-weight spec
+entries apply.
+
+---

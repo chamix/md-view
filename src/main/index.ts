@@ -339,6 +339,18 @@ app.whenReady().then(() => {
   // Task 17: first request-response IPC pair in the app (ipcMain.handle /
   // ipcRenderer.invoke) — every other channel above is fire-and-forget.
   ipcMain.handle(IPC_CHANNELS.REQUEST_LIST_DIRECTORY, (_e, dirPath: string) => listDirectoryEntries(dirPath));
+
+  // Task 27: "Up one level" tree navigation. Fire-and-forget, same shape as
+  // Open Folder…/dropped-folder — the result comes back through the existing
+  // FOLDER_TREE_ROOT push channel, never a new request-response round trip.
+  // path.dirname() of an actual filesystem root returns that same root
+  // unchanged, so establishTreeRoot's own pre-existing
+  // resolvedRootPath === currentTreeRoot no-op guard handles "already at the
+  // top" for free — no second guard is duplicated here.
+  ipcMain.on(IPC_CHANNELS.REQUEST_TREE_PARENT, () => {
+    if (!currentTreeRoot) return;
+    establishTreeRoot(path.dirname(currentTreeRoot));
+  });
 });
 
 app.on('window-all-closed', () => {

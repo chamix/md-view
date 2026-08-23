@@ -1590,3 +1590,82 @@ beyond what CSS already does natively (`left: var(--tree-panel-width)`,
     existing resize test suite passing unmodified, not re-derived.
 
 ---
+
+## Task 27: Tree Panel — "Up One Level" Navigation
+
+Today the tree root can only move *downward* implicitly (opening a file
+in a different folder, or "Open Folder…" pointed somewhere new) or
+sideways (a different folder chosen outright). There is no way to walk
+back *up* the directory hierarchy from wherever the root currently
+sits — a user who opened a deeply nested file has no path back to a
+parent folder except re-opening the file dialog from scratch. The
+domain gap is directional: `establishTreeRoot` already accepts any
+absolute path and already no-ops correctly when that path names the
+current root (Task 18) — nothing about the domain rule changes; only a
+new *trigger* for calling it with the parent of the current root is
+being added.
+
+## Abstract Schema Contracts
+
+- **"Up" is a request for a new root, not a new operation.** Its
+  abstract shape is identical to "Open Folder…" and "drop a folder
+  onto the window": a candidate root path arrives, `establishTreeRoot`
+  decides what happens next. The only distinguishing fact is *how* the
+  candidate path is computed (the parent of whatever root is currently
+  active, sourced from the main process's own already-held
+  `currentTreeRoot`, never from anything the renderer would have to
+  supply or recompute).
+- **A filesystem root is a fixed point, not a distinguished domain
+  state.** The domain does not need a concept of "top of the tree" —
+  it already has the general concept "requesting the current root
+  again is a no-op" (Task 18), and a filesystem root's `dirname` being
+  itself is just one more instance of that same general fact, not a
+  new rule requiring its own detection.
+- **No new content/entry schema.** `TreeEntry`, `FolderTreeRootOk`/
+  `Error` are unchanged — "Up" produces exactly the same kind of result
+  "Open Folder…" already produces, through the same channel.
+
+## Pure Transformation Logic
+
+One new derivation: *next candidate root* = `dirname(current root)`.
+This is a pure, total function of the already-known current root —
+no traversal, no filesystem read, no new state to track beyond what
+`establishTreeRoot` already owns (`currentTreeRoot`). The existing
+`establishTreeRoot` transformation (canonicalize → compare → no-op or
+replace) is reused completely unmodified; Task 27 adds no new branch
+to it.
+
+## Edge-Case Invariant Guardrails
+
+(Continuing the sequential numbering from Task 26's #53.)
+
+54. Clicking "Up" always calls the pre-existing `establishTreeRoot`
+    with `path.dirname(currentTreeRoot)` as its sole argument — no
+    second, parallel "are we already at the top" check is written
+    anywhere in the new code path. "Already at a filesystem root"
+    stays exactly one rule, living in exactly one place (Task 18's
+    existing `resolvedRootPath === currentTreeRoot` guard).
+55. The up-row is never assigned the `tree-node` class. Task 24's
+    `revealAndHighlight` sibling walk (filtered specifically to
+    `.tree-node` children of a container) must be provably unaffected
+    by the row's presence — the existing reveal/highlight test suite
+    keeps passing unmodified as the proof.
+56. Clicking "Up" never starts/stops the file watcher, never calls
+    `renderFile`, and never emits `FILE_RENDERED` — the same invariant
+    shape as Task 17's guardrail #5 and Task 25's guardrail #47, now
+    proven true from this third entry point into `establishTreeRoot`.
+57. The up-row is unconditionally rendered every time a root is
+    successfully established (the `ok: true` branch), including when
+    that root already happens to be a filesystem root — no attempt to
+    detect or hide it there. A click in that state is inert purely
+    because guardrail #54 routes it through the existing no-op, not
+    because the UI predicted or special-cased the condition.
+58. The up-row is absent whenever no tree content exists at all (no
+    root ever established) — matches Task 17's guardrail #8: zero tree
+    content of any kind before a root exists.
+59. The up-row never appears on the `ok: false` (error) branch of
+    `FOLDER_TREE_ROOT` — consistent with `treeRootEl` already being
+    hidden entirely in that branch (Task 17/21's existing error
+    handling, unchanged).
+
+---

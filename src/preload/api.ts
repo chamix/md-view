@@ -6,6 +6,7 @@ export const IPC_CHANNELS = {
   REQUEST_OPEN_FILE: 'md-view:request-open-file',
   FOLDER_TREE_ROOT: 'md-view:folder-tree-root',
   REQUEST_LIST_DIRECTORY: 'md-view:request-list-directory',
+  REQUEST_TREE_PARENT: 'md-view:request-tree-parent',
 } as const;
 
 export interface FileRenderedOk {
@@ -71,4 +72,5 @@ export interface BridgeApi {
   onFolderTreeRoot(callback: (message: FolderTreeRootMessage) => void): void;
   listDirectory(dirPath: string): Promise<DirectoryListResult>;
   openFileByPath(filePath: string): void;
+  requestTreeParent(): void;
 }
