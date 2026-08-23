@@ -14,14 +14,31 @@ body {
   --tree-panel-width: 260px;
 }
 
+/* Task 26: display:flow-root creates a Block Formatting Context, blocking
+   margin collapse from any descendant into body. Empirically NOT proven
+   necessary against the current DOM as of Task 26's review (github-
+   markdown-css's own `.markdown-body>*:first-child{margin-top:0}` reset
+   already zeroes the one margin this was originally thought to guard
+   against, and #document-main's padding-top independently blocks any
+   collapse regardless) -- retained anyway as a zero-cost defensive BFC
+   boundary against future content/fixture changes, not as a fix for a
+   demonstrated bug. See review_report_task26.md §5 for the full
+   investigation before assuming this line does something it doesn't. */
 #app-body {
-  display: flex;
-  flex-direction: row;
+  display: flow-root;
 }
 
-/* Fixed-width sidebar — never grows/shrinks with the row. */
+/* Task 26: viewport-bound sidebar -- position: fixed rather than flex
+   sizing, so #tree-panel's height is a pure function of the viewport
+   (window height minus the status bar's reserved clearance) instead of
+   being borrowed from whichever flex-row sibling was tallest. `bottom:
+   2rem` reuses body's existing status-bar clearance constant (Task 7/8)
+   verbatim -- not a new value this task invents. */
 #tree-panel {
-  flex: 0 0 auto;
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 2rem;
   width: var(--tree-panel-width);
   box-sizing: border-box;
   overflow-y: auto;
@@ -34,9 +51,15 @@ body {
    hit area (not a literal 1px target) with a thin 1px visible divider line
    centered inside it -- this internal line replaces #tree-panel's former
    border-right as the single divider between the two panels, so the two
-   never compete visually. */
+   never compete visually.
+   Task 26: switched to position: fixed alongside #tree-panel, same
+   `bottom: 2rem` clearance, `left: var(--tree-panel-width)` keeping it
+   pinned to #tree-panel's right edge regardless of width. */
 #tree-resize-handle {
-  flex: 0 0 auto;
+  position: fixed;
+  top: 0;
+  left: var(--tree-panel-width);
+  bottom: 2rem;
   width: 6px;
   cursor: col-resize;
   background: linear-gradient(to right, transparent 2px, #d0d7de 2px, #d0d7de 3px, transparent 3px);
@@ -54,14 +77,14 @@ body.resizing-tree-panel {
   user-select: none;
 }
 
-/* flex: 1 1 auto lets #main-panel take the remaining row width;
-   min-width: 0 is load-bearing -- without it, #document-container's own
-   width: calc(100% - 4rem) can refuse to shrink below its content's natural
-   width and overflow the row (a flex child's default min-width is auto, not
-   0). */
+/* Task 26: #main-panel is no longer a flex child (#app-body's flex row is
+   gone) -- reserves space for the now-fixed-positioned #tree-panel via
+   margin-left instead of flex-basis math. #document-container's own width:
+   calc(100% - 4rem) now resolves against #main-panel's normal
+   block-formatting-context width, which was never flex-constrained in the
+   first place, so the old min-width: 0 workaround no longer applies. */
 #main-panel {
-  flex: 1 1 auto;
-  min-width: 0;
+  margin-left: var(--tree-panel-width);
 }
 
 #content {

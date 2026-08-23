@@ -225,11 +225,12 @@ test('dark mode toggle with a folder expanded to a nested level applies real com
 });
 
 // Task 23: drag-to-resize handle between #tree-panel and #main-panel.
-// `#tree-panel` is the flex row's first child (left edge always at viewport
-// x=0), so a real Playwright mouse drag's clientX *is* the desired panel
-// width -- these tests drive `page.mouse.down/move/up` directly rather than
-// standing in with a synthetic `style.setProperty()` call, per the task
-// assignment's own requirement.
+// `#tree-panel` is fixed-positioned at the viewport's left edge (Task 26;
+// was the flex row's first child pre-Task-26 -- the mechanism changed, the
+// left-edge-at-x=0 fact did not), so a real Playwright mouse drag's clientX
+// *is* the desired panel width -- these tests drive `page.mouse.down/move/up`
+// directly rather than standing in with a synthetic `style.setProperty()`
+// call, per the task assignment's own requirement.
 test.describe('Task 23: tree panel drag-to-resize', () => {
   async function dragHandleTo(window: Page, targetClientX: number) {
     const handle = window.locator('#tree-resize-handle');
@@ -516,5 +517,193 @@ test.describe('Task 24: tree panel auto-expand + highlight active file', () => {
       await expect(treeRow(window, 'notes.md')).toHaveClass(/tree-row-active/);
       await expect(treeRow(window, 'deep.md')).not.toHaveClass(/tree-row-active/);
     });
+  });
+});
+
+// Task 26: #tree-panel's height was borrowed from #app-body's flex row (in
+// turn driven by whichever sibling was tallest) -- switched to a genuinely
+// viewport-bound height (position: fixed; bottom: 2rem, matching the
+// status bar's already-declared clearance), independent of both its own
+// content and #main-panel/#document-container's content-driven grow
+// behavior. See functional_domain.md guardrails #49-53.
+test.describe('Task 26: independent viewport-fixed tree panel sizing', () => {
+  const longDocumentFixture = path.join(process.cwd(), 'tests/e2e/fixtures/long-document.md');
+  const treeManyDir = path.join(process.cwd(), 'tests/e2e/fixtures/tree-many');
+  const treeManyRoot = path.join(treeManyDir, 'root.md');
+
+  // #tree-panel's bottom edge must land exactly at #status-bar's top edge
+  // (guardrails #49/#52) -- compared via real boundingBox() values from both
+  // elements, never a hardcoded pixel number derived from `2rem` (which
+  // depends on root font-size). An explicit +/-1px band, not
+  // toBeCloseTo(x, 0)'s tighter <0.5 tolerance -- real sub-pixel rendering
+  // here shows ~0.8px drift, the same fallback ui-shell.spec.ts's Task 12
+  // tests already documented for the same class of measurement.
+  async function expectTreePanelBottomMeetsStatusBarTop(window: Page) {
+    const treeBox = await window.locator('#tree-panel').boundingBox();
+    const statusBox = await window.locator('#status-bar').boundingBox();
+    if (!treeBox || !statusBox) {
+      throw new Error('#tree-panel/#status-bar has no bounding box -- test setup assumption broken');
+    }
+    expect(Math.abs(treeBox.y + treeBox.height - statusBox.y)).toBeLessThanOrEqual(1);
+  }
+
+  async function expectElementBottomMeetsStatusBarTop(window: Page, selector: string) {
+    const box = await window.locator(selector).boundingBox();
+    const statusBox = await window.locator('#status-bar').boundingBox();
+    if (!box || !statusBox) {
+      throw new Error(`${selector}/#status-bar has no bounding box -- test setup assumption broken`);
+    }
+    expect(Math.abs(box.y + box.height - statusBox.y)).toBeLessThanOrEqual(1);
+  }
+
+  test.describe('with no folder open', () => {
+    // Overrides the file-level default electronArgs (which always opens a
+    // fixture file, and so always establishes a tree root) -- launching
+    // with zero argv files is the only way to genuinely exercise the
+    // permanent, never-resolved #tree-empty-state, rather than racing
+    // against the async FOLDER_TREE_ROOT message a real file-open would
+    // eventually deliver.
+    test.use({ electronArgs: [] });
+
+    test('#tree-panel still fills the viewport down to #status-bar (tree empty-state)', async ({ electronApp }) => {
+      const window = await electronApp.firstWindow();
+      await expect(window.locator('#tree-empty-state')).toBeVisible();
+      await expectTreePanelBottomMeetsStatusBarTop(window);
+    });
+  });
+
+  test('with a folder open showing only a few top-level rows, #tree-panel still fills the viewport down to #status-bar', async ({
+    electronApp,
+  }) => {
+    const window = await electronApp.firstWindow();
+    await expect(window.locator('#tree-root')).toBeVisible();
+    await expectTreePanelBottomMeetsStatusBarTop(window);
+  });
+
+  test('after dragging #tree-resize-handle to a new width, #tree-panel/#tree-resize-handle still meet #status-bar exactly (guardrail #52 holds across widths)', async ({
+    electronApp,
+  }) => {
+    const window = await electronApp.firstWindow();
+    await expect(window.locator('#tree-root')).toBeVisible();
+
+    const handle = window.locator('#tree-resize-handle');
+    const box = await handle.boundingBox();
+    if (!box) throw new Error('#tree-resize-handle has no bounding box -- test setup assumption broken');
+    const handleY = box.y + box.height / 2;
+    await window.mouse.move(box.x + box.width / 2, handleY);
+    await window.mouse.down();
+    await window.mouse.move(420, handleY, { steps: 10 });
+    await window.mouse.up();
+
+    await expectTreePanelBottomMeetsStatusBarTop(window);
+    await expectElementBottomMeetsStatusBarTop(window, '#tree-resize-handle');
+  });
+
+  test.describe('with enough expanded tree rows to exceed a small window', () => {
+    test.use({ electronArgs: [treeManyRoot] });
+
+    test('expanding many/ overflows #tree-panel and scrolls internally, without growing the whole page (guardrail #50)', async ({
+      electronApp,
+    }) => {
+      const window = await electronApp.firstWindow();
+      await electronApp.evaluate(({ BrowserWindow }) => {
+        BrowserWindow.getAllWindows()[0].setBounds({ width: 480, height: 320 });
+      });
+      await expect.poll(() => window.evaluate(() => window.innerHeight)).toBeLessThanOrEqual(320);
+
+      await expect(window.locator('#tree-root')).toBeVisible();
+
+      // Baseline document/page height *before* the tree panel has anything
+      // to overflow -- #main-panel's own chrome (header, margins, padding)
+      // legitimately produces some non-zero page height on its own, even
+      // for a near-empty document; comparing before/after (rather than
+      // against a fixed absolute threshold) isolates exactly what the tree
+      // panel's own overflow contributes, independent of that baseline.
+      const docScrollHeightBefore = await window.evaluate(() => document.documentElement.scrollHeight);
+
+      await treeRow(window, 'many').click();
+      await expect(treeChildren(window, 'many')).toBeVisible();
+      // Wait for the last row to attach, proving the full 40-entry expand
+      // actually completed before measuring.
+      await expect(treeRow(window, 'item40.md')).toBeVisible();
+
+      const [scrollHeight, clientHeight] = await window
+        .locator('#tree-panel')
+        .evaluate((el) => [el.scrollHeight, el.clientHeight]);
+      // Real internal scroll: #tree-panel's own content now exceeds its
+      // available (viewport-bound) height.
+      expect(scrollHeight).toBeGreaterThan(clientHeight);
+
+      const docScrollHeightAfter = await window.evaluate(() => document.documentElement.scrollHeight);
+      // The whole page/document never grows on #tree-panel's account -- only
+      // #tree-panel itself scrolls internally (its own overflow-y: auto).
+      expect(docScrollHeightAfter).toBeLessThanOrEqual(docScrollHeightBefore + 1);
+    });
+  });
+
+  test.describe('long document vs. tree panel independence', () => {
+    test.use({ electronArgs: [longDocumentFixture] });
+
+    test('a long document scrolls the page to its end while #status-bar stays visible and #tree-panel is unaffected by scroll position (guardrail #51)', async ({
+      electronApp,
+    }) => {
+      const window = await electronApp.firstWindow();
+      await expect(window.locator('#content')).toContainText('Section 1', { timeout: 10000 });
+
+      const treeBoxBefore = await window.locator('#tree-panel').boundingBox();
+
+      await window.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      await expect.poll(() => window.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+
+      const docScrollHeight = await window.evaluate(() => document.documentElement.scrollHeight);
+      const viewportHeight = await window.evaluate(() => window.innerHeight);
+      // Proves the page actually scrolls -- Task 12's content-driven grow
+      // behavior is completely unaffected by this task.
+      expect(docScrollHeight).toBeGreaterThan(viewportHeight);
+
+      await expect(window.locator('#status-bar')).toBeVisible();
+      await expectTreePanelBottomMeetsStatusBarTop(window);
+
+      const treeBoxAfter = await window.locator('#tree-panel').boundingBox();
+      expect(treeBoxAfter).toEqual(treeBoxBefore);
+    });
+  });
+
+  // Required fault-injection proof for guardrail #52 (per this task's own
+  // assignment): a runtime style override reintroducing the pre-fix
+  // `bottom: 0` on #tree-panel/#tree-resize-handle (in place of the real
+  // `bottom: 2rem`) must make expectTreePanelBottomMeetsStatusBarTop's own
+  // check fail for a real, measurable overlap -- proving the check actually
+  // discriminates the fault rather than being a tautology against whatever
+  // app.css currently says. The equivalent manual proof (literally reverting
+  // `bottom: 2rem` back to `bottom: 0` in src/renderer/app.css, confirming
+  // this suite goes RED, then restoring it) was additionally run once by
+  // hand during development -- see this task's delegation report for that
+  // transcript; this automated version is the permanent regression guard.
+  test('FI-1 (guardrail #52): a fault-injected bottom:0 override on #tree-panel/#tree-resize-handle produces a real, detectable overlap with #status-bar', async ({
+    electronApp,
+  }) => {
+    const window = await electronApp.firstWindow();
+    await expect(window.locator('#tree-root')).toBeVisible();
+
+    // Baseline: passes against the real, unmodified stylesheet.
+    await expectTreePanelBottomMeetsStatusBarTop(window);
+
+    const styleHandle = await window.addStyleTag({
+      content: '#tree-panel, #tree-resize-handle { bottom: 0 !important; }',
+    });
+
+    const treeBoxFaulty = await window.locator('#tree-panel').boundingBox();
+    const statusBoxFaulty = await window.locator('#status-bar').boundingBox();
+    if (!treeBoxFaulty || !statusBoxFaulty) {
+      throw new Error('bounding box missing under fault injection -- test setup assumption broken');
+    }
+    // Real, measurable overlap: #tree-panel's bottom edge now extends well
+    // past #status-bar's top edge instead of meeting it exactly.
+    expect(treeBoxFaulty.y + treeBoxFaulty.height).toBeGreaterThan(statusBoxFaulty.y + 5);
+
+    // Restore -- remove the injected <style> element and confirm green again.
+    await styleHandle.evaluate((el) => el.remove());
+    await expectTreePanelBottomMeetsStatusBarTop(window);
   });
 });

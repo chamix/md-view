@@ -3646,3 +3646,159 @@ point (no new architectural boundary, no new IPC surface, no new pattern).
 Normal-weight spec entries apply, sized to the change's actual scope.
 
 ---
+
+## Task 26: Tree Panel — Independent Viewport-Fixed Sidebar (Option A)
+
+### The Inward Dependency Rule
+
+No boundary crossed. This is entirely a peripheral presentation change
+(`src/renderer/app.css`) — no main-process I/O, no IPC contract, no
+change to what data flows where. Confirmed (per the task's own required
+check) that the drag-resize JS in `renderer.js` reads/writes only the
+`--tree-panel-width` custom property and never touches
+position/layout directly — grep across `app.css`, `renderer.js`,
+`index.html`, and `tests/` for any other `#app-body` reference found
+none beyond its own two-line ruleset (`display: flex; flex-direction:
+row;`) in `app.css` — so this task requires zero JS changes, confirming
+the task's own prediction rather than assuming it.
+
+### SOLID Boundary Scan
+
+- **SRP.** `#tree-panel` and `#main-panel`/`#document-container` each
+  now own their sizing model outright (viewport-bound vs.
+  content-bound) rather than sharing one flex row's sizing algorithm
+  that only actually suited one of them. This is a clarification of
+  responsibility, not a new one.
+- **OCP.** The existing `--tree-panel-width` custom property and its
+  sole writer (Task 23's drag handler) are unmodified — this task
+  extends *how* the property is consumed (position/margin instead of
+  flex-basis) without modifying the writer or the property's meaning.
+- **LSP/ISP.** N/A at this scale — no interfaces or class hierarchies.
+- **DIP.** No new concrete dependency. `#tree-panel`/
+  `#tree-resize-handle`'s bottom clearance depends on the same already-
+  declared constant (`2rem`, `body`'s `padding-bottom`) `#status-bar`'s
+  clearance already depends on — reusing the existing value literally,
+  per the task's explicit instruction, rather than introducing a second
+  named source for the same fact (e.g. a new custom property) that
+  could drift from the original.
+
+### Pattern Application
+
+None named — this is CSS positioning, not an OOP structural pattern.
+Worth stating explicitly (same "intentional non-pattern" posture as
+Tasks 23-25): the fix is switching two elements from flex-child sizing
+to `position: fixed` + `margin-left`, which is the standard CSS idiom
+for "one viewport-pinned panel beside one content-flow panel" — no
+GoF wrapper needed around three CSS rule changes.
+
+### CSS — `src/renderer/app.css`
+
+- **`#app-body`** (lines 17-20): remove `display: flex;` and
+  `flex-direction: row;` — confirmed dead once its three children no
+  longer participate in flex layout (see grep result above). No
+  replacement properties needed; the element becomes a plain block
+  wrapper.
+- **`#tree-panel`** (lines 23-31): replace `flex: 0 0 auto;` with
+  `position: fixed; top: 0; left: 0; bottom: 2rem;`. Keep `width: var(
+  --tree-panel-width)`, `box-sizing: border-box`, `overflow-y: auto`,
+  and the existing `background`/`font-family`/`font-size` declarations
+  unchanged, per the task's exact snippet.
+- **`#tree-resize-handle`** (lines 38-43): replace `flex: 0 0 auto;`
+  with `position: fixed; top: 0; left: var(--tree-panel-width); bottom:
+  2rem;`. Keep `width: 6px`, `cursor`, `background` (default and
+  `:hover`) unchanged.
+- **`#main-panel`** (lines 62-65): replace `flex: 1 1 auto; min-width:
+  0;` with `margin-left: var(--tree-panel-width);`. The existing
+  comment explaining why `min-width: 0` was load-bearing for the flex
+  model (lines 57-61) is removed along with the properties it explains
+  — that reasoning no longer applies once `#main-panel` isn't a flex
+  child; `#document-container`'s own `width: calc(100% - 4rem)` now
+  resolves against `#main-panel`'s normal block-formatting-context
+  width, which was never flex-constrained in the first place.
+- No other selector changes. `#document-container`, `#content`,
+  `#empty-state`, `#status-bar`, and all dark-mode counterparts are
+  untouched — their behavior must not change (guardrail #51).
+
+### JS — `src/renderer/renderer.js`
+
+No changes. Per the confirmed grep above, the only `#app-body`-adjacent
+assumption anywhere in the JS is a Task 23 *comment* (line ~240,
+"`#tree-panel` is the flex row's first child (left edge always at
+viewport x=0)") — the underlying fact it describes (`#tree-panel`'s
+left edge is always viewport x=0) remains true under `position: fixed;
+left: 0;`, so the comment's conclusion still holds even though its
+stated mechanism (flex row) no longer applies. Not required to be
+touched by the guardrails, but the engineer may update the comment's
+wording for accuracy as a zero-risk, in-scope touch of an already-
+in-scope file — not a new capability, purely a stale-mechanism note fix.
+
+### Tests — `tests/e2e/tree-panel.spec.ts`
+
+Extend the existing file (no new spec file):
+
+- New assertion: `#tree-panel`'s computed bounding box `bottom` equals
+  `#status-bar`'s computed bounding box `top`, compared as actual
+  `boundingBox()` values (never a hardcoded pixel figure derived from
+  `2rem`, since that depends on root font-size) — checked with no
+  folder open (tree empty-state) and with a folder open showing only a
+  few top-level rows, matching the original bug's manual-repro
+  scenario.
+- New assertion: a folder with enough expanded nested entries to exceed
+  viewport height produces a real scrollbar/scrollable overflow
+  *inside* `#tree-panel` specifically (`scrollHeight > clientHeight` on
+  `#tree-panel`, and no growth in `document.documentElement.scrollHeight`
+  attributable to the tree panel) — reuse the existing
+  `tests/e2e/fixtures/tree` fixture set, adding nested fixture depth
+  only if what exists today doesn't already exceed a small test-window
+  viewport height.
+- New assertion: opening a long document (new fixture if none already
+  long enough — check `tests/e2e/fixtures/` first) lets the page scroll
+  to the document's end, `#status-bar` stays visible throughout, and
+  `#tree-panel`'s own bounding box is unchanged regardless of main-
+  content scroll position (guardrail #51's explicit regression proof).
+- FI-1 proof (guardrail #52): temporarily revert `#tree-panel`'s and
+  `#tree-resize-handle`'s `bottom: 2rem` to `bottom: 0` → a new non-
+  overlap assertion against `#status-bar` must fail RED → restore →
+  GREEN.
+- Full existing drag-to-resize block (Task 23: mid-range drag, min-
+  clamp, dynamic max-clamp at a shrunk window, persistence across
+  relaunch) run unmodified and confirmed green under the new
+  positioning scheme (guardrail #53) — not just re-asserted, actually
+  run.
+
+### File tree — Task 26 additions/changes
+
+```
+md-view/
+├── src/
+│   └── renderer/
+│       ├── app.css       # ~ #app-body (flex props removed), #tree-panel
+│       │                 #   (flex→fixed), #tree-resize-handle (flex→
+│       │                 #   fixed), #main-panel (flex→margin-left)
+│       └── renderer.js   # ~ (optional) comment-only wording fix at the
+│                         #   Task 23 drag-handle block; no behavior change
+├── tests/
+│   └── e2e/
+│       ├── tree-panel.spec.ts   # ~ + viewport-fixed height/overlap/
+│       │                        #   scroll assertions, + FI-1 proof
+│       └── fixtures/            # + long-document fixture and/or deeper
+│                                 #   tree fixture, only if existing
+│                                 #   fixtures don't already exceed a
+│                                 #   small test viewport
+├── .agents/
+│   ├── specs/
+│   │   ├── functional_domain.md   # ~ Task 26 section (done, this pass)
+│   │   ├── initial_scaffold.md    # ~ Task 26 section (this section)
+│   │   └── backlog.md             # ~ Task 26 note if anything deferred
+│   │                                #   surfaces during implementation
+│   └── DEVLOG.md                  # ~ brief entry
+```
+
+### Governance note
+
+No ADR — same tier as Tasks 21/23/24 (real, user-visible layout
+behavior change, concentrated entirely in `app.css`, no new
+architectural boundary, no new IPC surface, no new pattern). Normal-
+weight spec entries apply.
+
+---

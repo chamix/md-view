@@ -236,10 +236,12 @@ if (typeof document !== 'undefined') {
   const treeEmptyStateEl = document.getElementById('tree-empty-state');
   const treeRootEl = document.getElementById('tree-root');
 
-  // Task 23: drag-to-resize handle. #tree-panel is the flex row's first
-  // child (left edge always at viewport x=0), so a live pointer clientX
-  // *is* the desired panel width -- no delta/offset tracking needed. See
-  // functional_domain.md Task 23 for the full domain rationale.
+  // Task 23: drag-to-resize handle. #tree-panel is fixed-positioned at the
+  // viewport's left edge (Task 26; was the flex row's first child pre-
+  // Task-26 -- the mechanism changed, the left-edge-at-x=0 fact did not),
+  // so a live pointer clientX *is* the desired panel width -- no
+  // delta/offset tracking needed. See functional_domain.md Task 23 for the
+  // full domain rationale.
   const treeResizeHandleEl = document.getElementById('tree-resize-handle');
   const MIN_TREE_WIDTH = 180;
   const MIN_MAIN_PANEL_WIDTH = 300;

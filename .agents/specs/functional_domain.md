@@ -1519,3 +1519,74 @@ that one impure check, structurally identical to the dispatch
     `renderFile`-driven error path, unchanged in message or behavior.
 
 ---
+
+## Task 26: Tree Panel — Independent Viewport-Fixed Sidebar (Option A)
+
+Today `#tree-panel` derives its height from flex layout — it is exactly
+as tall as `#app-body`'s row needs to be, which in turn is driven by
+whichever sibling is tallest. `#main-panel`/`#document-container` is
+*meant* to grow with document content (a deliberate, Task 12 reading-
+column property); `#tree-panel` was never meant to inherit that
+behavior, but does today as an unintended side effect of sharing a flex
+row with something that does. The domain problem is a borrowed sizing
+model, not a rendering bug — `#tree-panel`'s height should be a pure
+function of the viewport (window height minus the status bar's
+reserved clearance), completely independent of both its own content's
+size and its sibling's content's size.
+
+### Abstract Schema Contracts
+
+- **Two panels, two independent sizing models, sharing one page.**
+  `#tree-panel` is viewport-bound (a fixed height, self-scrolling when
+  content exceeds it — a "sidebar" contract). `#main-panel`/
+  `#document-container` is content-bound (grows the page, page scrolls
+  — a "document" contract, unchanged since Task 12). These are not two
+  cases of one shared model; conflating them via a shared flex row is
+  exactly what produced the bug. Task 26 makes the contracts
+  structurally independent, not just visually similar.
+- **The status bar's reserved clearance is a single, already-declared
+  constant** (`body`'s `padding-bottom: 2rem`, Task 7/8), not a new
+  value this task invents. Both `#tree-panel` and
+  `#tree-resize-handle`'s bottom edges must consume that exact same
+  constant, so a future change to the status bar's height only ever
+  needs to change in one place.
+- **`--tree-panel-width` remains the single override point** (Task 21's
+  own stated intent) for both the panel's width and the resize handle's
+  horizontal position — this task changes *how* that variable is
+  consumed (position/margin math instead of flex sizing), never
+  introduces a second width source.
+
+### Pure Transformation Logic
+
+None new. This is a pure layout/positioning change — CSS consuming an
+existing custom property differently. No new function, no new state.
+The existing drag-resize handler (Task 23) remains the sole writer of
+`--tree-panel-width`; this task doesn't add a reader-side computation
+beyond what CSS already does natively (`left: var(--tree-panel-width)`,
+`margin-left: var(--tree-panel-width)`).
+
+### Edge-Case Invariant Guardrails
+
+(Continuing the sequential numbering from Task 25's #48.)
+
+49. `#tree-panel`'s rendered height is always exactly "viewport height
+    minus the status bar's reserved clearance," regardless of how many
+    rows it contains — zero, a few, or enough to overflow. Verified by
+    computed style/bounding box, never by visual inspection.
+50. `#tree-panel` scrolls internally (its own `overflow-y: auto`) once
+    its content exceeds available height — content is never clipped,
+    and overflow never forces the whole window/page to grow or scroll
+    on the tree panel's account.
+51. `#main-panel`/`#document-container`'s content-driven grow-and-page-
+    scroll behavior (Task 12) is completely unaffected by this task —
+    a long document still scrolls the page, exactly as before.
+52. `#tree-panel` and `#tree-resize-handle` never visually overlap
+    `#status-bar`, at any valid `--tree-panel-width` (Task 23's
+    existing `[180, window.innerWidth - 300]` clamp range), and at any
+    document scroll position.
+53. Task 23's drag-to-resize behavior (live width tracking, min/max
+    clamping, persistence across relaunch) is unaffected by the switch
+    from flex sizing to fixed-position/margin sizing — proven by the
+    existing resize test suite passing unmodified, not re-derived.
+
+---
