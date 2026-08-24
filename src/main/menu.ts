@@ -3,6 +3,7 @@ import type { MenuItemConstructorOptions } from 'electron';
 export interface ViewSettings {
   darkMode: boolean;
   showFrontmatter: boolean;
+  showTreePanel: boolean;
 }
 
 export interface MenuHandlers {
@@ -10,6 +11,7 @@ export interface MenuHandlers {
   onOpenFolder: () => void;
   onToggleDarkMode: (checked: boolean) => void;
   onToggleShowFrontmatter: (checked: boolean) => void;
+  onToggleShowTreePanel: (checked: boolean) => void;
   onOpenHelp: () => void;
 }
 
@@ -48,6 +50,13 @@ export function buildMenuTemplate(
           type: 'checkbox',
           checked: initialViewSettings.showFrontmatter,
           click: (menuItem) => handlers.onToggleShowFrontmatter(menuItem.checked),
+        },
+        {
+          id: 'menu-show-tree-panel',
+          label: 'Show File Tree',
+          type: 'checkbox',
+          checked: initialViewSettings.showTreePanel,
+          click: (menuItem) => handlers.onToggleShowTreePanel(menuItem.checked),
         },
       ],
     },

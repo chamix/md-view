@@ -3931,3 +3931,148 @@ pattern beyond the existing Facade/Command shape. Normal-weight spec
 entries apply.
 
 ---
+
+## Task 28: View Menu Toggle — Show/Hide File Tree
+
+### The Inward Dependency Rule
+
+No new architectural boundary. `showTreePanel` extends the existing
+`ViewSettings` object exactly like `darkMode`/`showFrontmatter` — the
+renderer still depends only on `onViewSettings`'s payload shape, never
+on how main derives or stores it. The one new fact this task
+introduces — that `openFolderViaDialog()` and the `REQUEST_OPEN_FILE`
+directory branch must rebuild the application menu — is a main-process-
+internal side effect between two things main already owns
+(`viewSettings` and `Menu.setApplicationMenu`); it crosses no new
+boundary and adds no new dependency from any outer layer inward.
+`establishTreeRoot` itself gains no awareness of visibility at all,
+keeping it exactly as agnostic about "why was I called" as it already
+is about its three existing callers.
+
+### SOLID Boundary Scan
+
+- **SRP.** `setShowTreePanel` has exactly one reason to change:
+  updating and broadcasting the `showTreePanel` fact — identical
+  shape/responsibility to `setDarkMode`/`setShowFrontmatter`. The menu-
+  rebuild-on-forced-change logic is a *separate* responsibility living
+  in the two callers that need it (`openFolderViaDialog`,
+  the `REQUEST_OPEN_FILE` directory branch), not folded into
+  `setShowTreePanel` itself — `setShowTreePanel` is called identically
+  whether it originates from the checkbox or from a forced side effect,
+  and has no idea which case it's in.
+- **OCP.** `establishTreeRoot` is extended by nothing here — zero lines
+  inside it change. The menu-rebuild behavior is added entirely at the
+  two existing call sites, as new code wrapping an existing call, not
+  as a modification to any shared function's body.
+- **DIP.** The renderer depends only on the `onViewSettings` callback
+  shape it already consumes — `showTreePanel` is just one more field on
+  a payload it already trusts. No new bridge method, no new dependency
+  direction.
+- **ISP/LSP.** Not implicated — no interface narrows or grows a role
+  hierarchy; `ViewSettings` gains one more scalar field, same as Task 8
+  already did going from one field to two.
+
+### Pattern Application
+
+Same **Observer/pub-sub** shape already in place for `darkMode`/
+`showFrontmatter`: main holds the fact, broadcasts it over
+`VIEW_SETTINGS` on every change, and the renderer's `onViewSettings`
+handler is the sole subscriber that redraws in response. No new pattern
+is introduced. The menu-rebuild step reuses the identical **Builder**
+construction (`Menu.buildFromTemplate(buildMenuTemplate(...))`) already
+used once in `app.whenReady()` — this task's only new wrinkle is
+calling that same builder a second time, from two additional call
+sites, when a forced value change makes the previously-built menu
+stale.
+
+### File tree — Task 28 additions/changes
+
+```
+md-view/
+├── src/
+│   ├── main/
+│   │   ├── menu.ts        # ~ ViewSettings: + showTreePanel: boolean
+│   │   │                  #   ~ MenuHandlers: + onToggleShowTreePanel
+│   │   │                  #   ~ View submenu: + menu-show-tree-panel
+│   │   │                  #     checkbox item
+│   │   └── index.ts       # ~ viewSettings default: + showTreePanel: true
+│   │                      #   + setShowTreePanel(checked) (same shape as
+│   │                      #     setDarkMode/setShowFrontmatter)
+│   │                      #   ~ openFolderViaDialog(): if
+│   │                      #     !viewSettings.showTreePanel, force true +
+│   │                      #     rebuild/reapply menu, BEFORE
+│   │                      #     establishTreeRoot
+│   │                      #   ~ REQUEST_OPEN_FILE listener's directory
+│   │                      #     branch: identical force+rebuild, BEFORE
+│   │                      #     establishTreeRoot
+│   │                      #   ~ app.whenReady(): wire onToggleShowTreePanel
+│   │                      #     to setShowTreePanel in the handlers object
+│   │                      #   renderAndWatch(): UNCHANGED — no
+│   │                      #     showTreePanel write on this path
+│   └── renderer/
+│       ├── renderer.js    # ~ onViewSettings: + document.body.classList
+│       │                  #   .toggle('tree-panel-hidden',
+│       │                  #   !settings.showTreePanel)
+│       └── app.css        # + body.tree-panel-hidden #tree-panel,
+│                          #   #tree-resize-handle { display: none }
+│                          #   + body.tree-panel-hidden #main-panel
+│                          #   { margin-left: 0 }
+├── tests/
+│   └── e2e/
+│       ├── view-menu.spec.ts    # + checkbox toggles showTreePanel,
+│       │                        #   CSS class/computed layout follow,
+│       │                        #   both directions
+│       └── tree-panel.spec.ts   # + Open Folder while hidden: checkbox
+│                                #   flips AND tree becomes visible
+│                                #   + Open single file while hidden:
+│                                #   stays hidden, checkbox stays
+│                                #   unchecked
+│                                #   + expand folder, hide, show: same
+│                                #   folder still expanded, no new
+│                                #   listDirectory call (counting-
+│                                #   listener idiom, Task 17/18 style)
+├── .agents/
+│   ├── specs/
+│   │   ├── functional_domain.md   # ~ Task 28 section (done, this pass)
+│   │   ├── initial_scaffold.md    # ~ Task 28 section (this section)
+│   │   └── backlog.md             # ~ Task 28 note if anything defers
+│   └── DEVLOG.md                  # ~ entry: first ViewSettings field
+│                                     #   with two independent write
+│                                     #   paths; first menu rebuild
+│                                     #   outside app.whenReady()
+```
+
+### Tests — extend `tests/e2e/view-menu.spec.ts` and `tests/e2e/tree-panel.spec.ts`
+
+- Menu checkbox click toggles `showTreePanel`; assert both
+  `body.tree-panel-hidden`'s presence/absence and `#main-panel`'s
+  actual computed `marginLeft` (0 vs. the live `--tree-panel-width`
+  value), in both directions — not just the class.
+- Open Folder… while the tree is hidden: assert the
+  `menu-show-tree-panel` checkbox reads `checked === true` AND
+  `#tree-panel` is actually visible (not just that one of the two
+  changed) — this is guardrail #62/#65's proof and the one genuinely
+  new interaction this task introduces.
+- Open Folder… while the tree is already visible: assert no redundant
+  menu rebuild artifact — practically, assert the checkbox stays
+  `checked` and the tree stays visible with no observable flicker/
+  no-op side effect beyond what `establishTreeRoot`'s own existing
+  no-op guard (Task 18) already produces.
+- Open a single file (dialog or argv) while the tree is hidden: assert
+  `showTreePanel` and the checkbox both stay unchanged (guardrail #61).
+- Expand a folder, hide the tree via the checkbox, show it again:
+  assert the same folder is still expanded and no new `listDirectory`
+  call fired in between — reuse the existing counting-listener idiom
+  (Task 17/18/21) rather than inventing a new mechanism (guardrail
+  #63).
+
+### Governance note
+
+No ADR — same tier as Task 8 (a third `ViewSettings` boolean field,
+one new checkbox menu item, CSS-only visibility rule). The one novel
+element — rebuilding the application menu outside `app.whenReady()` —
+reuses the exact `Menu.setApplicationMenu(Menu.buildFromTemplate(...))`
+construction already present there; it is a second call site for an
+existing pattern, not a new one. Normal-weight spec entries apply.
+
+---

@@ -900,3 +900,231 @@ test.describe('Task 27: tree panel "up one level" navigation', () => {
     });
   });
 });
+
+// Task 28: "Show File Tree" View-menu checkbox. Unlike the checkbox itself,
+// two other actions can *force* showTreePanel from false to true --
+// openFolderViaDialog() and the dropped/opened-directory branch of
+// REQUEST_OPEN_FILE -- and only when it was previously false. Opening a
+// single file (any trigger) must never touch showTreePanel in either
+// direction.
+test.describe('Task 28: Show File Tree toggle', () => {
+  async function hideOrShowTreePanel(electronApp: ElectronApplication) {
+    await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-show-tree-panel')?.click());
+  }
+
+  async function mockOpenDialog(electronApp: ElectronApplication, target: string) {
+    await electronApp.evaluate(({ dialog }, targetPath) => {
+      dialog.showOpenDialog = (async () => ({
+        canceled: false,
+        filePaths: [targetPath],
+      })) as typeof dialog.showOpenDialog;
+    }, target);
+  }
+
+  // Same accumulate-events-and-poll idiom as this file's Task 27
+  // collectTreeRootEvents/treeRootEventCount helpers (ipcRenderer.on/the
+  // preload's onViewSettings support any number of coexisting listeners per
+  // push channel) -- registered *immediately before* the action under test
+  // so it only ever captures the delta produced by that one action, never
+  // any VIEW_SETTINGS broadcast(s) already sent since launch (e.g. the
+  // initial one applyMenu()/broadcastViewSettings() fires at startup).
+  async function collectViewSettingsEvents(window: Page): Promise<void> {
+    await window.evaluate(() => {
+      (window as unknown as { __viewSettingsEvents: unknown[] }).__viewSettingsEvents = [];
+      (
+        window as unknown as { mdview: { onViewSettings: (cb: (m: unknown) => void) => void } }
+      ).mdview.onViewSettings((settings) => {
+        (window as unknown as { __viewSettingsEvents: unknown[] }).__viewSettingsEvents.push(settings);
+      });
+    });
+  }
+
+  function viewSettingsEventCount(window: Page): Promise<number> {
+    return window.evaluate(() => (window as unknown as { __viewSettingsEvents: unknown[] }).__viewSettingsEvents.length);
+  }
+
+  test('Open Folder… while the tree is hidden forces both the checkbox checked and the panel visible again', async ({
+    electronApp,
+  }) => {
+    const window = await electronApp.firstWindow();
+    await expect(window.locator('#tree-root')).toBeVisible();
+
+    await hideOrShowTreePanel(electronApp);
+    await expect(window.locator('#tree-panel')).toBeHidden();
+    const checkedWhileHidden = await electronApp.evaluate(
+      ({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-show-tree-panel')?.checked
+    );
+    expect(checkedWhileHidden).toBe(false);
+
+    await mockOpenDialog(electronApp, fixtureTreeDir);
+    await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open-folder')?.click());
+
+    await expect(window.locator('#tree-root')).toBeVisible();
+    await expect(window.locator('#tree-panel')).toBeVisible();
+    const checkedAfter = await electronApp.evaluate(
+      ({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-show-tree-panel')?.checked
+    );
+    expect(checkedAfter).toBe(true);
+  });
+
+  test('opening a single file while the tree is hidden never changes showTreePanel -- stays hidden, stays unchecked', async ({
+    electronApp,
+  }) => {
+    const window = await electronApp.firstWindow();
+    await expect(window.locator('#tree-root')).toBeVisible();
+
+    await hideOrShowTreePanel(electronApp);
+    await expect(window.locator('#tree-panel')).toBeHidden();
+
+    const otherFile = path.join(fixtureTreeDir, 'sub', 'deep.md');
+    await mockOpenDialog(electronApp, otherFile);
+    await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open')?.click());
+
+    await expect(window.locator('#content')).toContainText('deep', { timeout: 10000 });
+
+    await expect(window.locator('#tree-panel')).toBeHidden();
+    const checkedAfter = await electronApp.evaluate(
+      ({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-show-tree-panel')?.checked
+    );
+    expect(checkedAfter).toBe(false);
+  });
+
+  // The negative case of forceShowTreePanelAndRebuildMenu()'s own
+  // `if (viewSettings.showTreePanel) return;` guard (src/main/index.ts) --
+  // without this test, replacing that guard with an unconditional rebuild
+  // would go undetected by the whole suite, even though the two tests above
+  // only ever exercise the tree-was-hidden branch.
+  test('Open Folder… while the tree is already visible does not trigger a redundant rebuild or change any observable state', async ({
+    electronApp,
+  }) => {
+    const window = await electronApp.firstWindow();
+    await expect(window.locator('#tree-root')).toBeVisible();
+    await expect(window.locator('#tree-panel')).toBeVisible();
+    const checkedBefore = await electronApp.evaluate(
+      ({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-show-tree-panel')?.checked
+    );
+    expect(checkedBefore).toBe(true);
+
+    // Registered right before the action -- captures only VIEW_SETTINGS
+    // broadcasts produced by this specific Open Folder… call, not any sent
+    // since launch.
+    await collectViewSettingsEvents(window);
+
+    // A genuinely different folder (fixtureTreeDir's own sub/ subdirectory),
+    // not the identical current root -- gives this test a real, independent
+    // observable (the tree's contents actually changing) to wait on and
+    // confirm the action truly completed, decoupled from
+    // showTreePanel/menu-rebuild behavior entirely.
+    await mockOpenDialog(electronApp, path.join(fixtureTreeDir, 'sub'));
+    await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open-folder')?.click());
+
+    await expect(treeRow(window, 'deep.md')).toBeVisible();
+    await expect(window.locator('.tree-label', { hasText: /^notes\.md$/ })).toHaveCount(0);
+
+    await expect(window.locator('#tree-panel')).toBeVisible();
+    const checkedAfter = await electronApp.evaluate(
+      ({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-show-tree-panel')?.checked
+    );
+    expect(checkedAfter).toBe(true);
+
+    // Strongest proof the guard actually short-circuited (rather than
+    // merely happening to look inert): zero VIEW_SETTINGS broadcasts fired
+    // during this action at all.
+    expect(await viewSettingsEventCount(window)).toBe(0);
+  });
+
+  // Reviewer should-fix item: Task 28's forceShowTreePanelAndRebuildMenu()
+  // is also called from the REQUEST_OPEN_FILE directory branch (a real
+  // drag/drop-a-folder, or a directory passed on argv), a separate call
+  // site from openFolderViaDialog() above -- exercised directly here via the
+  // same ipcMain.emit(...) technique drag-drop.spec.ts's own
+  // REQUEST_OPEN_FILE tests already use to invoke the real, unmodified
+  // production listener with a real on-disk path.
+  test('REQUEST_OPEN_FILE directory branch (drag/drop-a-folder path) forces both the checkbox checked and the panel visible again when the tree starts hidden', async ({
+    electronApp,
+  }) => {
+    const window = await electronApp.firstWindow();
+    await expect(window.locator('#tree-root')).toBeVisible();
+
+    await hideOrShowTreePanel(electronApp);
+    await expect(window.locator('#tree-panel')).toBeHidden();
+    const checkedWhileHidden = await electronApp.evaluate(
+      ({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-show-tree-panel')?.checked
+    );
+    expect(checkedWhileHidden).toBe(false);
+
+    await electronApp.evaluate(
+      ({ ipcMain }, { channel, dirPath }) => {
+        ipcMain.emit(channel, {}, dirPath);
+      },
+      { channel: IPC_CHANNELS.REQUEST_OPEN_FILE, dirPath: fixtureTreeDir }
+    );
+
+    await expect(window.locator('#tree-panel')).toBeVisible();
+    await expect(treeRow(window, 'notes.md')).toBeVisible();
+    const checkedAfter = await electronApp.evaluate(
+      ({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-show-tree-panel')?.checked
+    );
+    expect(checkedAfter).toBe(true);
+  });
+
+  test('hide/show preserves full tree DOM state -- an expanded folder stays expanded, the active-file highlight (Task 24) survives, and no new listDirectory call fires across the cycle', async ({
+    electronApp,
+  }) => {
+    const window = await electronApp.firstWindow();
+    await expect(window.locator('#tree-root')).toBeVisible();
+
+    // The file-level default electronArgs opens notes.md, so it is already
+    // the active/highlighted row (Task 24) before the tree is ever touched.
+    await expect(treeRow(window, 'notes.md')).toHaveClass(/tree-row-active/);
+    await expect(window.locator('.tree-row-active')).toHaveCount(1);
+
+    // Same ipcMain._invokeHandlers counting-wrapper idiom as this file's own
+    // "FI-1: exactly one listDirectory call" test above.
+    await electronApp.evaluate(({ ipcMain }, channel) => {
+      const invokeHandlers = (ipcMain as unknown as { _invokeHandlers: Map<string, (...args: unknown[]) => unknown> })
+        ._invokeHandlers;
+      const originalHandler = invokeHandlers.get(channel);
+      if (!originalHandler) {
+        throw new Error('production REQUEST_LIST_DIRECTORY handler not found -- test setup assumption broken');
+      }
+      (globalThis as unknown as { __listDirectoryCallCount: number }).__listDirectoryCallCount = 0;
+      ipcMain.removeHandler(channel);
+      ipcMain.handle(channel, (event: unknown, dirPath: string) => {
+        (globalThis as unknown as { __listDirectoryCallCount: number }).__listDirectoryCallCount += 1;
+        return originalHandler(event, dirPath);
+      });
+    }, IPC_CHANNELS.REQUEST_LIST_DIRECTORY);
+
+    const subChildren = treeChildren(window, 'sub');
+    await treeRow(window, 'sub').click();
+    await expect(subChildren).toBeVisible();
+
+    const countAfterExpand = await electronApp.evaluate(
+      () => (globalThis as unknown as { __listDirectoryCallCount: number }).__listDirectoryCallCount
+    );
+    expect(countAfterExpand).toBe(1);
+
+    await hideOrShowTreePanel(electronApp); // hide
+    await expect(window.locator('#tree-panel')).toBeHidden();
+
+    await hideOrShowTreePanel(electronApp); // show again
+    await expect(window.locator('#tree-panel')).toBeVisible();
+
+    await expect(subChildren).toBeVisible();
+    const subChildLabels = await subChildren.locator('> .tree-node > .tree-row .tree-label').allTextContents();
+    expect(subChildLabels).toEqual(['deep.md', 'deep2.md']);
+
+    // The Task 24 active-file highlight is pure DOM state (a class on the
+    // still-attached notes.md row), never recomputed by the hide/show
+    // toggle itself -- must survive the cycle exactly like the expanded
+    // sub/ folder does above.
+    await expect(treeRow(window, 'notes.md')).toHaveClass(/tree-row-active/);
+    await expect(window.locator('.tree-row-active')).toHaveCount(1);
+
+    const countAfterCycle = await electronApp.evaluate(
+      () => (globalThis as unknown as { __listDirectoryCallCount: number }).__listDirectoryCallCount
+    );
+    expect(countAfterCycle).toBe(1);
+  });
+});

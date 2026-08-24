@@ -172,3 +172,51 @@ test("(e) #content's computed padding-bottom is non-zero", async ({ electronApp 
   const paddingBottom = await content.evaluate((el) => window.getComputedStyle(el).paddingBottom);
   expect(parseFloat(paddingBottom)).toBeGreaterThan(0);
 });
+
+// Task 28: "Show File Tree" View-menu checkbox. Opening a single file
+// already establishes a tree root (renderAndWatch -> establishTreeRoot), so
+// #tree-panel starts out visible for this suite's fixture too -- no separate
+// "open a folder first" setup is needed just to exercise the toggle itself.
+test('(f) toggling Show File Tree hides/shows #tree-panel and #main-panel reclaims/gives back its width, in both directions', async ({
+  electronApp,
+}) => {
+  const window = await electronApp.firstWindow();
+  const content = window.locator('#content');
+  await expect(content).toContainText('Frontmatter Fixture Heading', { timeout: 10000 });
+
+  const treePanel = window.locator('#tree-panel');
+  await expect(treePanel).toBeVisible();
+
+  const checkedInitially = await electronApp.evaluate(
+    ({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-show-tree-panel')?.checked
+  );
+  expect(checkedInitially).toBe(true);
+
+  const marginLeftBefore = await window
+    .locator('#main-panel')
+    .evaluate((el) => window.getComputedStyle(el).marginLeft);
+  expect(parseFloat(marginLeftBefore)).toBeGreaterThan(0);
+
+  await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-show-tree-panel')?.click());
+
+  await expect(treePanel).toBeHidden();
+  await expect(window.locator('#tree-resize-handle')).toBeHidden();
+
+  const marginLeftHidden = await window
+    .locator('#main-panel')
+    .evaluate((el) => window.getComputedStyle(el).marginLeft);
+  expect(parseFloat(marginLeftHidden)).toBe(0);
+
+  await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-show-tree-panel')?.click());
+
+  await expect(treePanel).toBeVisible();
+  const checkedAfterSecondToggle = await electronApp.evaluate(
+    ({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-show-tree-panel')?.checked
+  );
+  expect(checkedAfterSecondToggle).toBe(true);
+
+  const marginLeftShownAgain = await window
+    .locator('#main-panel')
+    .evaluate((el) => window.getComputedStyle(el).marginLeft);
+  expect(parseFloat(marginLeftShownAgain)).toBeGreaterThan(0);
+});

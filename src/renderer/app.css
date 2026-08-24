@@ -87,6 +87,19 @@ body.resizing-tree-panel {
   margin-left: var(--tree-panel-width);
 }
 
+/* Task 28: "Show File Tree" View-menu checkbox. display: none only -- the
+   tree's DOM (expanded folders, fetched children, active highlight) is never
+   torn down or reset, so re-showing it looks exactly like it did before
+   hiding, with zero re-fetch. */
+body.tree-panel-hidden #tree-panel,
+body.tree-panel-hidden #tree-resize-handle {
+  display: none;
+}
+
+body.tree-panel-hidden #main-panel {
+  margin-left: 0;
+}
+
 #content {
   padding-inline: 2rem;
   /* Task 8: breathing room at the visual end of the rendered document

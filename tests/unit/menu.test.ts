@@ -8,13 +8,14 @@ function handlers(overrides: Partial<MenuHandlers> = {}): MenuHandlers {
     onOpenFolder: () => {},
     onToggleDarkMode: () => {},
     onToggleShowFrontmatter: () => {},
+    onToggleShowTreePanel: () => {},
     onOpenHelp: () => {},
     ...overrides,
   };
 }
 
 function viewSettings(overrides: Partial<ViewSettings> = {}): ViewSettings {
-  return { darkMode: false, showFrontmatter: true, ...overrides };
+  return { darkMode: false, showFrontmatter: true, showTreePanel: true, ...overrides };
 }
 
 describe('buildMenuTemplate (pure menu structure)', () => {
@@ -80,13 +81,14 @@ describe('buildMenuTemplate (pure menu structure)', () => {
     expect(template[2].label).toBe('Help');
   });
 
-  it("View's submenu has exactly 2 entries: menu-dark-mode, menu-show-frontmatter", () => {
+  it("View's submenu has exactly 3 entries: menu-dark-mode, menu-show-frontmatter, menu-show-tree-panel", () => {
     const template = buildMenuTemplate(handlers(), viewSettings());
     const viewSubmenu = template[1].submenu as Array<Record<string, unknown>>;
 
-    expect(viewSubmenu).toHaveLength(2);
+    expect(viewSubmenu).toHaveLength(3);
     expect(viewSubmenu[0].id).toBe('menu-dark-mode');
     expect(viewSubmenu[1].id).toBe('menu-show-frontmatter');
+    expect(viewSubmenu[2].id).toBe('menu-show-tree-panel');
   });
 
   it.each([true, false])('menu-dark-mode reflects initialViewSettings.darkMode = %s', (darkMode) => {
@@ -129,6 +131,27 @@ describe('buildMenuTemplate (pure menu structure)', () => {
     showFrontmatterItem.click({ checked: false });
 
     expect(onToggleShowFrontmatter).toHaveBeenCalledWith(false);
+  });
+
+  it.each([true, false])('menu-show-tree-panel reflects initialViewSettings.showTreePanel = %s', (showTreePanel) => {
+    const template = buildMenuTemplate(handlers(), viewSettings({ showTreePanel }));
+    const viewSubmenu = template[1].submenu as Array<Record<string, unknown>>;
+    const showTreePanelItem = viewSubmenu[2];
+
+    expect(showTreePanelItem.type).toBe('checkbox');
+    expect(showTreePanelItem.label).toBe('Show File Tree');
+    expect(showTreePanelItem.checked).toBe(showTreePanel);
+  });
+
+  it("menu-show-tree-panel's click invokes onToggleShowTreePanel with the mock menuItem's checked value", () => {
+    const onToggleShowTreePanel = vi.fn();
+    const template = buildMenuTemplate(handlers({ onToggleShowTreePanel }), viewSettings());
+    const viewSubmenu = template[1].submenu as Array<Record<string, unknown>>;
+    const showTreePanelItem = viewSubmenu[2] as { click: (menuItem: { checked: boolean }) => void };
+
+    showTreePanelItem.click({ checked: false });
+
+    expect(onToggleShowTreePanel).toHaveBeenCalledWith(false);
   });
 
   it("Help's submenu has exactly 1 entry: menu-help", () => {

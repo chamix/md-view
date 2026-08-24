@@ -24,7 +24,7 @@ let helpWindow: BrowserWindow | null = null;
 // Session-scoped, never persisted (functional_domain.md Task 8 guardrail #6):
 // resets to this exact default on every launch, regardless of a prior
 // session's choices.
-let viewSettings: ViewSettings = { darkMode: false, showFrontmatter: true };
+let viewSettings: ViewSettings = { darkMode: false, showFrontmatter: true, showTreePanel: true };
 
 // Session-scoped, never persisted — same explicit precedent as viewSettings's
 // "resets to this exact default on every launch" comment above.
@@ -42,6 +42,45 @@ function setDarkMode(checked: boolean): void {
 function setShowFrontmatter(checked: boolean): void {
   viewSettings = { ...viewSettings, showFrontmatter: checked };
   broadcastViewSettings();
+}
+
+function setShowTreePanel(checked: boolean): void {
+  viewSettings = { ...viewSettings, showTreePanel: checked };
+  broadcastViewSettings();
+}
+
+// Single, shared construction of the handlers object -- both the startup
+// menu build (app.whenReady()) and forceShowTreePanelAndRebuildMenu() below
+// call this same function, rather than each independently maintaining its
+// own copy of the handlers literal (which would drift over time).
+function applyMenu(): void {
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate(
+      buildMenuTemplate(
+        {
+          onOpen: openFileViaDialog,
+          onOpenFolder: openFolderViaDialog,
+          onToggleDarkMode: setDarkMode,
+          onToggleShowFrontmatter: setShowFrontmatter,
+          onToggleShowTreePanel: setShowTreePanel,
+          onOpenHelp,
+        },
+        viewSettings
+      )
+    )
+  );
+}
+
+// Called by the two "browse a folder" actions (openFolderViaDialog and the
+// dropped/opened-directory branch of REQUEST_OPEN_FILE) -- never by
+// renderAndWatch (single-file open must never touch showTreePanel in either
+// direction). Check-then-act: only forces the value and rebuilds the menu
+// when it was previously false, never an unconditional rebuild.
+function forceShowTreePanelAndRebuildMenu(): void {
+  if (viewSettings.showTreePanel) return;
+  viewSettings = { ...viewSettings, showTreePanel: true };
+  broadcastViewSettings();
+  applyMenu();
 }
 
 function createWindow(): void {
@@ -204,6 +243,7 @@ async function openFileViaDialog(): Promise<void> {
 async function openFolderViaDialog(): Promise<void> {
   const result = await dialog.showOpenDialog({ properties: ['openDirectory'] });
   if (result.canceled || result.filePaths.length === 0) return;
+  forceShowTreePanelAndRebuildMenu();
   await establishTreeRoot(result.filePaths[0]);
 }
 
@@ -274,20 +314,7 @@ app.whenReady().then(() => {
     app.dock.setIcon(path.join(__dirname, 'icon.png'));
   }
 
-  Menu.setApplicationMenu(
-    Menu.buildFromTemplate(
-      buildMenuTemplate(
-        {
-          onOpen: openFileViaDialog,
-          onOpenFolder: openFolderViaDialog,
-          onToggleDarkMode: setDarkMode,
-          onToggleShowFrontmatter: setShowFrontmatter,
-          onOpenHelp,
-        },
-        viewSettings
-      )
-    )
-  );
+  applyMenu();
 
   // Unconditional and separate from the argv-conditional listener below:
   // ViewSettings is a session fact independent of whether any file was ever
@@ -329,6 +356,7 @@ app.whenReady().then(() => {
     }
 
     if (isDirectory) {
+      forceShowTreePanelAndRebuildMenu();
       await establishTreeRoot(filePath);
       return;
     }

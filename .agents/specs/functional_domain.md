@@ -1669,3 +1669,88 @@ to it.
     handling, unchanged).
 
 ---
+
+## Task 28: View Menu Toggle — Show/Hide File Tree
+
+Adds a third `ViewSettings` field, `showTreePanel`, alongside
+`darkMode`/`showFrontmatter`. It follows the same "session fact,
+independent of any particular file" tier those two already established
+(Task 8) — with one new domain wrinkle neither predecessor has: its
+value can be forced from somewhere other than its own checkbox.
+"Open Folder…" and a dropped/opened directory (Task 25's directory
+branch) both already call `establishTreeRoot` today regardless of
+whether the tree is currently visible; this task adds the rule that
+either action must also make the tree visible if it wasn't, as a
+user opening a folder is unambiguously expressing intent to see its
+contents. Opening a single file carries no such intent and must leave
+`showTreePanel` exactly as it was.
+
+### Abstract Schema Contracts
+
+- **`showTreePanel: boolean` is a third independent fact bundled into
+  the existing `ViewSettings` session state**, not a new schema of its
+  own — the same reasoning Task 8 already used to justify keeping
+  `darkMode` and `showFrontmatter` in one object rather than two.
+- **A checkbox's displayed state and its underlying value can now
+  diverge from a source other than the checkbox itself.** Every prior
+  `ViewSettings` field changes only via its own click handler, so the
+  menu template's `checked` value (computed once, at menu-build time)
+  never goes stale relative to the real value — nothing else ever
+  moves it. `showTreePanel` breaks that assumption: `openFolderViaDialog()`
+  and the directory branch of the `REQUEST_OPEN_FILE` listener can both
+  force it from `false` to `true` as a side effect of an unrelated
+  action. The domain rule this task introduces is not new *state*, but
+  a new *obligation*: whenever a value backing a rendered checkbox
+  changes from outside that checkbox's own click handler, the menu
+  describing it must be redescribed (rebuilt and reapplied), or the
+  visible checkbox silently lies about the real value.
+- **No new message shape, no new IPC channel.** `showTreePanel` rides
+  the existing `VIEW_SETTINGS` broadcast exactly like its two siblings
+  — `broadcastViewSettings()` is untouched beyond carrying one more
+  field.
+
+### Pure Transformation Logic
+
+None new. The only "decision" this task adds is a single check-then-act
+branch — `if (!viewSettings.showTreePanel) { force true; rebuild menu }`
+— inside two existing callers, not a computed value worth naming as its
+own pure predicate. Same tier as Task 15/18/25's single-branch fixes:
+an imperative adjustment to an existing flow, not a new leaf function.
+
+### Edge-Case Invariant Guardrails
+
+(Continuing the sequential numbering from Task 27's #59.)
+
+60. `showTreePanel` defaults to `true` at every launch — session-scoped,
+    never persisted, matching the exact precedent Task 8 guardrail #6
+    already set for `darkMode`/`showFrontmatter`.
+61. Opening a single file — via any existing trigger (argv, dialog,
+    drag-and-drop, tree-panel click) — never changes `showTreePanel` in
+    either direction. `renderAndWatch`'s own `establishTreeRoot` call
+    carries no menu-rebuild side effect and no `showTreePanel` write.
+62. `openFolderViaDialog()` and the `REQUEST_OPEN_FILE` listener's
+    directory branch force `showTreePanel` to `true` and rebuild +
+    reapply the application menu **only when it was previously
+    `false`** — a check-then-act guard, never an unconditional rebuild
+    on every folder-open, since a redundant rebuild when already `true`
+    would be indistinguishable-but-wasteful busywork on the hot path of
+    an action a user can trigger repeatedly.
+63. Hiding the tree must preserve its full prior DOM state — expanded
+    folders, already-fetched children, the active-file highlight (Task
+    24) — as an observed fact (no new `listDirectory` call fires across
+    a hide/show cycle, the same folder is still expanded on re-show),
+    not merely inferred from `display: none`'s known DOM-preserving
+    property.
+64. `#main-panel` reclaims the freed width when the tree is hidden and
+    gives it back when shown again, proven by real computed-width
+    assertions in both directions — the same "assert the actual
+    geometry, not just that a class toggled" standard Task 12
+    guardrail #6 and Task 26 guardrail #49 already hold this app to.
+65. The View-menu checkbox's visible checked state and the tree's
+    actual visibility must never diverge, regardless of which of the
+    two write paths (self-click, or forced by an Open-Folder-shaped
+    action) last changed the value — the Open-Folder-while-hidden case
+    must assert both the checkbox flipping *and* the tree becoming
+    visible together, not just one as a proxy for the other.
+
+---

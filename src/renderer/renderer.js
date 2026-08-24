@@ -189,6 +189,10 @@ if (typeof document !== 'undefined') {
     lastViewSettings = settings;
     applyDarkMode(settings.darkMode);
     updateFrontmatterVisibility();
+    // Task 28: display:none only -- never removes/resets tree DOM state
+    // (expanded folders, fetched children, active highlight all survive a
+    // hide/show cycle untouched).
+    document.body.classList.toggle('tree-panel-hidden', !settings.showTreePanel);
   });
 
   // Task 16: drag-and-drop file open. Wired to `document`, not #content or
