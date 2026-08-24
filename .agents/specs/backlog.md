@@ -499,3 +499,31 @@ packaging — not assumed fine just because Windows was.
   outside that task's declared scope); needs its own small scoped task
   to either bring `tests/**` under a type-checking pass or update the
   literals directly.
+
+- [Resolved 2026-08-24] Task 29's `frame: false` change removed the
+  main window's native OS chrome overhead, and in doing so exposed a
+  ~2px DPI-scaling rounding artifact at this dev machine's 125%
+  Windows display-scale factor: `BrowserWindow.setBounds({ width: 480
+  })` now settles at a real client width of 482, not ≤480.
+  `tests/e2e/tree-panel.spec.ts`'s pre-existing Task 23 FI-2 test
+  (guardrail #34 proof, "dragging past the dynamic max at a shrunk
+  (480x640) window...") asserted `window.innerWidth <= 480` as a
+  resize-settled synchronization check and started failing
+  deterministically once the frame's overhead (previously ~13px,
+  measured in Task 23's own devlog entry) stopped silently absorbing
+  the rounding blip. Root cause confirmed via direct
+  `getBounds()`/`getContentBounds()` probing, reproduced 5/5 in
+  isolated runs -- not a flake. Fixed by widening that one
+  synchronization-wait assertion's tolerance from `<= 480` to `<=
+  490` (`tree-panel.spec.ts` line ~297); this does not weaken
+  guardrail #34's actual proof, which reads the real live
+  `window.innerWidth` and derives every subsequent expectation from
+  that value, exactly as it did before. `tests/e2e/tree-panel.spec.ts`
+  was outside Task 29's original granted scope; the Lead amended
+  `.agents/current_scope.json` to add it once the engineer flagged the
+  conflict (rather than the engineer routing around the hook), per
+  the scope-contract amendment process in `CLAUDE.md`. Full
+  `tree-panel.spec.ts` (31 tests) and the full e2e suite (84 tests, run
+  at `--workers=2` for a clean non-parallel-contention read) pass. No
+  further action needed unless a future task changes `minWidth` or the
+  window's DPI-scaling assumptions again.

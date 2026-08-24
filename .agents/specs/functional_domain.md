@@ -1754,3 +1754,130 @@ an imperative adjustment to an existing flow, not a new leaf function.
     visible together, not just one as a proxy for the other.
 
 ---
+
+## Task 29: Frameless Main Window — Custom Title Bar, Window Controls, Menu-as-Popup
+
+The main window drops its native OS chrome (`frame: false`) and gains an
+app-drawn replacement: a fixed top bar carrying three menu labels
+(File/View/Help), a drag region, and three window-control buttons
+(minimize, maximize/restore, close). This is the biggest single change
+to the app's process/window fundamentals since Task 17 introduced
+request-response IPC — every prior task assumed a native frame existed;
+this one removes that assumption for the main window only.
+
+### Abstract Schema Contracts
+
+- **Window chrome is a construction-time fact of one specific
+  `BrowserWindow` instance, not a shared, app-wide configuration.**
+  `defaultWindowOptions` continues to mean exactly what it has meant
+  since Step 0 — the shared baseline both the main window and the Help
+  window (Task 14) start from. `frame: false` is layered on top of that
+  baseline at the main window's own construction call, the same way
+  `icon`/`preload` already are — it does not become part of the shared
+  fact itself. The Help window's own construction call inherits nothing
+  new; it stays native chrome, unaffected, because it never opts in to
+  the new option.
+- **The maximized/restored state is a boolean fact about the real OS
+  window, owned exclusively by main, and pushed to the renderer as a
+  read-only projection.** This is a different category of fact than
+  `ViewSettings` (Task 8/28): a `ViewSettings` field is a user
+  *preference* the renderer's own UI is the origin of ("the user asked
+  for dark mode"); window-maximized-state is an OS-level *truth* the
+  renderer can only ever observe, even when its own button click is
+  what nominally requested the change — the OS, not the click, is the
+  actual authority on whether the transition happened. The renderer
+  must never assume a click succeeded; it must wait for main's pushed
+  fact before updating what it shows.
+- **A title-bar menu-label click is a new *trigger* for an
+  already-fully-defined domain object, not a new schema.** The
+  application menu template (`buildMenuTemplate`, Task 7/8/17/28) is
+  the single existing description of File/View/Help's structure and
+  handlers. Popping up one section of it from a label click carries a
+  section identifier (`'file' | 'view' | 'help'`) and a screen
+  coordinate — the coordinate is presentation information (where to
+  anchor the popup), not a new business fact, and the section
+  identifier selects a slice of an existing structure rather than
+  describing a new one.
+- **The three window-control actions (minimize, toggle-maximize, close)
+  are zero-argument triggers**, the same tier as Task 5's external-link
+  handoff, Task 13's dock-icon call, and Task 16's drop trigger — each
+  maps 1:1 onto a real `BrowserWindow` lifecycle method with no
+  intermediate domain state of its own to model.
+
+### Pure Transformation Logic
+
+One small pure mapping, at the same tier as Task 13's
+`shouldSetDockIcon`/Task 14's `shouldCreateHelpWindow`: given a section
+identifier (`'file' | 'view' | 'help'`), which index of the existing
+menu template array does it correspond to. `{ file: 0, view: 1, help: 2
+}[section]` — a lookup over a structure whose order is already fixed by
+`buildMenuTemplate`'s own established File/View/Help ordering (Task 7's
+original definition, unchanged by every task since); this task does not
+reorder that template, only reads a slice of it.
+
+Everything else in this task is imperative Electron API orchestration —
+constructing the window with one more option, registering
+`maximize`/`unmaximize` listeners, calling `minimize()`/`close()`/
+`maximize()`/`unmaximize()` — the same non-pure tier as Task 13's dock
+call and Task 15's `removeMenu()` call, not new domain logic requiring
+its own pure function.
+
+### Edge-Case Invariant Guardrails
+
+(Continuing the sequential numbering from Task 28's #65.)
+
+66. **`frame: false` applies only to the main window's own
+    `BrowserWindow` construction options.** `defaultWindowOptions`
+    itself shows zero diff — verified, not assumed, the same standard
+    Task 4's guardrail #2 already held `markdown.ts` to. The Help
+    window's construction call is untouched and must keep its native
+    chrome.
+67. **The application menu (`Menu.setApplicationMenu`) remains the
+    single source of truth for every item, handler, and accelerator.**
+    The title-bar labels are a second *entry point* into that same
+    structure, not a second, parallel definition of it — the popup
+    shown on a label click must be built from the exact same
+    `buildMenuTemplate(...)` call the full app menu already uses, never
+    a hand-duplicated copy that could drift from it.
+68. **Every existing keyboard accelerator (Ctrl+O, Ctrl+Shift+O, F1,
+    etc.) must keep working identically under `frame: false`.** This
+    must be confirmed empirically against the real running app, not
+    assumed from Electron's documented behavior alone — the same
+    "verify before relying on it" discipline Task 15 applied to
+    `removeMenu()`'s macOS no-op and Task 16 applied to the drag-drop
+    navigation default.
+69. **The maximize/restore button's displayed state is always a
+    reflection of `mainWindow.isMaximized()` at the moment main fires
+    the push event — never assumed from which control triggered the
+    change, and never polled by the renderer.** Main is the single
+    source of truth; the renderer is a pure display of whatever it is
+    told, regardless of whether the change came from the custom button,
+    a double-click, or an OS-level action (snap, Win+Up) outside the
+    app's own UI entirely.
+70. **`-webkit-app-region: no-drag` is scoped exactly to the six
+    interactive elements (three labels, three buttons).** Everything
+    else inside the bar stays draggable; nothing outside the bar is
+    affected by either region value.
+71. **`contextIsolation`/`nodeIntegration`/`sandbox` stay unchanged**,
+    and every new bridge method added for this task is explicit and
+    named — no generic `invoke(channel, ...args)` passthrough anywhere
+    in the new surface, the same enumerable-contract discipline Step 0
+    established and every task since has held to.
+72. **A menu-label click shows only that section's own submenu** — File
+    shows File's items, not the full three-menu template — matching
+    what a native menu bar click would show at that same label.
+73. **The full pre-existing e2e suite passes unmodified.** This touches
+    window-level fundamentals shared by every prior task's tests
+    (accelerators, dialogs, drag-and-drop, the tree panel) — the same
+    regression discipline Task 21's and Task 26's layout changes were
+    held to, not a lighter standard just because this task's own new
+    surface is additive.
+74. **Double-click-to-maximize on the drag region must not be manually
+    implemented unless Electron's documented automatic behavior for
+    `-webkit-app-region: drag` is empirically proven absent on this
+    Electron/Windows build.** An unverified assumption in either
+    direction — assuming it works, or assuming it needs a hand-rolled
+    handler — is not acceptable; this is the same investigate-first
+    discipline as guardrail #68.
+
+---

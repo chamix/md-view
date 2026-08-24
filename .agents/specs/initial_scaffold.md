@@ -4076,3 +4076,290 @@ construction already present there; it is a second call site for an
 existing pattern, not a new one. Normal-weight spec entries apply.
 
 ---
+
+## Task 29 Technical Specification — Frameless Main Window
+
+Maps [functional_domain.md](functional_domain.md)'s Task 29 analysis to
+concrete design.
+
+### The Inward Dependency Rule
+
+- No new domain/core module. This task's diff sits entirely at the
+  peripheral boundary — `windowConfig.ts` (BrowserWindow construction
+  options), `menu.ts`'s existing `buildMenuTemplate` (reused, not
+  extended), `index.ts` (composition root: window creation, IPC
+  handlers, event wiring), the preload facade, and static renderer
+  markup/CSS/JS. `markdown.ts`, `watcher.ts`, `paths.ts`,
+  `linkPolicy.ts`, `frontmatter.ts`, `fileTree.ts` are all untouched —
+  none of them have any relationship to window chrome.
+- **`defaultWindowOptions` is not the crossing point for this task's
+  new fact.** `frame: false` is added exclusively at `createWindow()`'s
+  own options object, layered on top of the spread exactly like
+  `icon`/`preload` already are (`src/main/index.ts:87-94`) — this
+  preserves the existing precedent that `defaultWindowOptions` is a
+  *shared baseline*, and per-window additions happen at each
+  construction call, not by mutating the shared object. The Help
+  window's construction call (`onOpenHelp`, `src/main/index.ts:265-270`)
+  spreads the same baseline and adds nothing from this task — it
+  remains native chrome by simply not opting in, zero special-casing
+  needed on its side.
+- **The popup-menu IPC handler depends inward on the same
+  `buildMenuTemplate` function the full application menu already
+  depends on** — this is the concrete mechanism that satisfies
+  functional_domain.md guardrail #67 ("second entry point, not a
+  second definition"). `menu.ts` and `applyMenu()` need zero diff;
+  the new handler in `index.ts` calls the existing function a second
+  time, with the existing `handlers`/`viewSettings` values it already
+  has in scope from `applyMenu()`'s own closure.
+
+### SOLID Boundary Scan
+
+- **SRP** — `windowConfig.ts` continues to hold only shared, testable
+  construction data; it gains no new key (`frame` is added at the
+  callsite, not in the shared object), so its existing unit-testable
+  shape (`contextIsolation`/`nodeIntegration`/`sandbox` asserted
+  directly against a plain object) is undisturbed. The five new
+  `index.ts` IPC handlers (minimize/close/toggle-maximize/popup-menu/
+  maximize-state-push) are five separate `ipcMain.on`/window-event
+  registrations, each with exactly one reason to change, mirroring the
+  existing one-handler-per-capability shape already used for
+  `REQUEST_OPEN_FILE`/`REQUEST_LIST_DIRECTORY`/`REQUEST_TREE_PARENT`.
+- **OCP** — Adding the popup-menu handler required zero changes to
+  `buildMenuTemplate`'s own body or return shape; it is a new caller of
+  an unmodified function, the same "extend by adding a call site, not
+  by editing the shared function" shape Task 28 already used for its
+  menu-rebuild calls.
+- **ISP** — `BridgeApi` grows by five explicit, narrowly-named methods
+  (`minimizeWindow`, `toggleMaximizeWindow`, `closeWindow`,
+  `popupMenu`, `onWindowMaximizedState`) — no generic
+  `invoke(channel, ...args)` passthrough, holding the same enumerable-
+  surface discipline as every prior `BridgeApi` addition since Step 0.
+- **DIP** — `renderer.js`'s three window-control buttons and three
+  menu-labels depend only on the abstract `window.mdview` surface, same
+  as every existing renderer interaction; they have no knowledge of
+  IPC channel names, `BrowserWindow` methods, or `Menu` internals.
+
+### Pattern Application (GoF)
+
+- **Facade, again** — `preload/index.ts` keeps its sole role as the one
+  file constructing the real `BridgeApi` object from `ipcRenderer`
+  primitives; the five new methods follow the exact fire-and-forget
+  (`ipcRenderer.send`) / push-listener (`ipcRenderer.on`) shapes already
+  established, no new preload pattern introduced.
+- **Builder, reused** — the popup-menu handler's
+  `Menu.buildFromTemplate(template[index].submenu as
+  MenuItemConstructorOptions[]).popup(...)` is the same
+  `Menu.buildFromTemplate` construction `applyMenu()` already uses,
+  called a second time against a slice of the identical template data —
+  not a new construction pattern, a second use site for the existing
+  one (same precedent as Task 28's menu-rebuild reuse).
+- No new pattern needed for the title bar's drag/no-drag regions or the
+  window-control buttons — these are CSS/DOM-only affordances with
+  one-line bridge calls each, the same tier as Task 11's inert
+  Preview/Code tab buttons before they had behavior.
+
+### Exact signatures and wiring (authoritative — implement exactly this)
+
+```ts
+// src/preload/api.ts additions
+export const IPC_CHANNELS = {
+  // ...existing entries unchanged...
+  MINIMIZE_WINDOW: 'md-view:minimize-window',
+  TOGGLE_MAXIMIZE_WINDOW: 'md-view:toggle-maximize-window',
+  CLOSE_WINDOW: 'md-view:close-window',
+  POPUP_MENU: 'md-view:popup-menu',
+  WINDOW_MAXIMIZED_STATE: 'md-view:window-maximized-state',
+} as const;
+
+export interface BridgeApi {
+  // ...existing members unchanged...
+  minimizeWindow(): void;
+  toggleMaximizeWindow(): void;
+  closeWindow(): void;
+  popupMenu(section: 'file' | 'view' | 'help', x: number, y: number): void;
+  onWindowMaximizedState(callback: (isMaximized: boolean) => void): void;
+}
+```
+
+```ts
+// src/main/windowConfig.ts — UNCHANGED (frame:false is NOT added here)
+
+// src/main/index.ts — createWindow()
+mainWindow = new BrowserWindow({
+  ...defaultWindowOptions,
+  frame: false,
+  icon: path.join(__dirname, 'icon.png'),
+  webPreferences: { ...defaultWindowOptions.webPreferences, preload: path.join(__dirname, '../preload/index.js') },
+});
+// ...existing will-navigate/setWindowOpenHandler/before-input-event wiring, unchanged...
+mainWindow.on('maximize', () => mainWindow?.webContents.send(IPC_CHANNELS.WINDOW_MAXIMIZED_STATE, true));
+mainWindow.on('unmaximize', () => mainWindow?.webContents.send(IPC_CHANNELS.WINDOW_MAXIMIZED_STATE, false));
+
+// src/main/index.ts — app.whenReady()
+ipcMain.on(IPC_CHANNELS.MINIMIZE_WINDOW, () => mainWindow?.minimize());
+ipcMain.on(IPC_CHANNELS.CLOSE_WINDOW, () => mainWindow?.close());
+ipcMain.on(IPC_CHANNELS.TOGGLE_MAXIMIZE_WINDOW, () => {
+  if (!mainWindow) return;
+  mainWindow.isMaximized() ? mainWindow.unmaximize() : mainWindow.maximize();
+});
+ipcMain.on(IPC_CHANNELS.POPUP_MENU, (_e, section: 'file' | 'view' | 'help', x: number, y: number) => {
+  const index = menuSectionIndex(section); // pure lookup, see below
+  const template = buildMenuTemplate(/* identical handlers/viewSettings applyMenu() already builds */);
+  Menu.buildFromTemplate(template[index].submenu as MenuItemConstructorOptions[]).popup({
+    window: mainWindow ?? undefined,
+    x,
+    y,
+  });
+});
+```
+
+`menuSectionIndex(section: 'file' | 'view' | 'help'): number` — the one
+pure function this task introduces, at the same tier as
+`shouldSetDockIcon`/`shouldCreateHelpWindow`. A plain object lookup
+(`{ file: 0, view: 1, help: 2 }[section]`), unit-testable with zero
+Electron runtime, isolating the "which template index does this
+section name mean" fact so it is pinned by a test rather than trusted
+inline at the one callsite that needs it.
+
+**Maximize-state push registration is inside `createWindow()`, not
+inside the `TOGGLE_MAXIMIZE_WINDOW` handler above** — this is the
+concrete mechanism satisfying functional_domain.md guardrail #69: the
+push fires for *any* path that changes real maximized state (custom
+button, double-click, OS snap, Win+Up), because `'maximize'`/
+`'unmaximize'` are native `BrowserWindow` events, not something this
+task's own handler emits synthetically.
+
+### Renderer wiring (`index.html`, `app.css`, `renderer.js`)
+
+- New `#title-bar` region, sibling immediately above `#app-body` in
+  `index.html`'s existing body structure — `#app-body`,
+  `#tree-panel`, `#main-panel`, `#status-bar`, and every id inside them
+  are untouched by this task, the same "existing ids resolve to the
+  same kind of node, unchanged" discipline Task 11 guardrail #1 already
+  established for a prior chrome-wrapping task.
+- Three labels (`#menu-label-file`, `#menu-label-view`,
+  `#menu-label-help`), each a one-line click handler calling
+  `window.mdview.popupMenu('file' | 'view' | 'help', event.clientX,
+  event.clientY)` — no local state, no menu-structure knowledge in the
+  renderer at all (satisfies guardrail #67: the renderer never
+  describes menu content, it only asks main to show a known section).
+- Three window-control buttons, each a one-line click handler calling
+  the matching bridge method directly — `minimizeWindow()`,
+  `toggleMaximizeWindow()`, `closeWindow()` — no local state mutation,
+  matching functional_domain.md's explicit instruction that button
+  appearance changes only in response to the pushed
+  `onWindowMaximizedState` event, never optimistically on click.
+- `-webkit-app-region: drag` on `#title-bar` itself; `-webkit-app-region:
+  no-drag` on exactly the six elements above (guardrail #70) — CSS-only,
+  no JS region bookkeeping needed.
+- `body.dark-mode`-scoped variants for `#title-bar` and its children,
+  following the exact per-selector pattern already used for
+  `#status-bar`/`#frontmatter`/`#document-container`/`#tree-panel`
+  since Task 8 — no new dark-mode mechanism introduced.
+
+### File tree — Task 29 additions/changes
+
+```
+md-view/
+├── src/
+│   ├── main/
+│   │   ├── windowConfig.ts    # UNCHANGED — frame:false is NOT added here
+│   │   ├── menu.ts            # UNCHANGED — zero diff (guardrail #67)
+│   │   └── index.ts           # ~ createWindow(): + frame:false (own options
+│   │                          #   object only) + maximize/unmaximize push
+│   │                          #   listeners
+│   │                          # + menuSectionIndex (pure, new leaf)
+│   │                          # + 4 ipcMain.on handlers (minimize/close/
+│   │                          #   toggle-maximize/popup-menu)
+│   ├── preload/
+│   │   ├── api.ts             # ~ + 5 IPC_CHANNELS entries, + 5 BridgeApi
+│   │   │                      #   members
+│   │   └── index.ts           # ~ + 5 explicit method implementations
+│   │                          #   (4 fire-and-forget sends, 1 push listener)
+│   └── renderer/
+│       ├── index.html         # ~ + #title-bar region (3 labels, 3 buttons)
+│       │                      #   above #app-body
+│       ├── app.css            # + #title-bar layout/drag-region rules,
+│       │                      #   window-control button shapes (CSS-drawn,
+│       │                      #   no icon library), body.dark-mode variants
+│       └── renderer.js        # ~ + 3 label click handlers (popupMenu)
+│                              #   + 3 button click handlers (direct bridge
+│                              #   calls)
+│                              #   + onWindowMaximizedState handler (toggles
+│                              #   maximize/restore button class only)
+├── tests/
+│   └── e2e/
+│       └── window-chrome.spec.ts   # NEW — see functional_domain.md Task 29
+│                                    #   + this section's "Required
+│                                    #   fault-injection proof" below
+├── .agents/
+│   ├── specs/
+│   │   ├── functional_domain.md    # ~ Task 29 section (done, this pass)
+│   │   ├── initial_scaffold.md     # ~ Task 29 section (this section)
+│   │   ├── decisions/
+│   │   │   └── ADR-005_md-view.md  # NEW — see Governance note below
+│   │   └── backlog.md              # ~ Task 29 note if anything defers
+│   ├── DEVLOG.md                   # ~ entry: first frame:false window,
+│   │                              #   first menu-as-popup entry point,
+│   │                              #   first window-state (not
+│   │                              #   ViewSettings-shaped) push channel
+│   └── metrics/RUN_LOG.md          # ~ appended at Step 3 close-out
+```
+
+### Required fault-injection proof (FI-1)
+
+Temporarily remove the `mainWindow.on('maximize'/'unmaximize', ...)`
+push listeners from `createWindow()` → confirm a test that maximizes
+the window via a path *other than* the custom button (e.g.
+`electronApp.evaluate(({ BrowserWindow }) => ...)`, or the harness
+directly calling `mainWindow.maximize()`, simulating an OS-level
+maximize) shows the button's rendered state going stale/RED → restore
+→ GREEN. This is the concrete, executed proof of functional_domain.md
+guardrail #69 — "state must stay correct regardless of HOW the window
+got (un)maximized" is not accepted as satisfied by code review alone,
+the same evidence-based standard Step 2.5's review gate holds every
+task to.
+
+### Tests — `tests/e2e/window-chrome.spec.ts`
+
+- `frame: false` confirmed structurally via `electronApp.evaluate()`
+  reading the real `BrowserWindow`'s own properties (not inferred from
+  source), plus custom title-bar elements present and visible.
+- Each window-control button triggers the correct real window state
+  change (minimize, maximize, restore; close gets its own isolated test
+  given the app exits afterward).
+- Double-click-on-drag-region behavior — either a light confirming test
+  (if Electron's automatic behavior held empirically) or a full test of
+  a from-scratch handler (only if it didn't) — decided by the
+  investigation required under functional_domain.md guardrail #74, not
+  assumed up front.
+- Clicking each of File/View/Help shows that section's popup with the
+  correct items, and clicking a real item inside it (e.g. "Open…")
+  triggers the exact same existing behavior as before this task — the
+  concrete proof that the popup path calls `buildMenuTemplate`, not a
+  duplicate.
+- Every existing accelerator-driven test (`grep` for `.press('Control+`)
+  in the current suite still passes unmodified.
+- FI-1's proof, executed (fault injected, confirmed red, restored,
+  confirmed green) — not merely asserted as done.
+- The full pre-existing e2e suite, run in full, confirming guardrail
+  #73.
+
+### Governance note
+
+**ADR-005 is warranted** — unlike Task 28 (a third boolean field on an
+already-established pattern), this task changes an architectural
+assumption every prior task implicitly relied on: that the main
+window has native OS chrome. Two decisions need recording for future
+readers: (1) `frame: false` is scoped to the main window's own
+construction options, never `defaultWindowOptions`, so the Help window
+stays native without any special-casing on its own side; (2) the
+title-bar's menu-label popups reuse `buildMenuTemplate` as a second
+entry point rather than introducing a second, hand-authored menu
+description — the alternative (a parallel renderer-side menu-structure
+definition) was rejected because it would create exactly the kind of
+two-sources-of-truth drift risk this codebase has consistently avoided
+since Task 7 first introduced `buildMenuTemplate` as the single
+description of menu structure.
+
+---

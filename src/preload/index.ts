@@ -26,6 +26,21 @@ const api: BridgeApi = {
   requestTreeParent: () => {
     ipcRenderer.send(IPC_CHANNELS.REQUEST_TREE_PARENT);
   },
+  minimizeWindow: () => {
+    ipcRenderer.send(IPC_CHANNELS.MINIMIZE_WINDOW);
+  },
+  toggleMaximizeWindow: () => {
+    ipcRenderer.send(IPC_CHANNELS.TOGGLE_MAXIMIZE_WINDOW);
+  },
+  closeWindow: () => {
+    ipcRenderer.send(IPC_CHANNELS.CLOSE_WINDOW);
+  },
+  popupMenu: (section, x, y) => {
+    ipcRenderer.send(IPC_CHANNELS.POPUP_MENU, section, x, y);
+  },
+  onWindowMaximizedState: (callback) => {
+    ipcRenderer.on(IPC_CHANNELS.WINDOW_MAXIMIZED_STATE, (_event, isMaximized: boolean) => callback(isMaximized));
+  },
 };
 
 contextBridge.exposeInMainWorld('mdview', api);

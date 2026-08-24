@@ -11,6 +11,15 @@
     <link rel="stylesheet" href="./app.css" />
   </head>
   <body>
+    <div id="title-bar">
+      <div id="menu-label-file" class="menu-label">File</div>
+      <div id="menu-label-view" class="menu-label">View</div>
+      <div id="menu-label-help" class="menu-label">Help</div>
+      <div id="title-bar-spacer"></div>
+      <button type="button" id="window-minimize" class="window-control" aria-label="Minimize"></button>
+      <button type="button" id="window-maximize" class="window-control" aria-label="Maximize"></button>
+      <button type="button" id="window-close" class="window-control window-control-close" aria-label="Close"></button>
+    </div>
     <div id="app-body">
       <div id="tree-panel">
         <div id="tree-empty-state">No folder open.</div>

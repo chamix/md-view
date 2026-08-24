@@ -7,11 +7,165 @@ body {
   padding-bottom: 2rem; /* leaves room for the fixed status bar below */
 }
 
+/* Task 29: frameless main window's custom title bar. -webkit-app-region:
+   drag on the bar itself makes the whole region draggable by default;
+   no-drag is then scoped to exactly the six interactive elements below
+   (three menu labels, three window-control buttons) -- nowhere else
+   (functional_domain.md guardrail #70). */
+#title-bar {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  height: 2rem;
+  background: #f6f8fa;
+  border-bottom: 1px solid #d0d7de;
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.menu-label {
+  -webkit-app-region: no-drag;
+  padding: 0 0.75rem;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  font-size: 0.85rem;
+  color: #24292f;
+  cursor: default;
+}
+
+.menu-label:hover {
+  background: rgba(208, 215, 222, 0.32);
+}
+
+#title-bar-spacer {
+  flex: 1 1 auto;
+}
+
+/* Window-control buttons are CSS-drawn (no icon library), matching this
+   app's existing zero-icon-dependency pattern (e.g. the tree's ▸ toggle
+   glyph is the one exception, a plain Unicode character, not an icon
+   font/SVG asset). */
+.window-control {
+  -webkit-app-region: no-drag;
+  appearance: none;
+  border: none;
+  background: transparent;
+  width: 2.75rem;
+  height: 100%;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  position: relative;
+}
+
+.window-control:hover {
+  background: rgba(208, 215, 222, 0.32);
+}
+
+.window-control-close:hover {
+  background: #e81123;
+}
+
+.window-control::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  border: 1px solid #24292f;
+}
+
+#window-minimize::before {
+  width: 10px;
+  height: 0;
+  transform: translate(-50%, -50%);
+}
+
+#window-maximize::before {
+  width: 9px;
+  height: 9px;
+  transform: translate(-50%, -50%);
+}
+
+/* Restore icon (two overlapping squares) -- toggled on via this class,
+   the ONLY place the maximize/restore button's appearance changes
+   (functional_domain.md guardrail #69: driven exclusively by the pushed
+   onWindowMaximizedState event, never assumed on click). */
+#window-maximize.is-maximized::before {
+  width: 8px;
+  height: 8px;
+  top: calc(50% + 2px);
+  left: calc(50% - 2px);
+}
+
+#window-maximize.is-maximized::after {
+  content: '';
+  position: absolute;
+  left: calc(50% + 2px);
+  top: calc(50% - 2px);
+  width: 8px;
+  height: 8px;
+  border: 1px solid #24292f;
+  background: #f6f8fa;
+}
+
+.window-control-close::before {
+  width: 11px;
+  height: 11px;
+  border: none;
+  transform: translate(-50%, -50%) rotate(45deg);
+  background: linear-gradient(#24292f, #24292f) center / 100% 1px no-repeat,
+    linear-gradient(#24292f, #24292f) center / 1px 100% no-repeat;
+}
+
+.window-control-close:hover::before {
+  background: linear-gradient(#ffffff, #ffffff) center / 100% 1px no-repeat,
+    linear-gradient(#ffffff, #ffffff) center / 1px 100% no-repeat;
+}
+
+body.dark-mode #title-bar {
+  background: #161b22;
+  border-bottom-color: #30363d;
+}
+
+body.dark-mode .menu-label {
+  color: #c9d1d9;
+}
+
+body.dark-mode .menu-label:hover {
+  background: rgba(48, 54, 61, 0.6);
+}
+
+body.dark-mode .window-control:hover {
+  background: rgba(48, 54, 61, 0.6);
+}
+
+body.dark-mode .window-control::before {
+  border-color: #c9d1d9;
+}
+
+body.dark-mode #window-maximize.is-maximized::after {
+  border-color: #c9d1d9;
+  background: #161b22;
+}
+
+body.dark-mode .window-control-close::before {
+  background: linear-gradient(#c9d1d9, #c9d1d9) center / 100% 1px no-repeat,
+    linear-gradient(#c9d1d9, #c9d1d9) center / 1px 100% no-repeat;
+}
+
 /* Task 21: tree sidebar. --tree-panel-width is a single override point so a
    later task (resize handle) can adjust it via one style.setProperty() call
-   without restructuring this HTML/CSS again. */
+   without restructuring this HTML/CSS again.
+   Task 29: --title-bar-height is the analogous single override point for
+   the new fixed-positioned custom title bar's height, so #tree-panel and
+   #tree-resize-handle (both position: fixed, previously pinned to the
+   viewport's own top: 0) can reserve space for it below instead of
+   overlapping it. */
 :root {
   --tree-panel-width: 260px;
+  --title-bar-height: 2rem;
 }
 
 /* Task 26: display:flow-root creates a Block Formatting Context, blocking
@@ -36,7 +190,7 @@ body {
    verbatim -- not a new value this task invents. */
 #tree-panel {
   position: fixed;
-  top: 0;
+  top: var(--title-bar-height);
   left: 0;
   bottom: 2rem;
   width: var(--tree-panel-width);
@@ -57,7 +211,7 @@ body {
    pinned to #tree-panel's right edge regardless of width. */
 #tree-resize-handle {
   position: fixed;
-  top: 0;
+  top: var(--title-bar-height);
   left: var(--tree-panel-width);
   bottom: 2rem;
   width: 6px;

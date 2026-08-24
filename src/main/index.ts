@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron';
+import type { MenuItemConstructorOptions } from 'electron';
 import * as path from 'path';
 import * as fs from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
@@ -8,7 +9,7 @@ import { baseUrlForFile } from './paths';
 import { watchFile } from './watcher';
 import { isExternalHttpUrl } from './linkPolicy';
 import { buildMenuTemplate } from './menu';
-import type { ViewSettings } from './menu';
+import type { ViewSettings, MenuHandlers } from './menu';
 import { extractFrontmatter } from './frontmatter';
 import { shouldSetDockIcon } from './dockIcon';
 import { shouldCreateHelpWindow, buildHelpHtml } from './helpWindow';
@@ -49,26 +50,33 @@ function setShowTreePanel(checked: boolean): void {
   broadcastViewSettings();
 }
 
-// Single, shared construction of the handlers object -- both the startup
-// menu build (app.whenReady()) and forceShowTreePanelAndRebuildMenu() below
-// call this same function, rather than each independently maintaining its
-// own copy of the handlers literal (which would drift over time).
+// Single, shared construction of the handlers object -- applyMenu() (below),
+// forceShowTreePanelAndRebuildMenu(), and the POPUP_MENU IPC handler
+// (registered in app.whenReady()) all call this same function, rather than
+// each independently maintaining its own copy of the handlers literal (which
+// would drift over time). This is the concrete mechanism satisfying
+// functional_domain.md guardrail #67: the title-bar popup is a second entry
+// point into buildMenuTemplate, never a second, hand-duplicated definition.
+function menuHandlers(): MenuHandlers {
+  return {
+    onOpen: openFileViaDialog,
+    onOpenFolder: openFolderViaDialog,
+    onToggleDarkMode: setDarkMode,
+    onToggleShowFrontmatter: setShowFrontmatter,
+    onToggleShowTreePanel: setShowTreePanel,
+    onOpenHelp,
+  };
+}
+
 function applyMenu(): void {
-  Menu.setApplicationMenu(
-    Menu.buildFromTemplate(
-      buildMenuTemplate(
-        {
-          onOpen: openFileViaDialog,
-          onOpenFolder: openFolderViaDialog,
-          onToggleDarkMode: setDarkMode,
-          onToggleShowFrontmatter: setShowFrontmatter,
-          onToggleShowTreePanel: setShowTreePanel,
-          onOpenHelp,
-        },
-        viewSettings
-      )
-    )
-  );
+  Menu.setApplicationMenu(Menu.buildFromTemplate(buildMenuTemplate(menuHandlers(), viewSettings)));
+}
+
+// Task 29: which buildMenuTemplate() index a title-bar label section maps
+// to. Pure lookup, zero Electron runtime -- unit-testable in isolation, same
+// tier as shouldSkipDevToolsShortcut immediately below.
+export function menuSectionIndex(section: 'file' | 'view' | 'help'): number {
+  return { file: 0, view: 1, help: 2 }[section];
 }
 
 // Called by the two "browse a folder" actions (openFolderViaDialog and the
@@ -86,6 +94,7 @@ function forceShowTreePanelAndRebuildMenu(): void {
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     ...defaultWindowOptions,
+    frame: false,
     icon: path.join(__dirname, 'icon.png'),
     webPreferences: {
       ...defaultWindowOptions.webPreferences,
@@ -93,6 +102,19 @@ function createWindow(): void {
     },
   });
   mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+
+  // Task 29: the maximize/restore button's displayed state is a pure
+  // reflection of the real BrowserWindow's own maximized fact, pushed
+  // whenever that fact actually changes -- regardless of whether the change
+  // came from the custom title-bar button, a double-click on the drag
+  // region, or an OS-level action (snap, Win+Up) entirely outside the app's
+  // own UI. Registered here, inside createWindow(), NOT inside the
+  // TOGGLE_MAXIMIZE_WINDOW handler below -- 'maximize'/'unmaximize' are
+  // native BrowserWindow events that fire for every path that changes real
+  // maximized state, not something this task's own handler emits
+  // synthetically (functional_domain.md guardrail #69).
+  mainWindow.on('maximize', () => mainWindow?.webContents.send(IPC_CHANNELS.WINDOW_MAXIMIZED_STATE, true));
+  mainWindow.on('unmaximize', () => mainWindow?.webContents.send(IPC_CHANNELS.WINDOW_MAXIMIZED_STATE, false));
 
   mainWindow.webContents.on('will-navigate', (event, url) => {
     event.preventDefault(); // unconditional, before any URL classification — this is the load-bearing safety property
@@ -378,6 +400,35 @@ app.whenReady().then(() => {
   ipcMain.on(IPC_CHANNELS.REQUEST_TREE_PARENT, () => {
     if (!currentTreeRoot) return;
     establishTreeRoot(path.dirname(currentTreeRoot));
+  });
+
+  // Task 29: frameless main window's custom title-bar controls. Each is a
+  // zero-argument, fire-and-forget trigger mapping 1:1 onto a real
+  // BrowserWindow lifecycle method — no intermediate domain state of its
+  // own to model (functional_domain.md Task 29 Abstract Schema Contracts).
+  ipcMain.on(IPC_CHANNELS.MINIMIZE_WINDOW, () => mainWindow?.minimize());
+  ipcMain.on(IPC_CHANNELS.CLOSE_WINDOW, () => mainWindow?.close());
+  ipcMain.on(IPC_CHANNELS.TOGGLE_MAXIMIZE_WINDOW, () => {
+    if (!mainWindow) return;
+    if (mainWindow.isMaximized()) {
+      mainWindow.unmaximize();
+    } else {
+      mainWindow.maximize();
+    }
+  });
+
+  // Title-bar menu-label click -> pop up just that section's own submenu,
+  // built from the exact same buildMenuTemplate(...) call applyMenu() uses
+  // for the full native application menu (ADR-005 / guardrail #67) — never
+  // a second, hand-duplicated menu description.
+  ipcMain.on(IPC_CHANNELS.POPUP_MENU, (_e, section: 'file' | 'view' | 'help', x: number, y: number) => {
+    const index = menuSectionIndex(section);
+    const template = buildMenuTemplate(menuHandlers(), viewSettings);
+    Menu.buildFromTemplate(template[index].submenu as MenuItemConstructorOptions[]).popup({
+      window: mainWindow ?? undefined,
+      x,
+      y,
+    });
   });
 });
 

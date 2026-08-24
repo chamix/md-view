@@ -291,10 +291,18 @@ test.describe('Task 23: tree panel drag-to-resize', () => {
       BrowserWindow.getAllWindows()[0].setBounds({ width: 480, height: 640 });
     });
     // Client-area width after an outer setBounds(480) isn't necessarily
-    // exactly 480 (Windows window-chrome overhead) -- read the real live
-    // value rather than assuming it, then derive the expected clamp from
-    // that, same as the "default window size" test above.
-    await expect.poll(() => window.evaluate(() => window.innerWidth)).toBeLessThanOrEqual(480);
+    // exactly 480 -- read the real live value rather than assuming it, then
+    // derive the expected clamp from that, same as the "default window
+    // size" test above. Originally this only ever undershot 480 (native
+    // window-chrome overhead). Task 29's frame:false removed that overhead
+    // and exposed a ~2px DPI-scaling rounding artifact at this machine's
+    // 125% scale factor that instead overshoots to 482 (confirmed via
+    // direct getBounds()/getContentBounds() probing, see DEVLOG's Task 29
+    // entry) -- this poll only needs to confirm the resize has actually
+    // settled near 480 (not still sitting at the pre-shrink 900px), so a
+    // small tolerance band covers both directions without hardcoding either
+    // OS's exact rounding behavior.
+    await expect.poll(() => window.evaluate(() => window.innerWidth)).toBeLessThanOrEqual(490);
     const innerWidth = await window.evaluate(() => window.innerWidth);
     const expectedMaxTreeWidth = innerWidth - 300; // MIN_MAIN_PANEL_WIDTH
 

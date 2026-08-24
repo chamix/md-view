@@ -7,6 +7,11 @@ export const IPC_CHANNELS = {
   FOLDER_TREE_ROOT: 'md-view:folder-tree-root',
   REQUEST_LIST_DIRECTORY: 'md-view:request-list-directory',
   REQUEST_TREE_PARENT: 'md-view:request-tree-parent',
+  MINIMIZE_WINDOW: 'md-view:minimize-window',
+  TOGGLE_MAXIMIZE_WINDOW: 'md-view:toggle-maximize-window',
+  CLOSE_WINDOW: 'md-view:close-window',
+  POPUP_MENU: 'md-view:popup-menu',
+  WINDOW_MAXIMIZED_STATE: 'md-view:window-maximized-state',
 } as const;
 
 export interface FileRenderedOk {
@@ -73,4 +78,9 @@ export interface BridgeApi {
   listDirectory(dirPath: string): Promise<DirectoryListResult>;
   openFileByPath(filePath: string): void;
   requestTreeParent(): void;
+  minimizeWindow(): void;
+  toggleMaximizeWindow(): void;
+  closeWindow(): void;
+  popupMenu(section: 'file' | 'view' | 'help', x: number, y: number): void;
+  onWindowMaximizedState(callback: (isMaximized: boolean) => void): void;
 }

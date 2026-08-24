@@ -469,6 +469,56 @@ if (typeof document !== 'undefined') {
   });
 
   void treePanelEl; // referenced for clarity/future use; no direct manipulation needed today
+
+  // Task 29: frameless main window's custom title bar. Each label/button
+  // handler is a one-line call into window.mdview -- no menu-structure
+  // knowledge and no local state mutation live in the renderer at all
+  // (functional_domain.md guardrails #67/#69).
+  const menuLabelFile = document.getElementById('menu-label-file');
+  const menuLabelView = document.getElementById('menu-label-view');
+  const menuLabelHelp = document.getElementById('menu-label-help');
+
+  if (menuLabelFile) {
+    menuLabelFile.addEventListener('click', (event) => {
+      window.mdview.popupMenu('file', event.clientX, event.clientY);
+    });
+  }
+  if (menuLabelView) {
+    menuLabelView.addEventListener('click', (event) => {
+      window.mdview.popupMenu('view', event.clientX, event.clientY);
+    });
+  }
+  if (menuLabelHelp) {
+    menuLabelHelp.addEventListener('click', (event) => {
+      window.mdview.popupMenu('help', event.clientX, event.clientY);
+    });
+  }
+
+  const windowMinimizeEl = document.getElementById('window-minimize');
+  const windowMaximizeEl = document.getElementById('window-maximize');
+  const windowCloseEl = document.getElementById('window-close');
+
+  if (windowMinimizeEl) {
+    windowMinimizeEl.addEventListener('click', () => window.mdview.minimizeWindow());
+  }
+  if (windowMaximizeEl) {
+    windowMaximizeEl.addEventListener('click', () => window.mdview.toggleMaximizeWindow());
+  }
+  if (windowCloseEl) {
+    windowCloseEl.addEventListener('click', () => window.mdview.closeWindow());
+  }
+
+  // The ONLY place the maximize/restore button's appearance changes -- main
+  // is the single source of truth for the real OS-level maximized fact,
+  // regardless of which path (this button, a double-click, an OS action)
+  // caused the transition (functional_domain.md guardrail #69). Never
+  // assumed optimistically on click above.
+  window.mdview.onWindowMaximizedState((isMaximized) => {
+    if (windowMaximizeEl) {
+      windowMaximizeEl.classList.toggle('is-maximized', isMaximized);
+      windowMaximizeEl.setAttribute('aria-label', isMaximized ? 'Restore' : 'Maximize');
+    }
+  });
 }
 
 // No-op in the browser (there is no `module` global there); lets Vitest
