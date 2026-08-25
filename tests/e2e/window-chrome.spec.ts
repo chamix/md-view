@@ -368,3 +368,352 @@ test.describe('(f) FI-1: maximize/unmaximize push listeners are the sole source 
     await expect(maximizeButton).not.toHaveClass(/is-maximized/, { timeout: 10000 });
   });
 });
+
+// Task 30: #title-bar was built position: static (normal document flow) --
+// it happened to visually sit at the viewport top only because it was
+// body's first child on a document short enough to never scroll. Every
+// other fixed-chrome element (#tree-panel/#tree-resize-handle/#status-bar)
+// was built position: fixed from its own introduction; #title-bar was the
+// one element missed. None of this suite's other describe blocks ever
+// opened a document long enough to force a real page scroll before
+// asserting title-bar geometry/interactivity -- this block specifically
+// does, using the same tests/e2e/fixtures/long-document.md fixture Task 26
+// built for the analogous #tree-panel-vs-scroll independence proof
+// (tree-panel.spec.ts guardrail #51).
+test.describe('(g) #title-bar stays fixed and remains functional while the page itself scrolls (Task 30 regression)', () => {
+  const longDocumentFixture = path.join(process.cwd(), 'tests/e2e/fixtures/long-document.md');
+  test.use({ electronArgs: [longDocumentFixture] });
+
+  test('title-bar geometry is unchanged after scrolling the document to its end', async ({ electronApp }) => {
+    const window = await electronApp.firstWindow();
+    await expect(window.locator('#content')).toContainText('Section 1', { timeout: 10000 });
+
+    const titleBarBefore = await window.locator('#title-bar').boundingBox();
+
+    // Task 31: the scrolling element is #main-panel, not body/html (see this
+    // suite's (h) block for the direct proof) -- every scroll-driving/
+    // scroll-reading call in this describe block targets #main-panel's own
+    // scrollTop, not window.scrollY/document.documentElement.scrollHeight.
+    await window.evaluate(() => {
+      const mainPanel = document.getElementById('main-panel') as HTMLElement;
+      mainPanel.scrollTo(0, mainPanel.scrollHeight);
+    });
+    // Confirm the scroll actually moved -- same guardrail-#51 idiom
+    // tree-panel.spec.ts already uses, not merely trusting scrollTo() ran.
+    await expect
+      .poll(() => window.evaluate(() => (document.getElementById('main-panel') as HTMLElement).scrollTop))
+      .toBeGreaterThan(0);
+
+    const titleBarAfter = await window.locator('#title-bar').boundingBox();
+    expect(titleBarAfter).toEqual(titleBarBefore);
+  });
+
+  test('minimize button still minimizes the real window while the document is scrolled mid-way', async ({
+    electronApp,
+  }) => {
+    const window = await electronApp.firstWindow();
+    await expect(window.locator('#content')).toContainText('Section 1', { timeout: 10000 });
+
+    // Task 31: scroll #main-panel, not body/html -- see the (h) block below
+    // for the direct proof that window.scrollY stays 0 post-fix.
+    await window.evaluate(() => {
+      const mainPanel = document.getElementById('main-panel') as HTMLElement;
+      mainPanel.scrollTo(0, mainPanel.scrollHeight / 2);
+    });
+    await expect
+      .poll(() => window.evaluate(() => (document.getElementById('main-panel') as HTMLElement).scrollTop))
+      .toBeGreaterThan(0);
+
+    const before = await electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isMinimized());
+    expect(before).toBe(false);
+
+    await window.locator('#window-minimize').click();
+
+    await expect
+      .poll(() => electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isMinimized()))
+      .toBe(true);
+  });
+
+  test('maximize button still maximizes, and clicking it again still restores, while the document is scrolled mid-way', async ({
+    electronApp,
+  }) => {
+    const window = await electronApp.firstWindow();
+    await expect(window.locator('#content')).toContainText('Section 1', { timeout: 10000 });
+
+    // Task 31: scroll #main-panel, not body/html -- see the (h) block below
+    // for the direct proof that window.scrollY stays 0 post-fix.
+    await window.evaluate(() => {
+      const mainPanel = document.getElementById('main-panel') as HTMLElement;
+      mainPanel.scrollTo(0, mainPanel.scrollHeight / 2);
+    });
+    await expect
+      .poll(() => window.evaluate(() => (document.getElementById('main-panel') as HTMLElement).scrollTop))
+      .toBeGreaterThan(0);
+
+    const maximizeButton = window.locator('#window-maximize');
+
+    const before = await electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isMaximized());
+    expect(before).toBe(false);
+    await expect(maximizeButton).not.toHaveClass(/is-maximized/);
+
+    await maximizeButton.click();
+
+    await expect
+      .poll(() => electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isMaximized()))
+      .toBe(true);
+    await expect(maximizeButton).toHaveClass(/is-maximized/);
+
+    await maximizeButton.click();
+
+    await expect
+      .poll(() => electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isMaximized()))
+      .toBe(false);
+    await expect(maximizeButton).not.toHaveClass(/is-maximized/);
+  });
+
+  test('title-bar menu labels still popup the correct buildMenuTemplate() sections while the document is scrolled mid-way', async ({
+    electronApp,
+  }) => {
+    const window = await electronApp.firstWindow();
+    await expect(window.locator('#content')).toContainText('Section 1', { timeout: 10000 });
+
+    // Task 31: scroll #main-panel, not body/html -- see the (h) block below
+    // for the direct proof that window.scrollY stays 0 post-fix.
+    await window.evaluate(() => {
+      const mainPanel = document.getElementById('main-panel') as HTMLElement;
+      mainPanel.scrollTo(0, mainPanel.scrollHeight / 2);
+    });
+    await expect
+      .poll(() => window.evaluate(() => (document.getElementById('main-panel') as HTMLElement).scrollTop))
+      .toBeGreaterThan(0);
+
+    // Same monkey-patch-and-capture technique this suite's (d) block already
+    // established.
+    await electronApp.evaluate(({ Menu }) => {
+      const bag = globalThis as unknown as { __mdViewLastPopupMenu: Electron.Menu | null };
+      bag.__mdViewLastPopupMenu = null;
+      const original = Menu.buildFromTemplate.bind(Menu);
+      Menu.buildFromTemplate = ((template: Electron.MenuItemConstructorOptions[]) => {
+        const menu = original(template);
+        bag.__mdViewLastPopupMenu = menu;
+        return menu;
+      }) as typeof Menu.buildFromTemplate;
+    });
+
+    await window.locator('#menu-label-file').click();
+    const fileItemIds = await electronApp.evaluate(() => {
+      const bag = globalThis as unknown as { __mdViewLastPopupMenu: Electron.Menu | null };
+      return bag.__mdViewLastPopupMenu?.items.map((item) => item.id ?? item.type) ?? [];
+    });
+    expect(fileItemIds).toEqual(['menu-open', 'menu-open-folder', 'separator', 'menu-exit']);
+
+    await window.locator('#menu-label-view').click();
+    const viewItemIds = await electronApp.evaluate(() => {
+      const bag = globalThis as unknown as { __mdViewLastPopupMenu: Electron.Menu | null };
+      return bag.__mdViewLastPopupMenu?.items.map((item) => item.id ?? item.type) ?? [];
+    });
+    expect(viewItemIds).toEqual(['menu-dark-mode', 'menu-show-frontmatter', 'menu-show-tree-panel']);
+
+    await window.locator('#menu-label-help').click();
+    const helpItemIds = await electronApp.evaluate(() => {
+      const bag = globalThis as unknown as { __mdViewLastPopupMenu: Electron.Menu | null };
+      return bag.__mdViewLastPopupMenu?.items.map((item) => item.id ?? item.type) ?? [];
+    });
+    expect(helpItemIds).toEqual(['menu-help']);
+  });
+
+  // Deliberately NOT scrolled, unlike this describe block's other tests --
+  // this was originally written (Task 30) because #main-panel was body's
+  // normal-flow scrolling content back then, so its getBoundingClientRect()
+  // would move away from #title-bar's fixed bottom edge in direct
+  // proportion to scroll distance. The "no gap, no overlap" invariant this
+  // test guards (#app-body's margin-top correctly compensating #title-bar's
+  // position:fixed height) is a static-layout property of the document's
+  // resting state regardless, so it stays proven at scroll position 0, same
+  // as this suite's (a) block already does for #tree-panel/#tree-resize-handle
+  // vs. #title-bar.
+  //
+  // Compared against #app-body, not #main-panel: at Task 30 time,
+  // #main-panel's own rect.top included ~24px of #document-container's
+  // `margin: 1.5rem auto` collapsing through it (#main-panel was not its own
+  // Block Formatting Context) -- a pre-existing, unrelated presentational
+  // offset from Task 11's document-card chrome, nothing to do with the
+  // title-bar fix. Task 31 update: #main-panel now carries `overflow-y:
+  // auto` (the fix for THIS task's bug, #main-panel becoming its own
+  // viewport-bound scroll container -- see app.css), which independently
+  // makes #main-panel its own Block Formatting Context too, so that
+  // particular margin-collapse quirk may no longer reproduce -- not
+  // reverified, since it's moot either way: #app-body IS the
+  // flow-root/BFC boundary the Task 30 margin-top compensation was added
+  // to (see the `display: flow-root` comment in app.css), so its border-box
+  // top remains the correct, direct, uncollapsed measurement regardless of
+  // whichever element(s) besides it also happen to be their own BFC.
+  test('#app-body content starts exactly --title-bar-height below #title-bar with no gap or overlap (static layout, scroll position 0)', async ({
+    electronApp,
+  }) => {
+    const window = await electronApp.firstWindow();
+    await expect(window.locator('#content')).toContainText('Section 1', { timeout: 10000 });
+
+    // Compared against #title-bar's own live rect directly, rather than a
+    // hardcoded pixel number derived from `2rem` (root font-size dependent)
+    // -- same convention as (a)'s sub-pixel-tolerance geometry checks.
+    const rects = await window.evaluate(() => ({
+      titleBar: document.getElementById('title-bar')?.getBoundingClientRect(),
+      appBody: document.getElementById('app-body')?.getBoundingClientRect(),
+    }));
+    expect(Math.abs((rects.appBody?.top ?? 0) - (rects.titleBar?.bottom ?? 0))).toBeLessThanOrEqual(1);
+  });
+
+  test('#tree-panel geometry stays correct relative to #title-bar while the document is scrolled (regression check for guardrail #78)', async ({
+    electronApp,
+  }) => {
+    const window = await electronApp.firstWindow();
+    await expect(window.locator('#content')).toContainText('Section 1', { timeout: 10000 });
+
+    // Task 31: scroll #main-panel, not body/html -- see the (h) block below
+    // for the direct proof that window.scrollY stays 0 post-fix.
+    await window.evaluate(() => {
+      const mainPanel = document.getElementById('main-panel') as HTMLElement;
+      mainPanel.scrollTo(0, mainPanel.scrollHeight / 2);
+    });
+    await expect
+      .poll(() => window.evaluate(() => (document.getElementById('main-panel') as HTMLElement).scrollTop))
+      .toBeGreaterThan(0);
+
+    // Reuses the same rects.treePanel.top vs. rects.titleBar.bottom
+    // comparison test (a) already performs at scroll position 0 -- this is
+    // the regression check proving #tree-panel's pre-existing correctness
+    // now that it is actually exercised by a real page-level scroll.
+    const rects = await window.evaluate(() => ({
+      titleBar: document.getElementById('title-bar')?.getBoundingClientRect(),
+      treePanel: document.getElementById('tree-panel')?.getBoundingClientRect(),
+    }));
+    expect(Math.abs((rects.treePanel?.top ?? 0) - (rects.titleBar?.bottom ?? 0))).toBeLessThanOrEqual(1);
+  });
+});
+
+// Task 31: Task 30 made #title-bar position: fixed, but never gave
+// body/html/#app-body/#main-panel any overflow rule of their own -- a long
+// document still overflowed body itself, and body was still the element
+// that actually scrolled. The browser's native scrollbar therefore still
+// spanned the FULL viewport height, including the region behind
+// #title-bar, because native scrollbars render in the browser/OS
+// compositor layer, structurally outside the page's own DOM/z-index
+// stacking context -- Task 30's z-index: 10 on #title-bar was never able
+// to make the scrollbar respect it, no matter what value it held. The fix
+// relocates WHERE scrolling happens, reusing the identical, already-proven
+// pattern #tree-panel established for itself in Task 26: position: fixed,
+// a bounded height (top/bottom anchored to --title-bar-height / the status
+// bar's 2rem clearance), and its own overflow-y: auto, so #main-panel's
+// scrollbar (if it ever needs one) is contained entirely within its own
+// box instead of the full viewport. This block is the direct proof of
+// that fix, distinct from (g) above (which merely converts (g)'s existing
+// functional regression tests to drive/read #main-panel's own scroll
+// state instead of window.scrollY, so those assertions keep discriminating
+// a real mechanism instead of passing vacuously).
+test.describe('(h) #main-panel is its own bounded scroll container -- window/body never scroll (Task 31)', () => {
+  const longDocumentFixture = path.join(process.cwd(), 'tests/e2e/fixtures/long-document.md');
+  test.use({ electronArgs: [longDocumentFixture] });
+
+  test('window.scrollY stays 0 even after scrolling #main-panel to its end', async ({ electronApp }) => {
+    const window = await electronApp.firstWindow();
+    await expect(window.locator('#content')).toContainText('Section 1', { timeout: 10000 });
+
+    // Direct proof that body/html have no scroll of their own -- not an
+    // inference from "the visible symptom (title bar drifting) is gone".
+    expect(await window.evaluate(() => window.scrollY)).toBe(0);
+
+    await window.evaluate(() => {
+      const mainPanel = document.getElementById('main-panel') as HTMLElement;
+      mainPanel.scrollTo(0, mainPanel.scrollHeight);
+    });
+    await expect
+      .poll(() => window.evaluate(() => (document.getElementById('main-panel') as HTMLElement).scrollTop))
+      .toBeGreaterThan(0);
+
+    // #main-panel genuinely scrolled (proven above); window.scrollY is
+    // still exactly 0 -- the scroll never touched body/html at all.
+    expect(await window.evaluate(() => window.scrollY)).toBe(0);
+  });
+
+  // Playwright/Chromium's automation surface (getBoundingClientRect(),
+  // getComputedStyle(), the accessibility tree, DOM locators) has no way to
+  // query a native OS/compositor-drawn scrollbar's own rendered pixels --
+  // investigated directly: there is no Playwright locator or CDP call for
+  // "the scrollbar of element X", and this app applies no
+  // `::-webkit-scrollbar` override (confirmed via a grep of app.css), so
+  // the scrollbar #main-panel grows is the browser's native, unscriptable
+  // one, not a styled/measurable pseudo-element. A pixel-diffing screenshot
+  // approach could in principle detect scrollbar presence but not assert
+  // its own geometric bounds without fragile, environment-dependent color
+  // sampling -- not attempted here. Same "investigate, then document the
+  // real limitation" standard as (c)'s double-click investigation above.
+  //
+  // What IS directly measurable, and is a real (if indirect) proof: a
+  // native scrollbar always renders *inside* the box of the scrolling
+  // element that owns it. Bounding #main-panel's own box to never extend
+  // above --title-bar-height or below the status bar's 2rem clearance
+  // therefore bounds the scrollbar's own maximum possible extent to that
+  // same region -- it structurally cannot render outside its owning
+  // element's box. This proves the containing box's geometry, not the
+  // scrollbar's own rendered pixels directly.
+  test("#main-panel's own box never extends above the title bar or below the status bar's clearance, at rest and scrolled to the end", async ({
+    electronApp,
+  }) => {
+    const window = await electronApp.firstWindow();
+    await expect(window.locator('#content')).toContainText('Section 1', { timeout: 10000 });
+
+    async function readGeometry() {
+      return window.evaluate(() => {
+        const mainPanel = document.getElementById('main-panel') as HTMLElement;
+        const titleBar = document.getElementById('title-bar') as HTMLElement;
+        return {
+          mainPanelRect: mainPanel.getBoundingClientRect(),
+          titleBarBottom: titleBar.getBoundingClientRect().bottom,
+          viewportHeight: window.innerHeight,
+        };
+      });
+    }
+
+    function assertBounded(geometry: Awaited<ReturnType<typeof readGeometry>>) {
+      // Sub-pixel tolerance, same convention as (a)'s geometry checks.
+      expect(geometry.mainPanelRect.top).toBeGreaterThanOrEqual(geometry.titleBarBottom - 1);
+      // `bottom: 2rem` status-bar clearance -- compare against the live
+      // viewport height rather than a hardcoded pixel number derived from
+      // `2rem` (root font-size dependent), same convention as (a)/(g).
+      expect(geometry.mainPanelRect.bottom).toBeLessThanOrEqual(geometry.viewportHeight - 1);
+    }
+
+    assertBounded(await readGeometry());
+
+    await window.evaluate(() => {
+      const mainPanel = document.getElementById('main-panel') as HTMLElement;
+      mainPanel.scrollTo(0, mainPanel.scrollHeight);
+    });
+    await expect
+      .poll(() => window.evaluate(() => (document.getElementById('main-panel') as HTMLElement).scrollTop))
+      .toBeGreaterThan(0);
+
+    assertBounded(await readGeometry());
+  });
+
+  // Task 28 companion-fix regression check: #main-panel's horizontal offset
+  // moved from margin-left to left (both keyed off --tree-panel-width) --
+  // body.tree-panel-hidden's own override must move the same way, or hiding
+  // the tree panel would silently leave #main-panel permanently offset by
+  // --tree-panel-width, reserving an unreachable gutter where the hidden
+  // tree panel used to be.
+  test('#main-panel\'s left edge is 0, not --tree-panel-width, once the tree panel is hidden via the View menu', async ({
+    electronApp,
+  }) => {
+    const window = await electronApp.firstWindow();
+    await expect(window.locator('#content')).toContainText('Section 1', { timeout: 10000 });
+    await expect(window.locator('#tree-panel')).toBeVisible();
+
+    await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-show-tree-panel')?.click());
+    await expect(window.locator('#tree-panel')).toBeHidden();
+
+    const left = await window.evaluate(() => document.getElementById('main-panel')?.getBoundingClientRect().left ?? -1);
+    expect(left).toBeLessThanOrEqual(1);
+  });
+});

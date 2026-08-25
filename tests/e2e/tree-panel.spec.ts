@@ -660,14 +660,27 @@ test.describe('Task 26: independent viewport-fixed tree panel sizing', () => {
 
       const treeBoxBefore = await window.locator('#tree-panel').boundingBox();
 
-      await window.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
-      await expect.poll(() => window.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+      // Task 31: #main-panel is now its own bounded scroll container --
+      // body/html no longer overflow at all, so window.scrollTo()/scrollY
+      // can no longer drive or observe this. Same conversion already
+      // proven in window-chrome.spec.ts's (g)/(h) blocks.
+      await window.evaluate(() => {
+        const mainPanel = document.getElementById('main-panel') as HTMLElement;
+        mainPanel.scrollTo(0, mainPanel.scrollHeight);
+      });
+      await expect
+        .poll(() => window.evaluate(() => (document.getElementById('main-panel') as HTMLElement).scrollTop))
+        .toBeGreaterThan(0);
 
-      const docScrollHeight = await window.evaluate(() => document.documentElement.scrollHeight);
-      const viewportHeight = await window.evaluate(() => window.innerHeight);
-      // Proves the page actually scrolls -- Task 12's content-driven grow
-      // behavior is completely unaffected by this task.
-      expect(docScrollHeight).toBeGreaterThan(viewportHeight);
+      const [mainPanelScrollHeight, mainPanelClientHeight] = await window.evaluate(() => {
+        const mainPanel = document.getElementById('main-panel') as HTMLElement;
+        return [mainPanel.scrollHeight, mainPanel.clientHeight];
+      });
+      // Proves #main-panel actually scrolls -- Task 12's content-driven grow
+      // behavior is completely unaffected by this task; #main-panel is
+      // simply the element that now owns that overflow (Task 31), instead
+      // of document.documentElement, which no longer overflows at all.
+      expect(mainPanelScrollHeight).toBeGreaterThan(mainPanelClientHeight);
 
       await expect(window.locator('#status-bar')).toBeVisible();
       await expectTreePanelBottomMeetsStatusBarTop(window);

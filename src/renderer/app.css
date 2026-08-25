@@ -13,6 +13,11 @@ body {
    (three menu labels, three window-control buttons) -- nowhere else
    (functional_domain.md guardrail #70). */
 #title-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
   display: flex;
   flex-direction: row;
   align-items: center;
@@ -180,6 +185,7 @@ body.dark-mode .window-control-close::before {
    investigation before assuming this line does something it doesn't. */
 #app-body {
   display: flow-root;
+  margin-top: var(--title-bar-height);
 }
 
 /* Task 26: viewport-bound sidebar -- position: fixed rather than flex
@@ -208,13 +214,24 @@ body.dark-mode .window-control-close::before {
    never compete visually.
    Task 26: switched to position: fixed alongside #tree-panel, same
    `bottom: 2rem` clearance, `left: var(--tree-panel-width)` keeping it
-   pinned to #tree-panel's right edge regardless of width. */
+   pinned to #tree-panel's right edge regardless of width.
+   Task 31: `z-index: 1` added. #main-panel's own left edge sits at this
+   same `var(--tree-panel-width)` x-coordinate, and #main-panel only just
+   became `position: fixed` itself (previously in normal flow, which
+   painted below any positioned element regardless of DOM order) -- without
+   an explicit z-index here, two position:fixed elements with the same
+   implicit z-index:auto stack in DOM order, and #main-panel comes after
+   this handle in index.html, so it silently painted on top and intercepted
+   the handle's own 6px hit area, breaking Task 23's drag-to-resize
+   entirely (confirmed via a real fault-injection run of
+   tree-panel.spec.ts's Task 23 suite -- see DEVLOG). */
 #tree-resize-handle {
   position: fixed;
   top: var(--title-bar-height);
   left: var(--tree-panel-width);
   bottom: 2rem;
   width: 6px;
+  z-index: 1;
   cursor: col-resize;
   background: linear-gradient(to right, transparent 2px, #d0d7de 2px, #d0d7de 3px, transparent 3px);
 }
@@ -231,14 +248,28 @@ body.resizing-tree-panel {
   user-select: none;
 }
 
-/* Task 26: #main-panel is no longer a flex child (#app-body's flex row is
-   gone) -- reserves space for the now-fixed-positioned #tree-panel via
-   margin-left instead of flex-basis math. #document-container's own width:
-   calc(100% - 4rem) now resolves against #main-panel's normal
-   block-formatting-context width, which was never flex-constrained in the
-   first place, so the old min-width: 0 workaround no longer applies. */
+/* Task 31: #main-panel is now its own viewport-bound scroll container --
+   the exact same pattern #tree-panel already proved for itself in Task 26
+   (position: fixed, a bounded height, its own overflow-y: auto), extended
+   here to fix the class of bug Task 30's #title-bar fix didn't fully
+   close: with no overflow rule anywhere on body/html/#app-body/#main-panel,
+   a long document still overflowed body itself, and body was still the
+   element that scrolled -- so the browser's native scrollbar still spanned
+   the FULL viewport height behind #title-bar (native scrollbars render in
+   the browser/OS compositor layer, structurally outside the page's own
+   DOM/z-index stacking context, so they never could have respected
+   #title-bar's z-index in the first place). `bottom: 2rem` reuses the same
+   status-bar clearance #tree-panel's own rule already uses verbatim -- not
+   a new value. #document-container's own width/max-width/margin/border
+   rules are untouched; it now simply overflows #main-panel's bounded box
+   instead of overflowing body. */
 #main-panel {
-  margin-left: var(--tree-panel-width);
+  position: fixed;
+  top: var(--title-bar-height);
+  left: var(--tree-panel-width);
+  right: 0;
+  bottom: 2rem;
+  overflow-y: auto;
 }
 
 /* Task 28: "Show File Tree" View-menu checkbox. display: none only -- the
@@ -250,8 +281,13 @@ body.tree-panel-hidden #tree-resize-handle {
   display: none;
 }
 
+/* Task 31: #main-panel's horizontal offset moved from margin-left to left
+   (both keyed off --tree-panel-width) -- this override must move the same
+   way, or hiding the tree panel would silently leave #main-panel
+   permanently offset by --tree-panel-width, reserving an unreachable
+   gutter where the hidden tree panel used to be. */
 body.tree-panel-hidden #main-panel {
-  margin-left: 0;
+  left: 0;
 }
 
 #content {

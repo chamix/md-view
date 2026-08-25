@@ -527,3 +527,54 @@ packaging — not assumed fine just because Windows was.
   at `--workers=2` for a clean non-parallel-contention read) pass. No
   further action needed unless a future task changes `minWidth` or the
   window's DPI-scaling assumptions again.
+
+- [Resolved 2026-08-24] Task 31 (#main-panel becomes its own viewport-bound
+  scroll container, fixing the native-scrollbar-behind-#title-bar bug Task 30
+  left open) initially discovered two deterministic, out-of-scope test
+  regressions its own CSS change caused -- flagged here rather than routed
+  around the scope-contract hook. The Lead amended current_scope.json to add
+  both files, and both are now fixed, same conversion pattern already proven
+  twice in window-chrome.spec.ts's (g)/(h) blocks:
+  1. tests/e2e/tree-panel.spec.ts's "Task 26: ... long document vs. tree
+     panel independence (guardrail #51)" test converted its
+     window.scrollTo(0, document.documentElement.scrollHeight) /
+     window.scrollY > 0 poll to drive/read #main-panel directly
+     (mainPanel.scrollTo(...) / mainPanel.scrollTop), and its
+     proof-of-scroll assertion (previously
+     document.documentElement.scrollHeight > viewportHeight) to compare
+     #main-panel.scrollHeight > #main-panel.clientHeight instead, since
+     document.documentElement no longer overflows post-fix. The test's own
+     intent (#tree-panel stays unaffected by document scroll position) is
+     unchanged -- only the scroll-mechanism plumbing moved.
+  2. tests/e2e/view-menu.spec.ts's (f) "toggling Show File Tree" test
+     converted its getComputedStyle(#main-panel).marginLeft
+     before/during/after assertions to read getComputedStyle(#main-panel).left
+     instead, matching the CSS property #main-panel's rule actually uses now.
+     Same intent preserved (#main-panel reclaims/loses horizontal space when
+     the tree panel is hidden/shown).
+
+  Both individual tests confirmed green in isolation first, then the full
+  tree-panel.spec.ts + view-menu.spec.ts suites (37 tests) and a final
+  combined run of window-chrome.spec.ts + tree-panel.spec.ts +
+  view-menu.spec.ts (57 tests) all passed, confirming no other assertion in
+  either file relied on the retired window.scrollY/marginLeft semantics.
+
+- [Pending] Task 31's independent review (N-1,
+  `review_report_task31.md`) flagged that `tree-panel.spec.ts`'s
+  pre-existing Task 26 guardrail #50 test ("expanding many/ overflows
+  #tree-panel and scrolls internally, without growing the whole page")
+  has arguably-reduced discriminating power on its second assertion
+  (`docScrollHeightAfter <= docScrollHeightBefore + 1`) now that both
+  `#tree-panel` and `#main-panel` are entirely `position: fixed` and out
+  of normal flow -- `document.documentElement.scrollHeight` can now
+  barely ever grow at all, regardless of whether `#tree-panel`'s own
+  `overflow-y: auto` is even present or correct. Not caused by Task 31
+  (the test has zero diff; `#tree-panel` was already `position: fixed`
+  since Task 26, so the same structural argument likely already applied
+  pre-Task-31 too) -- flagged for awareness only, not a regression.
+  Worth a closer look next time `tree-panel.spec.ts` is touched: consider
+  whether a `#tree-panel`-internal-scroll-only assertion (comparing its
+  own `scrollHeight`/`clientHeight`, the same pattern Task 31 just used
+  for `#main-panel`'s own guardrail #51 conversion) would be a stronger,
+  more direct proof than the page-level `document.documentElement`
+  comparison this test still relies on.

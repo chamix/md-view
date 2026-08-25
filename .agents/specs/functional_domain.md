@@ -1881,3 +1881,181 @@ its own pure function.
     discipline as guardrail #68.
 
 ---
+
+## Task 30: Fix — Title Bar Scrolls Away With Long Documents
+
+Task 29 gave `#title-bar` no `position` property of its own, so it
+defaults to normal document flow as `body`'s first child — the same
+element Task 12 made deliberately scrollable for long documents. Every
+other fixed-chrome element (`#tree-panel`, `#tree-resize-handle`,
+`#status-bar`) was built `position: fixed` from its own introduction;
+`#title-bar` is the one exception, missed specifically because Task 29's
+own test suite (`window-chrome.spec.ts`) never opened a document long
+enough to force a real page scroll before asserting title-bar geometry.
+A pure regression fix, not a new feature — no new domain object, no new
+IPC surface, no new trigger.
+
+### Abstract Schema Contracts
+
+- **The title bar's screen-space position is a viewport-relative
+  invariant, not a document-relative one.** It must occupy the same
+  rectangle at the top of the window regardless of how far the
+  document beneath it has scrolled — the same invariant `#tree-panel`/
+  `#tree-resize-handle`/`#status-bar` have held since their own
+  introduction (Task 21/23/26 and Task 7/8 respectively), extended to
+  the one chrome element that never got it.
+- **The main document's own content origin is a fixed offset below the
+  title bar, expressed in terms of the title bar's own height
+  (`--title-bar-height`), not a second, independently-chosen value.**
+  Today that offset is an accidental byproduct of `#title-bar`'s
+  normal-flow height pushing `#app-body` down; fixing the title bar's
+  position removes that byproduct, so the offset must become an
+  explicit fact instead of an implicit one.
+
+### Pure Transformation Logic
+
+None — this task introduces no new computation. It corrects which
+existing CSS positioning scheme (`static` vs. `fixed`) governs one
+already-existing element, and makes an already-existing offset
+(`--title-bar-height`) explicit where it was previously incidental.
+
+### Edge-Case Invariant Guardrails
+
+(Continuing the sequential numbering from Task 29's #74.)
+
+75. **`#title-bar`'s own computed position must be provably invariant
+    under document scroll** — confirmed against a real long document
+    that forces a genuine page scroll, not merely inferred from
+    `position: fixed`'s documented semantics. Same investigate-first,
+    verify-against-the-real-app discipline as guardrails #68/#74.
+76. **All six interactive elements inside `#title-bar` (three menu
+    labels, three window-control buttons) stay functionally live at
+    any scroll position, not just visually present.** Each must be
+    proven to fire its real underlying action (minimize/maximize/
+    close/popup) while the document is scrolled partway down — reusing
+    Task 29's own per-button assertions at a non-zero scroll position,
+    not a new visual-only check.
+77. **`#app-body`'s compensating `margin-top` must land `#main-panel`'s
+    content flush against `#title-bar`'s bottom edge
+    (`var(--title-bar-height)`) at every scroll position** — no gap, no
+    overlap — proven via `getBoundingClientRect()` comparison, the same
+    tolerance-banded technique Task 26/29 already established for this
+    class of geometry assertion.
+78. **`#tree-panel`'s own `position: fixed` rule is untouched by this
+    task and must be reconfirmed correct now that it is, for the first
+    time, actually exercised by a real page-level scroll** — every
+    prior test of `#tree-panel`'s geometry ran at scroll position 0
+    only.
+79. **This is a two-rule, single-file (`app.css`) CSS fix** — zero diff
+    anywhere else, including `src/main/**`, `src/renderer/*.js`, and
+    `src/preload/**`.
+
+---
+
+## Task 31: Main Content Scrolls Within Its Own Bounded Region (Not Body)
+
+Task 30 fixed `#title-bar`'s own geometry but not the actual visible
+symptom users see: on a long document, the browser's *native* scrollbar
+still spans the full viewport height, because it's `body`/`html` that
+scrolls today (no `overflow` rule exists anywhere on `body`, `html`,
+`#app-body`, or `#main-panel`). A native scrollbar renders in the
+browser/OS compositor layer, not the page's own DOM stacking context —
+it structurally cannot respect any element's `z-index`, including
+`#title-bar`'s. That's the confirmed root cause of "the title bar
+doesn't reach the full width": the scrollbar was never rendering
+*through* the title bar's stacking context in the first place, it was
+just occupying screen space the title bar's own box doesn't cover.
+
+This is a second, related but distinct fix in the same window-
+fundamentals area as Task 30, closing the loop Task 30 opened: Task 30
+made `#title-bar` immune to scroll *position*; Task 31 removes the
+scroll *itself* from ever reaching the elements that shouldn't be
+affected by it, by relocating where scrolling happens at all.
+`#tree-panel` already solved exactly this class of problem for itself
+(Task 26: `position: fixed`, a bounded height, its own
+`overflow-y: auto`) — this task extends the identical, already-proven
+pattern to `#main-panel`, not a new design.
+
+### Abstract Schema Contracts
+
+- **Ownership of "the document's scroll position" is itself a fact this
+  task relocates, not a new fact it introduces.** Today it is an
+  implicit property of the browser (`body`/`html`'s native scroll,
+  never explicitly declared anywhere in `app.css`). After this task it
+  becomes an explicit, single, named owner — `#main-panel` — the same
+  ownership shape `#tree-panel` already established for its own scroll
+  position at Task 26. Exactly one element owns document-content
+  scrolling at any time; `body`/`html` own none of it.
+- **The native OS/browser scrollbar's on-screen region is a
+  compositor-layer fact that lies outside the page's own DOM stacking
+  context**, and is therefore a fact this app can only control
+  indirectly — by bounding the box of whichever element the browser
+  decides needs a scrollbar, never by CSS stacking/z-index tricks
+  aimed at the scrollbar itself. This is the actual mechanism this task
+  corrects: today that bounded box is implicitly "all of `body`," full
+  viewport height; after this task it is explicitly `#main-panel`'s own
+  box, `top: var(--title-bar-height)` to `bottom: 2rem`.
+- **`#document-container`'s own sizing contract (width, max-width,
+  centering, card chrome) is unchanged and orthogonal to this task.**
+  It remains a pure function of its containing block's available width;
+  only which ancestor owns overflow/scroll changes, never how the
+  reading column itself is sized within that ancestor.
+
+### Pure Transformation Logic
+
+None — same tier as Task 26/30: this is a pure CSS containment
+relocation, reusing an already-proven pattern (`#tree-panel`'s own
+fixed+bounded+`overflow-y` rule) at a second call site. No new business
+logic, no new pure function.
+
+### Edge-Case Invariant Guardrails
+
+(Continuing the sequential numbering from Task 30's #79.)
+
+80. **`#main-panel` is the sole scrolling element for document
+    content** — `body`/`html` must have no visible or functional scroll
+    of their own once this ships. `window.scrollY` must stay `0` for a
+    long document, proven directly, not inferred from "the visible
+    symptom is gone."
+81. **The native scrollbar for a long document renders entirely within
+    `#main-panel`'s own box** — confirmed to never extend above
+    `var(--title-bar-height)` or below the status bar's existing `2rem`
+    clearance.
+82. **`#title-bar` spans the full window width with nothing rendering
+    over or through it, at any scroll position** — this is the actual
+    reported bug being fixed. Verify structurally/visually against the
+    real running app, not merely "no test broke" (same standard Task
+    29's double-click investigation was held to when direct proof
+    wasn't fully available).
+83. **`#document-container`'s own CSS (width/max-width/margin/border/
+    border-radius) is untouched.** This task changes only where the
+    overflow/scroll boundary lives, never how the document card itself
+    is styled or sized.
+84. **Task 23's drag-to-resize behavior continues working identically**
+    — `#main-panel`'s `left` edge must track the live
+    `--tree-panel-width` custom property during an active drag, the
+    same way `#tree-panel`'s own width and `#tree-resize-handle`'s own
+    `left` already do. Confirmed with the real drag tests, not assumed
+    correct by analogy to the existing pattern alone.
+85. **Task 28's "Show File Tree" toggle must continue to reclaim
+    `#main-panel`'s freed left-hand space when the tree panel is
+    hidden.** The existing `body.tree-panel-hidden #main-panel {
+    margin-left: 0; }` rule (Task 28) becomes dead code once
+    `#main-panel`'s horizontal positioning moves from `margin-left` to
+    `left`/`right` — a real interaction the task's own literal CSS
+    snippet doesn't mention, caught during Step 1 mapping rather than
+    left for the engineer or reviewer to discover. It must become
+    `body.tree-panel-hidden #main-panel { left: 0; }` alongside the base
+    rule change, or hiding the tree panel leaves a permanent,
+    unreachable gutter on `#main-panel`'s left edge.
+86. **Task 30's `window-chrome.spec.ts` scroll assertions
+    (`window.scrollY`/`window.scrollTo`/`document.documentElement.
+    scrollHeight`) must be converted to `#main-panel`'s own
+    `scrollTop`/`scrollHeight`.** Left unconverted, they would pass
+    *vacuously* after this task ships — `window.scrollY` genuinely does
+    stay `0` forever post-fix, for the right high-level reason (guardrail
+    #80) but not through the mechanism those specific assertions claim
+    to prove (scroll happening at all, and `#title-bar` staying put
+    relative to it).
+
+---

@@ -4363,3 +4363,227 @@ since Task 7 first introduced `buildMenuTemplate` as the single
 description of menu structure.
 
 ---
+
+## Task 30: Fix — Title Bar Scrolls Away With Long Documents
+
+### The Inward Dependency Rule
+
+No core-domain component involved — this is a pure presentation-layer
+CSS fix, the same tier as Task 23/26's tree-panel geometry work.
+`app.css` is the only file touched; nothing in `src/main/**`,
+`src/renderer/*.js`, or `src/preload/**` changes.
+
+### SOLID Boundary Scan
+
+- **SRP.** `#title-bar`'s own positioning rule and `#app-body`'s
+  compensating offset are two separate rule blocks for two separate
+  concerns (the bar's own screen-space placement vs. the document
+  content's origin below it) — not merged into one rule, even though
+  both are required together for this fix to be correct.
+- **OCP/DIP.** N/A at this scale, same reasoning as Task 23's
+  precedent: two CSS property changes with one already-existing shared
+  constant (`--title-bar-height`, defined at `:root` since Task 29) is
+  not a decision point any interface or abstraction would clarify.
+
+### Pattern Application
+
+No GoF pattern is introduced — this is a two-rule CSS correction, not
+a structural design decision. Reusing `--title-bar-height` verbatim
+(rather than introducing a second value) is the only reuse decision
+this task makes, and it isn't pattern-shaped.
+
+### CSS — `src/renderer/app.css`
+
+```css
+#title-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  /* existing display/flex/height/background/border/drag rules unchanged */
+}
+
+#app-body {
+  margin-top: var(--title-bar-height);
+  /* existing display: flow-root unchanged */
+}
+```
+
+`z-index: 10` is defensive (guardrail #76 — the bar must stay
+functionally on top of scrolled document content, not merely visually
+above it by paint order alone). No other property on either rule
+changes; every existing `#title-bar`/`#app-body` declaration (flex
+layout, drag region, `flow-root`) is untouched.
+
+### Tests — extend `tests/e2e/window-chrome.spec.ts`
+
+Reuses the existing `tests/e2e/fixtures/long-document.md` fixture
+(already built for Task 26's independent-scrolling suite in
+`tree-panel.spec.ts` — no new fixture needed).
+
+- Open the long-document fixture, scroll to the bottom, assert
+  `#title-bar`'s `getBoundingClientRect()` is unchanged from its
+  pre-scroll position (guardrail #75).
+- With the document scrolled partway down, click each of the three
+  window-control buttons and each of the three menu labels, reusing
+  Task 29's own per-button/per-label assertions verbatim at a
+  non-zero scroll position instead of at the top (guardrail #76).
+- At the same scrolled state, assert `#main-panel`'s content top
+  offset lands exactly `var(--title-bar-height)` below the viewport
+  top (guardrail #77), and that `#tree-panel`'s own position is
+  unaffected (guardrail #78).
+- Regression: the full existing `window-chrome.spec.ts` and
+  `tree-panel.spec.ts` suites, run unmodified, stay green.
+
+### Governance note
+
+No ADR needed — same tier as Task 18/20/25's small, mechanical
+bug-fix rows, not an architectural decision. This closes a gap Task
+29's own test suite left open (no test ever opened a long enough
+document to force a real page scroll before asserting title-bar
+geometry), not a new design.
+
+---
+
+## Task 31: Main Content Scrolls Within Its Own Bounded Region (Not Body)
+
+### The Inward Dependency Rule
+
+Same as Task 26/30: no core-domain component involved. This is a pure
+presentation-layer relocation of an existing CSS/DOM property (which
+element owns document scroll), touching only `src/renderer/app.css`
+and its own test suite. Nothing in `src/main/**`, `src/preload/**`, or
+`src/renderer/*.js` changes — the drag-to-resize JS (Task 23) already
+only ever writes the `--tree-panel-width` custom property, never reads
+or writes `#main-panel` directly, so it needs zero code changes; only
+verification that `#main-panel`'s new `left` rule keeps reading that
+same live value correctly (guardrail #84).
+
+### SOLID Boundary Scan
+
+- **SRP.** The scroll-containment concern (where the document's
+  scrollbar lives) is scoped entirely to `#main-panel`'s own rule
+  block, not spread across `body`/`html`/`#app-body` generic rules —
+  `#document-container`'s independent sizing rules (width/max-width/
+  centering) stay untouched and unaware that the containment boundary
+  moved.
+- **OCP.** `#main-panel`'s new `overflow-y: auto` plus the `top`/
+  `left`/`right`/`bottom` box is additive to the existing pattern
+  `#tree-panel` already established (Task 26) — extending a proven
+  rule shape to a second element, not modifying `#tree-panel`'s own
+  rule at all.
+- **DIP.** N/A at this scale, same reasoning as Task 23/26/30 — two
+  CSS rule blocks reusing an already-existing shared constant
+  (`--title-bar-height`, `--tree-panel-width`) is not a decision point
+  any interface or abstraction would clarify.
+
+### Pattern Application
+
+No GoF pattern — this is intentional **reuse of an existing CSS
+containment idiom**, not a new design decision: `#tree-panel` already
+proved the `position: fixed` + bounded box + own `overflow-y: auto`
+shape works for exactly this class of problem (Task 26). Applying the
+identical shape to `#main-panel` is the whole point — the task's own
+brief explicitly rules out reintroducing a flex-row bounded-height
+model (the pattern Task 26 deliberately moved *away* from), so there
+is no design choice being made here beyond "reuse the pattern that
+already works, at a second call site."
+
+### CSS — `src/renderer/app.css`
+
+Base rule (verbatim, per the approved brief):
+
+```css
+#main-panel {
+  position: fixed;
+  top: var(--title-bar-height);
+  left: var(--tree-panel-width);
+  right: 0;
+  bottom: 2rem;
+  overflow-y: auto;
+  /* margin-left removed -- left/right now define horizontal space directly */
+}
+```
+
+**Required companion change, not in the brief's literal snippet but
+necessary per guardrail #85:** `#main-panel`'s horizontal offset moves
+from `margin-left` to `left`, so Task 28's existing
+`body.tree-panel-hidden #main-panel { margin-left: 0; }` rule
+(currently at `app.css` line ~259) must become:
+
+```css
+body.tree-panel-hidden #main-panel {
+  left: 0;
+}
+```
+
+Left as `margin-left: 0`, this rule would become dead code the moment
+the base rule stops using `margin-left` — hiding the tree panel would
+silently leave `#main-panel` permanently offset by
+`var(--tree-panel-width)`, reserving an unreachable gutter where the
+hidden tree panel used to be. This is exactly the kind of ripple-effect
+gap this project's own Task 29 review (S-1) already flagged the value
+of catching during spec-mapping rather than leaving to be discovered
+mid-implementation.
+
+`#document-container`'s own rule block is unchanged — do not touch it
+(guardrail #83).
+
+### Tests — extend `tests/e2e/window-chrome.spec.ts`
+
+**First: confirm current state, don't assume.** Task 30's `(g)` describe
+block (already merged) drives scrolling via `window.scrollTo`/reads
+`window.scrollY`/`document.documentElement.scrollHeight`. Once scrolling
+moves to `#main-panel`, every one of those becomes a vacuous check
+(`window.scrollY` will genuinely stay `0` forever, satisfying the old
+assertions for the wrong reason) — guardrail #86 requires converting
+every scroll-driving/scroll-reading call in that block, not just adding
+new tests alongside the stale ones. Concretely, in each of the six `(g)`
+tests: `window.scrollTo(0, document.documentElement.scrollHeight)` →
+`document.getElementById('main-panel').scrollTo(0,
+document.getElementById('main-panel').scrollHeight)` (or the
+`.scrollTop =` equivalent), and the `expect.poll(() =>
+window.evaluate(() => window.scrollY))` gates → poll `#main-panel`'s own
+`scrollTop` instead.
+
+New/updated cases required:
+
+- Scrolling `#main-panel` to its end leaves `#title-bar`'s geometry
+  unchanged — the same invariant Task 30 proved (guardrail #75), now
+  exercised via the correct scroll mechanism (guardrail #82).
+- `window.scrollY` stays `0` throughout, even after scrolling
+  `#main-panel` to its end and confirming `#main-panel.scrollTop > 0` —
+  direct proof of guardrail #80 (`body`/`html` have no scroll of their
+  own), not an inference from the visible symptom being gone.
+- As close to a direct proof of the reported bug (guardrail #82) as
+  Playwright allows: assert `#main-panel`'s own `getBoundingClientRect()`
+  never extends above `var(--title-bar-height)` or below the `2rem`
+  status-bar clearance, at both scroll position 0 and scrolled-to-end —
+  the native scrollbar renders inside that box, so bounding the box
+  bounds the scrollbar. If Playwright genuinely cannot measure the
+  native scrollbar's own rendered pixels directly (worth a real
+  investigation, not an assumption either way — same standard as Task
+  29's double-click investigation), document that limitation honestly in
+  the test's own comment and in `DEVLOG.md`, stating plainly what was
+  actually proven (the containing box's geometry) versus what could not
+  be directly observed (the scrollbar's own paint).
+- Regression: the full existing `window-chrome.spec.ts` and
+  `tree-panel.spec.ts` suites, run unmodified except for the Task 30
+  scroll-mechanism conversions above, stay green — including Task 23's
+  drag-to-resize suite (guardrail #84) and Task 28's hide/show tree-panel
+  suite (guardrail #85's companion CSS fix).
+
+### Governance note
+
+No ADR needed. This reverses part of Task 12's original page-scroll
+model, but through the same lens as Task 26's tree-panel containment
+reversal (also no ADR) — it is a CSS containment-boundary relocation
+reusing an already-proven idiom already present in this codebase, not a
+new architectural pattern, new IPC surface, or new security boundary.
+`app.css`'s own Task 12 header comment does not need rewriting — Task 12
+described adding breathing room and a centered reading column, never
+described *where* scrolling happens as a permanent architectural
+commitment, so nothing in that comment becomes stale or misleading here.
+
+---

@@ -192,20 +192,21 @@ test('(f) toggling Show File Tree hides/shows #tree-panel and #main-panel reclai
   );
   expect(checkedInitially).toBe(true);
 
-  const marginLeftBefore = await window
-    .locator('#main-panel')
-    .evaluate((el) => window.getComputedStyle(el).marginLeft);
-  expect(parseFloat(marginLeftBefore)).toBeGreaterThan(0);
+  // Task 31: #main-panel's horizontal offset moved from margin-left to
+  // left (both keyed off --tree-panel-width) -- read the same live
+  // property #main-panel's own CSS rule actually uses now, same
+  // conversion already proven in window-chrome.spec.ts's companion
+  // regression test.
+  const leftBefore = await window.locator('#main-panel').evaluate((el) => window.getComputedStyle(el).left);
+  expect(parseFloat(leftBefore)).toBeGreaterThan(0);
 
   await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-show-tree-panel')?.click());
 
   await expect(treePanel).toBeHidden();
   await expect(window.locator('#tree-resize-handle')).toBeHidden();
 
-  const marginLeftHidden = await window
-    .locator('#main-panel')
-    .evaluate((el) => window.getComputedStyle(el).marginLeft);
-  expect(parseFloat(marginLeftHidden)).toBe(0);
+  const leftHidden = await window.locator('#main-panel').evaluate((el) => window.getComputedStyle(el).left);
+  expect(parseFloat(leftHidden)).toBe(0);
 
   await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-show-tree-panel')?.click());
 
@@ -215,8 +216,6 @@ test('(f) toggling Show File Tree hides/shows #tree-panel and #main-panel reclai
   );
   expect(checkedAfterSecondToggle).toBe(true);
 
-  const marginLeftShownAgain = await window
-    .locator('#main-panel')
-    .evaluate((el) => window.getComputedStyle(el).marginLeft);
-  expect(parseFloat(marginLeftShownAgain)).toBeGreaterThan(0);
+  const leftShownAgain = await window.locator('#main-panel').evaluate((el) => window.getComputedStyle(el).left);
+  expect(parseFloat(leftShownAgain)).toBeGreaterThan(0);
 });
