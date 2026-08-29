@@ -35,9 +35,46 @@ If any of these three elements is missing from your delegation prompt, stop and 
 
 ## TDD Operational Flow (Red-Green-Refactor)
 
-1. **RED:** Write a minimal test defining the expected behavior. Run the test command and verify it fails for the correct reason.
-2. **GREEN:** Write the minimum production code to make that test pass. Verify.
-3. **REFACTOR:** Remove duplication, optimize complexity, ensure pattern compliance. Run the full suite to confirm nothing broke.
+Test tiers are not interchangeable, and neither is their cadence. Run the
+tier that matches what you're actually proving, at the cadence a real
+pre-commit/pre-push workflow would use — not the full suite every time:
+
+1. **RED:** Write a minimal test defining the expected behavior. Run
+   `npm run test:unit` (or `npm run test:integration` if the behavior lives
+   at the main↔preload↔renderer contract boundary) and verify it fails for
+   the correct reason.
+2. **GREEN:** Write the minimum production code to make that test pass.
+   Verify with the same tier.
+3. **REFACTOR:** Remove duplication, optimize complexity, ensure pattern
+   compliance.
+   - Run `npm run test:unit` at the end of every cycle — this is your
+     constant, cheap safety net.
+   - Also run `npm run test:integration` whenever this cycle touched
+     `src/main/**`, `src/preload/**`, or any other shared API/contract
+     surface — and once more at the end of the task's final cycle
+     regardless of what it touched, since integration coverage is cheap
+     enough that "did I definitely not drift the contract" is worth
+     confirming before calling the implementation done.
+   - Do **not** run `npm run test:e2e` inside this loop. It rebuilds the
+     app from scratch (`npm run build`) before Playwright even starts —
+     paying that cost on every RGR cycle is exactly the anti-pattern this
+     flow exists to avoid (see Pre-Delivery Verification below).
+
+## Pre-Delivery Verification (once, not per RGR cycle)
+
+After your RGR cycles are complete and before reporting back to the Lead,
+run `npm run test:e2e` for real — once — and include the raw summary line
+in your final report. This is the one point in implementation where the
+full, expensive layer runs: deliberately once, the same way a developer
+runs the full suite right before commit/push and opening a PR, not on every
+edit along the way.
+
+If `test:e2e` surfaces a failure that looks clearly unrelated to this
+task's diff (e.g. a pre-existing flake already logged in `backlog.md`),
+say so explicitly and re-run only the affected spec file 2-3 times to
+confirm before treating it as noise. Do not re-run the entire e2e suite
+repeatedly chasing a single flaky assertion — that cost grows with the
+whole suite's size, not with the size of what you actually changed.
 
 ## Stopping Condition (Escalation, Not Infinite Looping)
 
@@ -45,4 +82,4 @@ Cap yourself at **3 full Red-Green-Refactor cycles per task**. If the test is st
 
 ## Context Protocol (Claude Code specific)
 
-You start with a fresh context window; everything you need arrives in the delegation prompt. Your final message is returned to the Lead verbatim — end with a structured summary: files touched, RGR cycles used, and the raw test suite result line.
+You start with a fresh context window; everything you need arrives in the delegation prompt. Your final message is returned to the Lead verbatim — end with a structured summary: files touched, RGR cycles used, which test tier(s) ran at each step, and the raw test suite result line(s) — including the one `test:e2e` run from Pre-Delivery Verification.
