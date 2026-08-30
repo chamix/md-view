@@ -59,3 +59,15 @@ md.core.ruler.push('strip_html_comments', (state) => {
 export function markdownToHtml(source: string): string {
   return md.render(source);
 }
+
+// Task 32: Code tab. Fully independent of markdownToHtml/highlightCode/md
+// above -- this highlights the raw source text itself (as a "markdown"
+// language document, for syntax coloring), never parses/transforms it into
+// HTML output. Never calls, and is never called by, any function in this
+// file.
+export function highlightMarkdownSource(source: string): string {
+  const value = hljs.getLanguage('markdown')
+    ? hljs.highlight(source, { language: 'markdown' }).value
+    : hljs.highlightAuto(source).value; // documented fallback if the guardrail #1 pre-check ever regresses
+  return `<pre><code class="hljs language-markdown">${value}</code></pre>`;
+}

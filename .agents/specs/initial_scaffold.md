@@ -4587,3 +4587,228 @@ described *where* scrolling happens as a permanent architectural
 commitment, so nothing in that comment becomes stale or misleading here.
 
 ---
+
+## Task 32: Code Tab — Raw Markdown Source with Syntax Highlighting
+
+### The Inward Dependency Rule
+
+Same division as every prior render-pipeline task (Task 3/8): all
+Markdown/highlighting transformation is a pure main-process concern
+(`src/main/markdown.ts`), the renderer never imports `hljs` itself and
+only toggles the pre-existing `theme-hljs-light`/`theme-hljs-dark`
+stylesheet links. `highlightMarkdownSource` is added to `markdown.ts`
+as a second, independent exported function — it does not call, wrap, or
+get called by `markdownToHtml`. Dependencies still point inward only:
+`src/main/index.ts` (outer, I/O) calls into `src/main/markdown.ts`
+(inner, pure) and ships the result outward again as a plain string over
+the existing `FILE_RENDERED` channel — no new dependency direction is
+introduced.
+
+The `ViewSettings` duplication fix moves `menu.ts` from an
+outward-pointing-but-actually-self-contained duplicate definition to
+correctly depending on `preload/api.ts` as the one canonical contract
+module — `preload/api.ts` remains the innermost, most stable shape
+definition that both `main/index.ts` and `main/menu.ts` (both outer,
+Electron-specific) depend on, never the reverse.
+
+### SOLID Boundary Scan
+
+- **SRP.** `highlightMarkdownSource` has exactly one reason to change:
+  how raw source is highlighted. It does not know about frontmatter
+  extraction, IPC, or rendering — those stay in `index.ts` and
+  `markdownToHtml` respectively. `setCurrentTab` in `index.ts` has
+  exactly one reason to change: session tab-state transitions — same
+  shape as `setDarkMode`/`setShowFrontmatter`/`setShowTreePanel`
+  immediately above it.
+- **OCP.** Adding a fourth `ViewSettings` field and a new IPC channel
+  extends the existing broadcast/menu-rebuild pattern
+  (`broadcastViewSettings` + `applyMenu`) without modifying its shape —
+  every existing `setX` function is untouched by this task.
+- **ISP.** `MenuHandlers` gains exactly one new method
+  (`onSelectTab`) — existing handlers' signatures are unchanged, no
+  handler is forced to know about tab state it doesn't use.
+- **DIP.** `menu.ts` now depends on the `ViewSettings`/`DocumentTab`
+  *abstraction* declared in `preload/api.ts` rather than maintaining its
+  own concrete duplicate — this is the direct fix for guardrail #92.
+  `index.ts` continues to depend on `markdown.ts`'s exported function
+  signatures only, never its internals (the `hljs.getLanguage` branch
+  inside `highlightMarkdownSource` is fully encapsulated).
+
+### Pattern Application
+
+- **Strategy (implicit, GoF behavioral).** `highlightMarkdownSource`'s
+  internal branch (`hljs.getLanguage('markdown')` truthy → grammar-aware
+  `highlight()`; falsy → `highlightAuto()` fallback) is the same
+  "select an algorithm at call time" shape `highlightCode` already uses
+  for fenced-code-block languages one function above it in the same
+  file — reusing an existing in-file idiom, not introducing a new
+  formal Strategy class hierarchy (this codebase's established
+  precedent, per Task 21's own "Composite-shaped-without-a-class"
+  decision, is to use the GoF *shape* without GoF *ceremony* at this
+  scale).
+- **Observer (implicit, already-established).** `currentTab` joins the
+  existing `broadcastViewSettings()` fan-out — main is the subject,
+  `mainWindow.webContents` and (indirectly, via `applyMenu()`) the
+  native menu are the two observers. No new pattern; a fourth field
+  riding the same existing channel.
+
+### Guardrail #93 — Pre-check evidence
+
+Verified directly against this project's pinned `highlight.js@11.11.1`
+(the exact version in `package-lock.json`/`node_modules`, full-package
+`import hljs from 'highlight.js'` already used by `markdown.ts`):
+
+```
+node -e "const hljs=require('highlight.js'); console.log(!!hljs.getLanguage('markdown'));"
+=> true
+```
+
+The Markdown grammar is registered by the full-package import already
+in use. No `highlight.js/lib/languages/markdown` explicit registration
+is required. `highlightMarkdownSource`'s `highlightAuto` branch stays
+in the code as a documented, currently-dead fallback per the approved
+brief — it is not reachable today and its presence is not evidence the
+pre-check failed.
+
+### `src/preload/api.ts` — canonical contract changes
+
+```ts
+export type DocumentTab = 'preview' | 'code';
+
+export interface ViewSettings {
+  darkMode: boolean;
+  showFrontmatter: boolean;
+  showTreePanel: boolean;
+  currentTab: DocumentTab;
+}
+```
+
+- Add `SELECT_TAB: 'md-view:select-tab'` to `IPC_CHANNELS`.
+- Extend `FileRenderedOk` with `codeHtml: string`.
+- Extend `BridgeApi` with `selectTab(tab: DocumentTab): void`.
+
+This closes guardrail #92: `ViewSettings` now has exactly one
+declaration in the codebase.
+
+### `src/main/menu.ts`
+
+- Delete the local `ViewSettings` interface entirely.
+- `import type { ViewSettings, DocumentTab } from '../preload/api';`
+- Add `onSelectTab: (tab: DocumentTab) => void` to `MenuHandlers`.
+- Add the two radio items (Preview/Code) to the View submenu, after a
+  separator following the existing three checkboxes, exactly as
+  specified in the approved brief (`menu-view-preview`/
+  `menu-view-code`, `type: 'radio'`, `checked` keyed off
+  `initialViewSettings.currentTab`).
+
+### `src/main/markdown.ts`
+
+```ts
+export function highlightMarkdownSource(source: string): string {
+  const value = hljs.getLanguage('markdown')
+    ? hljs.highlight(source, { language: 'markdown' }).value
+    : hljs.highlightAuto(source).value;
+  return `<pre><code class="hljs language-markdown">${value}</code></pre>`;
+}
+```
+
+Independent export, same file, no shared state or call relationship
+with `markdownToHtml`/`highlightCode`/the `md` instance above it —
+satisfies guardrail #90.
+
+### `src/main/index.ts`
+
+- `renderFile()`: pass the already-read `source` (before
+  `extractFrontmatter` splits it) into `highlightMarkdownSource`; add
+  `codeHtml` to the returned `FileRenderedOk`. Satisfies guardrail #87
+  (full file, not `body`).
+- `viewSettings` initial literal gains `currentTab: 'preview'`.
+- New `setCurrentTab(tab: DocumentTab)`, same check-then-act shape as
+  `forceShowTreePanelAndRebuildMenu` (no-op when already at target,
+  otherwise updates state, broadcasts, rebuilds menu).
+- `ipcMain.on(IPC_CHANNELS.SELECT_TAB, ...)` registered alongside the
+  other fire-and-forget handlers.
+- `onSelectTab: setCurrentTab` wired into `menuHandlers()` — the same
+  single shared handlers-object function `applyMenu()`,
+  `forceShowTreePanelAndRebuildMenu()`, and `POPUP_MENU` all already
+  call, per the existing guardrail #67 precedent. Not a second,
+  hand-duplicated handlers literal.
+
+### `src/preload/index.ts`
+
+- `selectTab: (tab) => { ipcRenderer.send(IPC_CHANNELS.SELECT_TAB, tab); }`,
+  same fire-and-forget shape as `requestTreeParent`.
+
+### `src/renderer/index.html`
+
+- Add `<pre id="code-content" hidden></pre>` as a sibling of `#content`
+  inside `#document-main`. `#content`/`#frontmatter` are untouched.
+
+### `src/renderer/renderer.js`
+
+- One shared `applyTab(tab)` function (per guardrail #89: two trigger
+  paths must not drift) that toggles `.active` on `#tab-preview`/
+  `#tab-code` and toggles `hidden` on `#content`/`#code-content`. Called
+  from both: the click handlers (which additionally call
+  `window.mdview.selectTab(tab)`) and `onViewSettings` (which does not
+  — it is reacting to state that already changed in main, not
+  requesting a change).
+- `onFileRendered` inserts `message.codeHtml` into `#code-content` via
+  the same `innerHTML`-insertion shape `renderHtml` already uses for
+  `message.html` into `#content` — same trust boundary (guardrail #91).
+
+### `src/renderer/app.css`
+
+- `#code-content`: same monospace stack as `#frontmatter`
+  (`ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace`),
+  `white-space: pre-wrap`, `padding-inline: 2rem` matching `#content`.
+  No new stylesheet, no duplicated color values — reuses the already-
+  loaded `theme-hljs-light`/`theme-hljs-dark` `.hljs` classes.
+
+### Test Plan
+
+- **Unit** (`tests/unit/markdown.test.ts`, extended): known snippet →
+  expected `hljs-*` spans; empty string → no throw; `<script>`-like
+  text → HTML-escaped (mirrors the existing `markdownToHtml` script-tag
+  regression tests at the same file). Separate `renderFile` fixture
+  test (with real frontmatter) asserting `codeHtml` contains the
+  frontmatter block literally — the concrete, permanent lock-in for
+  guardrail #87.
+- **Integration** (`tests/integration/preload-api-contract.test.ts`,
+  extended): new `describe('Task 33: codeHtml field / SELECT_TAB
+  channel')` block — reusing the file's own established "Honest
+  limitation" comment convention for interface-shape tests, per the
+  approved brief verbatim (the block's own label carries the brief's
+  "Task 33" numbering; this Step 1 doc's task numbering for this
+  feature is 32, continuing this project's actual sequential run — see
+  Presented-to-user note below).
+- **e2e** (new/extended `.spec.ts` under `tests/e2e/`): Code tab click
+  → `.hljs` class present inside `#code-content`; Preview click
+  restores `#content` visible; `with-frontmatter` fixture shows the
+  frontmatter text literally inside `#code-content`; View-menu
+  "Code" selection updates the visible tab; direct tab-button click
+  followed by opening the View menu shows "Code" checked (guardrail
+  #89's round-trip proof).
+
+### Governance note
+
+No ADR needed — this is an additive IPC field, an additive
+`ViewSettings` field, and a second independent pure transformation
+function, all following patterns this codebase has already used
+repeatedly (Task 17's request-response precedent is not needed here;
+`SELECT_TAB` is fire-and-forget like `REQUEST_TREE_PARENT`). The
+`ViewSettings` de-duplication is a defect fix, not an architectural
+change — it makes the existing intended architecture (one canonical
+contract module) actually hold.
+
+**Presented-to-user note:** the approved task brief's own text is
+inconsistently numbered — its title says "TASK 32" but two internal
+guardrail references say "Task 33" (the integration test's `describe`
+label, and one unit-test cross-reference). `RUN_LOG.md`'s last entry is
+Task 31, so this feature is sequentially Task 32 in this project's own
+numbering, and both spec documents above file it as such. The
+`describe('Task 33: ...')` string is preserved verbatim as an explicit,
+literal instruction in the brief rather than silently renumbered —
+flagged here, not corrected unilaterally.
+
+---

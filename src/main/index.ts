@@ -4,19 +4,19 @@ import * as path from 'path';
 import * as fs from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { defaultWindowOptions } from './windowConfig';
-import { markdownToHtml } from './markdown';
+import { markdownToHtml, highlightMarkdownSource } from './markdown';
 import { baseUrlForFile } from './paths';
 import { watchFile } from './watcher';
 import { isExternalHttpUrl } from './linkPolicy';
 import { buildMenuTemplate } from './menu';
-import type { ViewSettings, MenuHandlers } from './menu';
+import type { MenuHandlers } from './menu';
 import { extractFrontmatter } from './frontmatter';
 import { shouldSetDockIcon } from './dockIcon';
 import { shouldCreateHelpWindow, buildHelpHtml } from './helpWindow';
 import type { FSWatcher } from 'chokidar';
 import { filterAndSortEntries } from './fileTree';
 import { IPC_CHANNELS } from '../preload/api';
-import type { FileRenderedMessage, DirectoryListResult, FolderTreeRootMessage } from '../preload/api';
+import type { FileRenderedMessage, DirectoryListResult, FolderTreeRootMessage, DocumentTab, ViewSettings } from '../preload/api';
 
 let mainWindow: BrowserWindow | null = null;
 let activeWatcher: FSWatcher | null = null;
@@ -25,7 +25,12 @@ let helpWindow: BrowserWindow | null = null;
 // Session-scoped, never persisted (functional_domain.md Task 8 guardrail #6):
 // resets to this exact default on every launch, regardless of a prior
 // session's choices.
-let viewSettings: ViewSettings = { darkMode: false, showFrontmatter: true, showTreePanel: true };
+let viewSettings: ViewSettings = {
+  darkMode: false,
+  showFrontmatter: true,
+  showTreePanel: true,
+  currentTab: 'preview',
+};
 
 // Session-scoped, never persisted — same explicit precedent as viewSettings's
 // "resets to this exact default on every launch" comment above.
@@ -50,6 +55,17 @@ function setShowTreePanel(checked: boolean): void {
   broadcastViewSettings();
 }
 
+// Session-scoped currentTab (Task 32 decision #3): check-then-act, same
+// shape as forceShowTreePanelAndRebuildMenu below -- only rebroadcasts +
+// rebuilds the menu (so the View menu's radio checkmarks stay in sync) when
+// the value actually changes.
+function setCurrentTab(tab: DocumentTab): void {
+  if (viewSettings.currentTab === tab) return;
+  viewSettings = { ...viewSettings, currentTab: tab };
+  broadcastViewSettings();
+  applyMenu();
+}
+
 // Single, shared construction of the handlers object -- applyMenu() (below),
 // forceShowTreePanelAndRebuildMenu(), and the POPUP_MENU IPC handler
 // (registered in app.whenReady()) all call this same function, rather than
@@ -64,6 +80,7 @@ function menuHandlers(): MenuHandlers {
     onToggleDarkMode: setDarkMode,
     onToggleShowFrontmatter: setShowFrontmatter,
     onToggleShowTreePanel: setShowTreePanel,
+    onSelectTab: setCurrentTab,
     onOpenHelp,
   };
 }
@@ -174,7 +191,14 @@ async function renderFile(filePath: string): Promise<FileRenderedMessage> {
   try {
     const source = await fs.readFile(filePath, 'utf8');
     const { frontmatter, body } = extractFrontmatter(source);
-    return { ok: true, filePath, html: markdownToHtml(body), baseUrl: baseUrlForFile(filePath), frontmatter };
+    return {
+      ok: true,
+      filePath,
+      html: markdownToHtml(body),
+      codeHtml: highlightMarkdownSource(source),
+      baseUrl: baseUrlForFile(filePath),
+      frontmatter,
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return { ok: false, filePath, error: message };
@@ -401,6 +425,13 @@ app.whenReady().then(() => {
     if (!currentTreeRoot) return;
     establishTreeRoot(path.dirname(currentTreeRoot));
   });
+
+  // Task 32: Preview/Code tab selection. Fire-and-forget, same shape as the
+  // other session-scoped ViewSettings toggles -- the renderer's click
+  // handler and the View menu's radio items are two entry points into the
+  // same setCurrentTab()/broadcastViewSettings() path, never two
+  // independently maintained pieces of state.
+  ipcMain.on(IPC_CHANNELS.SELECT_TAB, (_e, tab: DocumentTab) => setCurrentTab(tab));
 
   // Task 29: frameless main window's custom title-bar controls. Each is a
   // zero-argument, fire-and-forget trigger mapping 1:1 onto a real

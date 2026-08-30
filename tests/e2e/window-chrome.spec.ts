@@ -235,7 +235,14 @@ test.describe('(d) title-bar menu labels popup the real, shared buildMenuTemplat
       const bag = globalThis as unknown as { __mdViewLastPopupMenu: Electron.Menu | null };
       return bag.__mdViewLastPopupMenu?.items.map((item) => item.id ?? item.type) ?? [];
     });
-    expect(viewItemIds).toEqual(['menu-dark-mode', 'menu-show-frontmatter', 'menu-show-tree-panel']);
+    expect(viewItemIds).toEqual([
+      'menu-dark-mode',
+      'menu-show-frontmatter',
+      'menu-show-tree-panel',
+      'separator',
+      'menu-view-preview',
+      'menu-view-code',
+    ]);
 
     await window.locator('#menu-label-help').click();
     const helpItemIds = await electronApp.evaluate(() => {
@@ -512,7 +519,14 @@ test.describe('(g) #title-bar stays fixed and remains functional while the page 
       const bag = globalThis as unknown as { __mdViewLastPopupMenu: Electron.Menu | null };
       return bag.__mdViewLastPopupMenu?.items.map((item) => item.id ?? item.type) ?? [];
     });
-    expect(viewItemIds).toEqual(['menu-dark-mode', 'menu-show-frontmatter', 'menu-show-tree-panel']);
+    expect(viewItemIds).toEqual([
+      'menu-dark-mode',
+      'menu-show-frontmatter',
+      'menu-show-tree-panel',
+      'separator',
+      'menu-view-preview',
+      'menu-view-code',
+    ]);
 
     await window.locator('#menu-label-help').click();
     const helpItemIds = await electronApp.evaluate(() => {

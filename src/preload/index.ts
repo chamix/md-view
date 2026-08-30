@@ -41,6 +41,9 @@ const api: BridgeApi = {
   onWindowMaximizedState: (callback) => {
     ipcRenderer.on(IPC_CHANNELS.WINDOW_MAXIMIZED_STATE, (_event, isMaximized: boolean) => callback(isMaximized));
   },
+  selectTab: (tab) => {
+    ipcRenderer.send(IPC_CHANNELS.SELECT_TAB, tab);
+  },
 };
 
 contextBridge.exposeInMainWorld('mdview', api);

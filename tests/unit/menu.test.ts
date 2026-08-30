@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { buildMenuTemplate } from '../../src/main/menu';
-import type { MenuHandlers, ViewSettings } from '../../src/main/menu';
+import type { MenuHandlers } from '../../src/main/menu';
+import type { ViewSettings } from '../../src/preload/api';
 
 function handlers(overrides: Partial<MenuHandlers> = {}): MenuHandlers {
   return {
@@ -9,13 +10,14 @@ function handlers(overrides: Partial<MenuHandlers> = {}): MenuHandlers {
     onToggleDarkMode: () => {},
     onToggleShowFrontmatter: () => {},
     onToggleShowTreePanel: () => {},
+    onSelectTab: () => {},
     onOpenHelp: () => {},
     ...overrides,
   };
 }
 
 function viewSettings(overrides: Partial<ViewSettings> = {}): ViewSettings {
-  return { darkMode: false, showFrontmatter: true, showTreePanel: true, ...overrides };
+  return { darkMode: false, showFrontmatter: true, showTreePanel: true, currentTab: 'preview', ...overrides };
 }
 
 describe('buildMenuTemplate (pure menu structure)', () => {
@@ -81,14 +83,18 @@ describe('buildMenuTemplate (pure menu structure)', () => {
     expect(template[2].label).toBe('Help');
   });
 
-  it("View's submenu has exactly 3 entries: menu-dark-mode, menu-show-frontmatter, menu-show-tree-panel", () => {
+  it("View's submenu has exactly 6 entries: menu-dark-mode, menu-show-frontmatter, menu-show-tree-panel, a separator, menu-view-preview, menu-view-code", () => {
     const template = buildMenuTemplate(handlers(), viewSettings());
     const viewSubmenu = template[1].submenu as Array<Record<string, unknown>>;
 
-    expect(viewSubmenu).toHaveLength(3);
+    expect(viewSubmenu).toHaveLength(6);
     expect(viewSubmenu[0].id).toBe('menu-dark-mode');
     expect(viewSubmenu[1].id).toBe('menu-show-frontmatter');
     expect(viewSubmenu[2].id).toBe('menu-show-tree-panel');
+    expect(viewSubmenu[3].type).toBe('separator');
+    expect(viewSubmenu[3].id).toBeUndefined();
+    expect(viewSubmenu[4].id).toBe('menu-view-preview');
+    expect(viewSubmenu[5].id).toBe('menu-view-code');
   });
 
   it.each([true, false])('menu-dark-mode reflects initialViewSettings.darkMode = %s', (darkMode) => {
@@ -152,6 +158,48 @@ describe('buildMenuTemplate (pure menu structure)', () => {
     showTreePanelItem.click({ checked: false });
 
     expect(onToggleShowTreePanel).toHaveBeenCalledWith(false);
+  });
+
+  it.each(['preview', 'code'] as const)('menu-view-preview reflects initialViewSettings.currentTab = %s (checked when preview)', (currentTab) => {
+    const template = buildMenuTemplate(handlers(), viewSettings({ currentTab }));
+    const viewSubmenu = template[1].submenu as Array<Record<string, unknown>>;
+    const previewItem = viewSubmenu[4];
+
+    expect(previewItem.type).toBe('radio');
+    expect(previewItem.label).toBe('Preview');
+    expect(previewItem.checked).toBe(currentTab === 'preview');
+  });
+
+  it("menu-view-preview's click invokes onSelectTab with 'preview'", () => {
+    const onSelectTab = vi.fn();
+    const template = buildMenuTemplate(handlers({ onSelectTab }), viewSettings());
+    const viewSubmenu = template[1].submenu as Array<Record<string, unknown>>;
+    const previewItem = viewSubmenu[4] as { click: () => void };
+
+    previewItem.click();
+
+    expect(onSelectTab).toHaveBeenCalledWith('preview');
+  });
+
+  it.each(['preview', 'code'] as const)('menu-view-code reflects initialViewSettings.currentTab = %s (checked when code)', (currentTab) => {
+    const template = buildMenuTemplate(handlers(), viewSettings({ currentTab }));
+    const viewSubmenu = template[1].submenu as Array<Record<string, unknown>>;
+    const codeItem = viewSubmenu[5];
+
+    expect(codeItem.type).toBe('radio');
+    expect(codeItem.label).toBe('Code');
+    expect(codeItem.checked).toBe(currentTab === 'code');
+  });
+
+  it("menu-view-code's click invokes onSelectTab with 'code'", () => {
+    const onSelectTab = vi.fn();
+    const template = buildMenuTemplate(handlers({ onSelectTab }), viewSettings());
+    const viewSubmenu = template[1].submenu as Array<Record<string, unknown>>;
+    const codeItem = viewSubmenu[5] as { click: () => void };
+
+    codeItem.click();
+
+    expect(onSelectTab).toHaveBeenCalledWith('code');
   });
 
   it("Help's submenu has exactly 1 entry: menu-help", () => {

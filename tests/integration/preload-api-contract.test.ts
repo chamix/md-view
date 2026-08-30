@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { IPC_CHANNELS } from '../../src/preload/api';
-import type { BridgeApi, FileRenderedOk, DirectoryListResult, FolderTreeRootMessage } from '../../src/preload/api';
+import type {
+  BridgeApi,
+  FileRenderedOk,
+  DirectoryListResult,
+  FolderTreeRootMessage,
+  DocumentTab,
+} from '../../src/preload/api';
 
 describe('IPC_CHANNELS (preload/main contract)', () => {
   it('exposes non-empty string channel names', () => {
@@ -119,5 +125,66 @@ describe('Task 17: file tree channels/shape', () => {
 
     const listResult = await sample.listDirectory('/some/dir');
     expect(listResult).toEqual({ ok: true, dirPath: '/some/dir', entries: [] });
+  });
+});
+
+describe('Task 33: codeHtml field / SELECT_TAB channel', () => {
+  it('exposes a non-empty string channel name for SELECT_TAB, distinct from every other existing channel', () => {
+    expect(typeof IPC_CHANNELS.SELECT_TAB).toBe('string');
+    expect(IPC_CHANNELS.SELECT_TAB.length).toBeGreaterThan(0);
+
+    const existing = [
+      IPC_CHANNELS.FILE_RENDERED,
+      IPC_CHANNELS.VIEW_SETTINGS,
+      IPC_CHANNELS.REQUEST_OPEN_FILE,
+      IPC_CHANNELS.FOLDER_TREE_ROOT,
+      IPC_CHANNELS.REQUEST_LIST_DIRECTORY,
+      IPC_CHANNELS.REQUEST_TREE_PARENT,
+      IPC_CHANNELS.MINIMIZE_WINDOW,
+      IPC_CHANNELS.TOGGLE_MAXIMIZE_WINDOW,
+      IPC_CHANNELS.CLOSE_WINDOW,
+      IPC_CHANNELS.POPUP_MENU,
+      IPC_CHANNELS.WINDOW_MAXIMIZED_STATE,
+    ];
+    expect(existing).not.toContain(IPC_CHANNELS.SELECT_TAB);
+  });
+
+  // Honest limitation: same as FileRenderedOk/BridgeApi above -- these are
+  // TypeScript interfaces, erased at compile time, so this test cannot by
+  // itself "catch" a removed/renamed field the way a runtime check on
+  // IPC_CHANNELS' string constants can. Real protection comes from
+  // `tsc --strict` (via `npm run build`); this test proves the shape is
+  // usable as claimed at runtime.
+  it('FileRenderedOk is constructible with a codeHtml field and the field is readable', () => {
+    const sample: FileRenderedOk = {
+      ok: true,
+      filePath: '/some/dir/doc.md',
+      html: '<h1>Hello</h1>',
+      codeHtml: '<pre><code class="hljs language-markdown"># Hello</code></pre>',
+      baseUrl: 'file:///some/dir/',
+      frontmatter: null,
+    };
+
+    expect(sample.codeHtml).toContain('hljs');
+  });
+
+  // Honest limitation: same as above -- BridgeApi is a TypeScript interface,
+  // erased at compile time. What this proves is that a selectTab method is
+  // usable as claimed at runtime; `tsc --strict` proves the interface shape
+  // itself.
+  it('BridgeApi is constructible with a selectTab method and it is callable', () => {
+    let received: DocumentTab | null = null;
+    const sample: BridgeApi = {
+      version: '0.0.0-test',
+      onFileRendered: () => {},
+      onViewSettings: () => {},
+      openDroppedFile: () => {},
+      selectTab: (tab) => {
+        received = tab;
+      },
+    };
+
+    sample.selectTab('code');
+    expect(received).toBe('code');
   });
 });

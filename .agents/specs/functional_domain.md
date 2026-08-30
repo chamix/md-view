@@ -2058,4 +2058,110 @@ logic, no new pure function.
     to prove (scroll happening at all, and `#title-bar` staying put
     relative to it).
 
+## Task 32: Code Tab — Raw Markdown Source with Syntax Highlighting
+
+`#tab-preview`/`#tab-code` have existed as inert DOM since Task 11 —
+styled, visible, zero listeners. This task makes the Code tab real: it
+shows the literal on-disk file (frontmatter included, exactly as
+GitHub's raw/Code view would show it), syntax-highlighted as Markdown,
+switchable against the existing Preview tab.
+
+A structural inconsistency was found and fixed as part of this task,
+not treated as a separate one: `ViewSettings` is declared twice — once
+in `src/main/menu.ts` (has `showTreePanel`) and once in
+`src/preload/api.ts` (missing it, silently out of sync since Task 28,
+undetected only because `renderer.js` is untyped). `preload/api.ts` is
+this project's own established canonical, versioned contract for
+cross-process shapes (every existing `FileRenderedMessage`,
+`DirectoryListResult`, `FolderTreeRootMessage` lives there and nowhere
+else) — `menu.ts` re-declaring its own copy is the actual defect this
+task closes, not a pre-existing acceptable duplication.
+
+### Abstract Schema Contracts
+
+- **`currentTab` is a session-scoped view preference**, the same
+  ownership shape as `darkMode`/`showFrontmatter`/`showTreePanel`
+  (Task 8/28's "resets to this exact default on every launch, regardless
+  of a prior session's choices" precedent) — main process is sole
+  source of truth, broadcast on every change, never independently
+  derived or cached in the renderer.
+- **Two distinct trigger paths must resolve to one state, one broadcast
+  mechanism.** A tab-button click and a View-menu selection are both
+  just "set `currentTab`" from the renderer/menu's point of view — main
+  does not distinguish which UI element caused the change, it only ever
+  sees the resulting target value. This is the same shape Task 29
+  established for `POPUP_MENU` and Task 27 for tree navigation: the
+  renderer requests, main decides and re-broadcasts, every UI surface
+  reflecting that state reads it back from the same broadcast, never
+  from local optimistic state.
+- **The raw source and the rendered preview are two independent
+  projections of the same on-disk file, computed once per read, sent
+  together.** `codeHtml` is not derived from `html` (which is
+  frontmatter-stripped, markdown-it-rendered) and `html` is not derived
+  from `codeHtml` — both are computed from the one `source` string
+  already read for `renderFile`, via two separate, non-interacting
+  transformation paths.
+
+### Pure Transformation Logic
+
+- **`highlightMarkdownSource(source) -> html`**: takes the full raw file
+  text (frontmatter included) and returns it HTML-escaped and wrapped
+  with hljs's `markdown`-grammar token spans, ready for direct
+  `innerHTML` insertion. Total function over any string input,
+  including the empty string — never throws, same operating contract as
+  the existing `markdownToHtml`.
+- **Tab-target resolution**: `'preview' | 'code'` is a closed two-value
+  enum; setting it to its current value is a no-op (no broadcast, no
+  menu rebuild) — the same check-then-act shape already established by
+  `forceShowTreePanelAndRebuildMenu`.
+
+### Edge-Case Invariant Guardrails
+
+(Continuing the sequential numbering from Task 31's #86.)
+
+87. **The Code tab shows the entire raw file, literal, exactly as read
+    from disk — frontmatter included.** This must never narrow to the
+    frontmatter-stripped `body` already used for `html`; a fixture with
+    real frontmatter must show that frontmatter block appearing
+    literally inside `#code-content`, not only inside the separate
+    `#frontmatter` element.
+88. **`currentTab` resets to `'preview'` on every launch, never
+    persisted** — identical guarantee, identical mechanism, as
+    `darkMode`/`showFrontmatter`/`showTreePanel`.
+89. **The View menu's Preview/Code radio state is always accurate**,
+    including immediately after a direct tab-button click in the
+    renderer — not just after a menu-driven selection. This is the
+    concrete, testable form of the "two trigger paths, one state"
+    contract above: proven by driving the button first, then opening
+    the menu and asserting its checked state, never the reverse order
+    alone.
+90. **`highlightMarkdownSource` is a fully independent code path from
+    `markdownToHtml`.** It must never route through `markdown-it`, and
+    `markdownToHtml`'s own behavior (rendering, comment-stripping,
+    fenced-code highlighting) must be provably unaffected by this task —
+    the existing `markdown.test.ts` suite passing unmodified is the
+    concrete proof, not an assumption from the two functions living in
+    the same file.
+91. **`codeHtml` carries the identical trust boundary as the existing
+    `html` field**: both are main-process-generated, both are
+    library-escaped at their own source (`markdown-it` with
+    `html:false`; `hljs.highlight`/`highlightAuto`'s own escaping
+    guarantee), and both are inserted into the renderer via `innerHTML`
+    on that basis alone. No new renderer-side string concatenation may
+    touch file content before insertion — a script-tag-bearing raw
+    source is the concrete regression guard (mirrors guardrail #4's
+    original `markdownToHtml` proof, applied to this second path).
+92. **`ViewSettings` has exactly one declaration, in
+    `src/preload/api.ts`.** `menu.ts` imports the type rather than
+    re-declaring it — the Task 28 drift this task fixes (missing
+    `showTreePanel` in the preload copy) must be structurally
+    impossible to repeat for any future field, not merely corrected for
+    the fields that exist today.
+93. **hljs's Markdown grammar is confirmed present, not assumed,
+    before any highlighting code is written** — pre-checked directly
+    against this project's pinned `highlight.js` version
+    (`hljs.getLanguage('markdown')`) rather than inferred from the full
+    package being imported elsewhere in `markdown.ts` for a different
+    purpose (fenced-code-block languages).
+
 ---

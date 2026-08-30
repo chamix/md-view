@@ -70,6 +70,9 @@ if (typeof document !== 'undefined') {
   const statusBarEl = document.getElementById('status-bar');
   const emptyStateEl = document.getElementById('empty-state');
   const frontmatterEl = document.getElementById('frontmatter');
+  const tabPreviewEl = document.getElementById('tab-preview');
+  const tabCodeEl = document.getElementById('tab-code');
+  const codeContentEl = document.getElementById('code-content');
 
   const markdownLightLink = document.getElementById('theme-markdown-light');
   const markdownDarkLink = document.getElementById('theme-markdown-dark');
@@ -115,6 +118,31 @@ if (typeof document !== 'undefined') {
     p.textContent = 'Could not open file: ' + message;
     container.appendChild(p);
   };
+
+  // Task 32: single source of truth for which tab is visually active. Both
+  // the click handlers below (user-initiated: notify main via selectTab)
+  // and onViewSettings (reacting to a value already changed in main -- by
+  // either this same click path or the View menu) call this exact function,
+  // so the two entry points can never drift into showing different tabs.
+  const applyTab = (tab) => {
+    if (tabPreviewEl) tabPreviewEl.classList.toggle('active', tab === 'preview');
+    if (tabCodeEl) tabCodeEl.classList.toggle('active', tab === 'code');
+    if (container) container.hidden = tab !== 'preview';
+    if (codeContentEl) codeContentEl.hidden = tab !== 'code';
+  };
+
+  if (tabPreviewEl) {
+    tabPreviewEl.addEventListener('click', () => {
+      applyTab('preview');
+      window.mdview.selectTab('preview');
+    });
+  }
+  if (tabCodeEl) {
+    tabCodeEl.addEventListener('click', () => {
+      applyTab('code');
+      window.mdview.selectTab('code');
+    });
+  }
 
   const renderHtml = (html, baseUrl) => {
     applyRenderedContent(
@@ -177,6 +205,10 @@ if (typeof document !== 'undefined') {
 
     if (message.ok) {
       renderHtml(message.html, message.baseUrl);
+      // Same trust boundary as renderHtml's container.innerHTML assignment
+      // above: message.codeHtml is main-process-generated, hljs-escaped
+      // content, never renderer-side string concatenation.
+      if (codeContentEl) codeContentEl.innerHTML = message.codeHtml;
     } else {
       renderError(message.error);
     }
@@ -193,6 +225,10 @@ if (typeof document !== 'undefined') {
     // (expanded folders, fetched children, active highlight all survive a
     // hide/show cycle untouched).
     document.body.classList.toggle('tree-panel-hidden', !settings.showTreePanel);
+    // Task 32: reacting to a value that already changed in main (via either
+    // the tab-button click path above or the View menu) -- never calls
+    // window.mdview.selectTab from here, which would create a feedback loop.
+    applyTab(settings.currentTab);
   });
 
   // Task 16: drag-and-drop file open. Wired to `document`, not #content or

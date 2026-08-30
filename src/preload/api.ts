@@ -12,12 +12,16 @@ export const IPC_CHANNELS = {
   CLOSE_WINDOW: 'md-view:close-window',
   POPUP_MENU: 'md-view:popup-menu',
   WINDOW_MAXIMIZED_STATE: 'md-view:window-maximized-state',
+  SELECT_TAB: 'md-view:select-tab',
 } as const;
+
+export type DocumentTab = 'preview' | 'code';
 
 export interface FileRenderedOk {
   ok: true;
   filePath: string;
   html: string;
+  codeHtml: string;
   baseUrl: string;
   frontmatter: string | null;
 }
@@ -33,6 +37,8 @@ export type FileRenderedMessage = FileRenderedOk | FileRenderedError;
 export interface ViewSettings {
   darkMode: boolean;
   showFrontmatter: boolean;
+  showTreePanel: boolean;
+  currentTab: DocumentTab;
 }
 
 export interface TreeEntry {
@@ -83,4 +89,5 @@ export interface BridgeApi {
   closeWindow(): void;
   popupMenu(section: 'file' | 'view' | 'help', x: number, y: number): void;
   onWindowMaximizedState(callback: (isMaximized: boolean) => void): void;
+  selectTab(tab: DocumentTab): void;
 }

@@ -298,6 +298,16 @@ body.tree-panel-hidden #main-panel {
   padding-bottom: 2rem;
 }
 
+/* Task 32: Code tab — raw markdown source, hljs-highlighted. Long raw lines
+   must wrap (never force horizontal scroll), same monospace stack as
+   #frontmatter, same lateral padding as #content so the two tabs' content
+   areas line up visually. */
+#code-content {
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  padding-inline: 2rem;
+}
+
 #empty-state {
   padding: 2rem;
   color: #57606a;

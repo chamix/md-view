@@ -165,3 +165,96 @@ test.describe('argv launch with sample.md', () => {
     expect(parseFloat(containerMarginBottom)).toBeCloseTo(24, 0);
   });
 });
+
+test.describe('Task 32: Code tab — raw markdown source with syntax highlighting', () => {
+  const fixturePath = path.join(process.cwd(), 'tests/e2e/fixtures/sample.md');
+  test.use({ electronArgs: [fixturePath] });
+
+  test('clicking #tab-code shows highlighted raw source and hides #content; clicking back to #tab-preview restores it', async ({
+    electronApp,
+  }) => {
+    const window = await electronApp.firstWindow();
+    const content = window.locator('#content');
+    await expect(content).toContainText('Playwright Fixture Heading', { timeout: 10000 });
+
+    const tabPreview = window.locator('#tab-preview');
+    const tabCode = window.locator('#tab-code');
+    const codeContent = window.locator('#code-content');
+
+    await expect(content).toBeVisible();
+    await expect(codeContent).toBeHidden();
+
+    await tabCode.click();
+
+    await expect(codeContent).toBeVisible();
+    await expect(content).toBeHidden();
+    await expect(codeContent.locator('.hljs')).toHaveCount(1);
+    await expect(tabCode).toHaveClass(/active/);
+    await expect(tabPreview).not.toHaveClass(/active/);
+
+    await tabPreview.click();
+
+    await expect(content).toBeVisible();
+    await expect(codeContent).toBeHidden();
+    await expect(tabPreview).toHaveClass(/active/);
+    await expect(tabCode).not.toHaveClass(/active/);
+  });
+
+  test('selecting "Code" from the View menu updates the visible tab to Code', async ({ electronApp }) => {
+    const window = await electronApp.firstWindow();
+    const content = window.locator('#content');
+    await expect(content).toContainText('Playwright Fixture Heading', { timeout: 10000 });
+
+    const codeContent = window.locator('#code-content');
+    await expect(codeContent).toBeHidden();
+
+    await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-view-code')?.click());
+
+    await expect(codeContent).toBeVisible();
+    await expect(content).toBeHidden();
+    await expect(window.locator('#tab-code')).toHaveClass(/active/);
+  });
+
+  test('clicking #tab-code directly, then opening the View menu, shows "Code" checked (menu/click round-trip)', async ({
+    electronApp,
+  }) => {
+    const window = await electronApp.firstWindow();
+    const content = window.locator('#content');
+    await expect(content).toContainText('Playwright Fixture Heading', { timeout: 10000 });
+
+    await window.locator('#tab-code').click();
+    await expect(window.locator('#code-content')).toBeVisible();
+
+    const checkedState = await electronApp.evaluate(({ Menu }) => ({
+      code: Menu.getApplicationMenu()?.getMenuItemById('menu-view-code')?.checked,
+      preview: Menu.getApplicationMenu()?.getMenuItemById('menu-view-preview')?.checked,
+    }));
+
+    expect(checkedState.code).toBe(true);
+    expect(checkedState.preview).toBe(false);
+  });
+});
+
+test.describe('Task 32: Code tab shows the full raw file, frontmatter included', () => {
+  const fixturePath = path.join(process.cwd(), 'tests/e2e/fixtures/with-frontmatter/doc.md');
+  test.use({ electronArgs: [fixturePath] });
+
+  test('the frontmatter block appears literally inside #code-content when the Code tab is shown', async ({
+    electronApp,
+  }) => {
+    const window = await electronApp.firstWindow();
+    const content = window.locator('#content');
+    await expect(content).toContainText('Frontmatter Fixture Heading', { timeout: 10000 });
+
+    await window.locator('#tab-code').click();
+
+    const codeContent = window.locator('#code-content');
+    await expect(codeContent).toBeVisible();
+    // The exact fixture's frontmatter block, verbatim -- proves "full file,
+    // not the frontmatter-stripped body" (Task 32 decision #1), distinct
+    // from the separate #frontmatter element's own Preview-tab display.
+    await expect(codeContent).toContainText('title: Frontmatter Fixture');
+    await expect(codeContent).toContainText('tags: e2e, task8');
+    await expect(codeContent).toContainText('Frontmatter Fixture Heading');
+  });
+});

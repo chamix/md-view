@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { markdownToHtml } from '../../src/main/markdown';
+import { markdownToHtml, highlightMarkdownSource } from '../../src/main/markdown';
 
 describe('markdownToHtml (pure conversion)', () => {
   it('converts basic markdown to HTML', () => {
@@ -80,5 +80,31 @@ describe('markdownToHtml (pure conversion)', () => {
     expect(html).toContain('&lt;!--');
     expect(html).toContain('<pre>');
     expect(html).toContain('<code');
+  });
+});
+
+describe('highlightMarkdownSource (Task 32: raw-source Code tab, independent of markdownToHtml)', () => {
+  it('produces hljs-* span(s) for a known markdown snippet', () => {
+    const html = highlightMarkdownSource('# Heading\n\nSome **bold** text.');
+    expect(html).toContain('hljs-');
+    expect(html).toContain('<pre><code class="hljs language-markdown">');
+  });
+
+  it('does not throw on an empty string input', () => {
+    expect(() => highlightMarkdownSource('')).not.toThrow();
+    const html = highlightMarkdownSource('');
+    expect(html).toContain('<pre><code class="hljs language-markdown">');
+  });
+
+  it('HTML-escapes script-tag-like text in the source (security regression, mirrors markdownToHtml)', () => {
+    const html = highlightMarkdownSource('<script>alert(1)</script>');
+    // hljs's markdown grammar highlights embedded HTML with nested spans, so
+    // the escaped angle brackets are not necessarily contiguous with the tag
+    // name -- the real security invariant is simply that no literal,
+    // unescaped `<script>` tag reaches the renderer's innerHTML sink.
+    expect(html).not.toContain('<script>');
+    expect(html).not.toContain('</script>');
+    expect(html).toContain('&lt;');
+    expect(html).toContain('&gt;');
   });
 });

@@ -1,10 +1,5 @@
 import type { MenuItemConstructorOptions } from 'electron';
-
-export interface ViewSettings {
-  darkMode: boolean;
-  showFrontmatter: boolean;
-  showTreePanel: boolean;
-}
+import type { ViewSettings, DocumentTab } from '../preload/api';
 
 export interface MenuHandlers {
   onOpen: () => void;
@@ -12,6 +7,7 @@ export interface MenuHandlers {
   onToggleDarkMode: (checked: boolean) => void;
   onToggleShowFrontmatter: (checked: boolean) => void;
   onToggleShowTreePanel: (checked: boolean) => void;
+  onSelectTab: (tab: DocumentTab) => void;
   onOpenHelp: () => void;
 }
 
@@ -57,6 +53,21 @@ export function buildMenuTemplate(
           type: 'checkbox',
           checked: initialViewSettings.showTreePanel,
           click: (menuItem) => handlers.onToggleShowTreePanel(menuItem.checked),
+        },
+        { type: 'separator' },
+        {
+          id: 'menu-view-preview',
+          label: 'Preview',
+          type: 'radio',
+          checked: initialViewSettings.currentTab === 'preview',
+          click: () => handlers.onSelectTab('preview'),
+        },
+        {
+          id: 'menu-view-code',
+          label: 'Code',
+          type: 'radio',
+          checked: initialViewSettings.currentTab === 'code',
+          click: () => handlers.onSelectTab('code'),
         },
       ],
     },
