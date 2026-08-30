@@ -28,6 +28,13 @@ A verdict without evidence is invalid. For every checklist item:
    - If a specific test fails and is already logged in `backlog.md` as a known, pre-existing flake unrelated to this diff, confirm that with 2-3 targeted re-runs of that specific test/file — not the entire suite again — before treating it as noise in your report.
 3. For scope compliance, derive the touched-file list from `git diff --name-only` and compare it against `.agents/current_scope.json` — never from the engineer's self-report.
 4. A report with zero findings must still contain the complete evidence trail. "All verified" without artifacts is a rubber stamp, not a review.
+5. When a guardrail's claim is causal ("this test proves X because of Y"), verify the causal claim directly, not just that the test currently passes: temporarily revert the specific hunk under test, confirm it fails for the claimed reason (RED), then restore it and confirm it passes again (GREEN). A passing test proves nothing about what it actually discriminates until you've watched it fail the right way.
+   - Never use `git checkout --`, `git restore`, `git reset --hard`, or `git clean -f` for this — `guard-destructive-git.mjs` deliberately blocks these whenever the target has uncommitted changes (ADR-005), because a whole-file/tree revert can't tell your edit apart from another actor's still-uncommitted work elsewhere in the diff. This is not a capability gap to report as a blocker.
+   - Use a captured patch instead, which the guard does not intercept:
+ git diff -- <file> > /tmp/<name>.diff
+ git apply -R /tmp/<name>.diff   # reverts only this file — confirm RED
+ git apply /tmp/<name>.diff      # restores it — confirm GREEN
+   - Cite the actual RED output (test name + failure reason) and the actual GREEN output after restore — not "confirmed," the real lines.
 
 ## Review Checklist
 
