@@ -2165,3 +2165,74 @@ task closes, not a pre-existing acceptable duplication.
     purpose (fenced-code-block languages).
 
 ---
+
+## Task 33: Fix — Raw Source in Code Tab Doesn't Wrap, Forces Horizontal Scroll
+
+Found by manual exploratory testing of the packaged app, not by any
+automated test — Task 32's e2e coverage checked for the `.hljs` class's
+presence but never asserted real wrap/overflow behavior, which is
+exactly the blind spot this exposed. Root cause, confirmed by reading
+the delivered code: `highlightMarkdownSource` wraps its own return
+value in `<pre><code class="hljs language-markdown">...</code></pre>`,
+which lands inside the already-existing outer
+`<pre id="code-content">` via `innerHTML` — a `<pre>` nested inside a
+`<pre>`. The inner `<pre>`'s user-agent-default `white-space: pre` is a
+*specified* value on that element and wins over the *inherited*
+`pre-wrap` the outer `#code-content` already carries (correctly, since
+Task 32) for all the actual visible text. A pure regression fix, not a
+new feature — no new domain object, no new IPC surface, no new trigger.
+
+### Abstract Schema Contracts
+
+- **`highlightMarkdownSource`'s output is a fragment meant to be the
+  sole content of an already-`<pre>` container, not a self-contained
+  block that supplies its own `<pre>`.** The function's contract
+  changes from "returns a complete `<pre><code>` block" to "returns a
+  bare `<code>` element" — the same shape `#frontmatter` already
+  expects (a single `<pre>`, nothing nested inside it) and the same
+  shape Preview's fenced-code-block path already produces (`#content`
+  is a `<div>`; hljs's own `<pre><code>` output goes straight in,
+  never double-wrapped).
+- **Wrap behavior is an inherited CSS property, not a per-call
+  decision.** `white-space: pre-wrap` must reach the real text nodes by
+  inheritance from the one container element that declares it
+  (`#code-content`), with no intervening element re-specifying
+  `white-space` and silently shadowing that inheritance.
+
+### Pure Transformation Logic
+
+- **`highlightMarkdownSource(source) -> html`**: unchanged operating
+  contract (total function over any string input, including the empty
+  string, never throws) — only the shape of the returned fragment
+  changes, from a complete `<pre><code>...</code></pre>` block to a
+  bare `<code class="hljs language-markdown">...</code>` fragment.
+
+### Edge-Case Invariant Guardrails
+
+(Continuing the sequential numbering from Task 32's #93.)
+
+94. **`#code-content` must contain exactly one `<pre>` element — itself
+    — never a second, nested one.** Provable directly: querying for
+    `pre` elements inside `#code-content` must return zero matches
+    (the container is the `<pre>`, it does not contain one).
+95. **A long prose line (ordinary spaces, not one unbroken token) must
+    wrap inside the Code tab's visible width, never forcing the
+    container to scroll horizontally** — proven via real rendered
+    geometry (`scrollWidth` vs. `clientWidth`, small tolerance for
+    subpixel rounding), not inferred from the CSS rule's presence
+    alone. This is the concrete guard against the exact bug class this
+    task fixes.
+96. **A single pathologically long unbroken token (e.g. an unbroken
+    URL) forcing horizontal overflow within its own line remains
+    accepted behavior, unchanged by this task** — identical to
+    GitHub's own code-block behavior, governed by `github.css`'s
+    existing `pre code.hljs { overflow-x: auto }` fallback. Not to be
+    conflated with guardrail #95's ordinary-prose-line guarantee, and
+    not a defect this task creates or must resolve.
+97. **This fix is confined to `highlightMarkdownSource`'s return
+    value** — zero diff to `app.css` (the outer `#code-content` rule
+    was already correct since Task 32 and needs no change) and zero
+    diff to `markdownToHtml`/`highlightCode`/the `md` instance, which
+    were never affected by this bug in the first place.
+
+---

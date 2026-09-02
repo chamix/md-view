@@ -17,14 +17,34 @@
  * is reserved for an explicit checkpoint. It's a static, auditable
  * path -> tier mapping, not real test-impact-analysis (no coverage-data
  * infra here) — cheap to reason about, cheap to extend.
+ *
+ * Every invocation — pass or fail — appends one line to
+ * `.agents/metrics/test-tier-invocations.ndjson`. This hook's own success
+ * path used to be silent, which meant "did e2e really never fire mid-cycle"
+ * could only be answered by digging through a session transcript. Now it's
+ * answerable by reading one append-only file, the same audit-over-restated-
+ * claim standard this project already applies to everything else.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, appendFileSync, mkdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { relative, isAbsolute } from "node:path";
+import { relative, isAbsolute, join, dirname } from "node:path";
 
 const input = JSON.parse(readFileSync(0, "utf8"));
 const projectDir =
   process.env.CLAUDE_PROJECT_DIR ?? input.cwd ?? process.cwd();
+
+const LOG_PATH = join(projectDir, ".agents", "metrics", "test-tier-invocations.ndjson");
+
+function logInvocation(entry) {
+  // Best-effort only: a logging failure must never take down the actual
+  // test signal this hook exists to provide.
+  try {
+    mkdirSync(dirname(LOG_PATH), { recursive: true });
+    appendFileSync(LOG_PATH, JSON.stringify(entry) + "\n");
+  } catch {
+    // swallow — logging is a convenience, not the contract
+  }
+}
 
 const rawPath = String(input.tool_input?.file_path ?? "");
 if (!rawPath) process.exit(0);
@@ -44,7 +64,16 @@ if (!underSrc && !underTests) process.exit(0);
 
 // e2e is never auto-run by this hook, on purpose — see header comment.
 // Covers editing the e2e specs themselves and the Playwright config.
+// Logged too (scripts: []) so "was this path ever routed to e2e" is
+// answerable from the log alone, not just "was it skipped entirely".
 if (rel.startsWith("tests/e2e/") || rel === "playwright.config.ts") {
+  logInvocation({
+    ts: new Date().toISOString(),
+    path: rel,
+    scripts: [],
+    reason: "e2e-path-never-auto-run",
+    ok: true,
+  });
   process.exit(0);
 }
 
@@ -62,15 +91,27 @@ const scripts = touchesContractBoundary
   ? ["test:unit", "test:integration"]
   : ["test:unit"];
 
+const runResults = [];
+
 for (const script of scripts) {
+  const startedAt = Date.now();
   const result = spawnSync("npm", ["run", script, "--silent"], {
     cwd: projectDir,
     shell: true, // required for npm resolution on Windows
     encoding: "utf8",
     timeout: 60_000,
   });
+  const durationMs = Date.now() - startedAt;
+  runResults.push({ script, exitCode: result.status, durationMs });
 
   if (result.status !== 0) {
+    logInvocation({
+      ts: new Date().toISOString(),
+      path: rel,
+      scripts: runResults,
+      ok: false,
+    });
+
     const tail = `${result.stdout ?? ""}\n${result.stderr ?? ""}`
       .split("\n")
       .slice(-25)
@@ -83,5 +124,12 @@ for (const script of scripts) {
     process.exit(2);
   }
 }
+
+logInvocation({
+  ts: new Date().toISOString(),
+  path: rel,
+  scripts: runResults,
+  ok: true,
+});
 
 process.exit(0);

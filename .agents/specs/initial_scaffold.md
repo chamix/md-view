@@ -4446,6 +4446,78 @@ geometry), not a new design.
 
 ---
 
+## Task 33: Fix — Raw Source in Code Tab Doesn't Wrap, Forces Horizontal Scroll
+
+### The Inward Dependency Rule
+
+No core-domain component involved. `highlightMarkdownSource` is a
+peripheral formatting helper in `src/main/markdown.ts`; this fix
+narrows its output shape only. Nothing in `src/renderer/**` or
+`src/preload/**` changes — the existing `#code-content` CSS rule
+(Task 32) already carries the correct behavior and simply never
+reached the real text.
+
+### SOLID Boundary Scan
+
+- **SRP.** `highlightMarkdownSource` keeps its one responsibility
+  (produce highlighted markup for a raw-source fragment); it stops
+  additionally deciding the fragment's outer block-level wrapper,
+  which is `#code-content`'s responsibility alone (defined once, in
+  `index.html`/`app.css`, per guardrail #94).
+- **OCP/DIP.** N/A at this scale — same reasoning as Task 30's
+  precedent: removing one redundant wrapping element is not a decision
+  point any interface or abstraction would clarify.
+
+### Pattern Application
+
+No GoF pattern introduced or changed — this is a one-line output-shape
+correction, not a structural design decision.
+
+### `src/main/markdown.ts`
+
+```ts
+export function highlightMarkdownSource(source: string): string {
+  const value = hljs.getLanguage('markdown')
+    ? hljs.highlight(source, { language: 'markdown' }).value
+    : hljs.highlightAuto(source).value;
+  return `<code class="hljs language-markdown">${value}</code>`;
+}
+```
+
+Only the return statement changes — the `hljs.getLanguage('markdown')`
+pre-check and the `highlightAuto` fallback are untouched, satisfying
+functional-domain guardrail #97.
+
+### Tests — `tests/unit/markdown.test.ts`
+
+- Update the two existing `highlightMarkdownSource` assertions that
+  check for the old `<pre><code class="hljs language-markdown">` string
+  to check for `<code class="hljs language-markdown">` instead.
+- Add one new regression test asserting the function's output never
+  contains `<pre` at all — the direct, permanent lock-in for
+  guardrail #94 at the unit level.
+
+### Tests — new e2e spec
+
+The concrete proof guardrail #95 requires: open a fixture with a real
+prose paragraph over ~200 characters (ordinary spaces — not the
+guardrail #96 single-long-token case), switch to the Code tab, and
+assert:
+- `page.locator('#code-content pre').count()` is `0` (guardrail #94,
+  proven against the live rendered DOM, not just the string returned by
+  the function).
+- The container's `scrollWidth` does not exceed its `clientWidth` by
+  more than a small subpixel-rounding tolerance (guardrail #95).
+
+### Governance note
+
+No ADR needed — same tier as Task 30's CSS/markup-shape bug-fix row,
+not an architectural decision. This closes a gap Task 32's own e2e
+suite left open (it asserted the `.hljs` class's presence but never
+real wrap/overflow geometry), not a new design.
+
+---
+
 ## Task 31: Main Content Scrolls Within Its Own Bounded Region (Not Body)
 
 ### The Inward Dependency Rule

@@ -69,5 +69,5 @@ export function highlightMarkdownSource(source: string): string {
   const value = hljs.getLanguage('markdown')
     ? hljs.highlight(source, { language: 'markdown' }).value
     : hljs.highlightAuto(source).value; // documented fallback if the guardrail #1 pre-check ever regresses
-  return `<pre><code class="hljs language-markdown">${value}</code></pre>`;
+  return `<code class="hljs language-markdown">${value}</code>`;
 }

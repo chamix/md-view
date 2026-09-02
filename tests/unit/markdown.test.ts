@@ -87,13 +87,13 @@ describe('highlightMarkdownSource (Task 32: raw-source Code tab, independent of 
   it('produces hljs-* span(s) for a known markdown snippet', () => {
     const html = highlightMarkdownSource('# Heading\n\nSome **bold** text.');
     expect(html).toContain('hljs-');
-    expect(html).toContain('<pre><code class="hljs language-markdown">');
+    expect(html).toContain('<code class="hljs language-markdown">');
   });
 
   it('does not throw on an empty string input', () => {
     expect(() => highlightMarkdownSource('')).not.toThrow();
     const html = highlightMarkdownSource('');
-    expect(html).toContain('<pre><code class="hljs language-markdown">');
+    expect(html).toContain('<code class="hljs language-markdown">');
   });
 
   it('HTML-escapes script-tag-like text in the source (security regression, mirrors markdownToHtml)', () => {
@@ -106,5 +106,10 @@ describe('highlightMarkdownSource (Task 32: raw-source Code tab, independent of 
     expect(html).not.toContain('</script>');
     expect(html).toContain('&lt;');
     expect(html).toContain('&gt;');
+  });
+
+  it('never wraps its own output in a <pre> (the container already is one)', () => {
+    const html = highlightMarkdownSource('# Heading\n\nSome text.');
+    expect(html).not.toContain('<pre');
   });
 });

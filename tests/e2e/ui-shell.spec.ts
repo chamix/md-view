@@ -258,3 +258,29 @@ test.describe('Task 32: Code tab shows the full raw file, frontmatter included',
     await expect(codeContent).toContainText('Frontmatter Fixture Heading');
   });
 });
+
+test.describe('Task 33: Code tab wraps long lines instead of forcing horizontal scroll', () => {
+  const fixturePath = path.join(process.cwd(), 'tests/e2e/fixtures/long-line.md');
+  test.use({ electronArgs: [fixturePath] });
+
+  test('a long prose line in #code-content wraps: no nested <pre>, no horizontal overflow', async ({
+    electronApp,
+  }) => {
+    const window = await electronApp.firstWindow();
+    const content = window.locator('#content');
+    await expect(content).toContainText('Long Line Fixture', { timeout: 10000 });
+
+    await window.locator('#tab-code').click();
+
+    const codeContent = window.locator('#code-content');
+    await expect(codeContent).toBeVisible();
+
+    expect(await codeContent.locator('pre').count()).toBe(0);
+
+    const overflow = await codeContent.evaluate((el) => ({
+      scrollWidth: el.scrollWidth,
+      clientWidth: el.clientWidth,
+    }));
+    expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth + 2);
+  });
+});
