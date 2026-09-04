@@ -2236,3 +2236,98 @@ new feature — no new domain object, no new IPC surface, no new trigger.
     were never affected by this bug in the first place.
 
 ---
+
+## Task 34: Copy Raw Markdown Source Button
+
+Adds a "copy raw source" control to `#document-header`, opposite the
+Preview/Code tabs, that copies the exact on-disk file content to the
+system clipboard regardless of which tab is currently visible. No new
+document/render data — the raw source already reaches the renderer as
+`#code-content`'s `textContent` (Task 32/33); this task adds a way to
+move that exact string to the OS clipboard.
+
+### Abstract Schema Contracts
+
+- **Clipboard write is a main-process-boundary operation, not a
+  renderer capability.** `clipboard` is not among the modules
+  Electron's sandboxed preload `require()` polyfill exposes
+  (`contextBridge`, `crashReporter`, `ipcRenderer`, `nativeImage`,
+  `webFrame`, `webUtils` only) — this is a structural fact about the
+  app's own `sandbox: true` configuration (`windowConfig.ts`, Task 1),
+  not a design preference. The domain operation "write this exact
+  string to the system clipboard" must therefore cross the
+  main↔renderer boundary the same way Task 17's directory listing
+  does: request-response (`ipcMain.handle`/`ipcRenderer.invoke`), the
+  second such pair in the app, because the caller needs to know
+  whether the write actually happened (to drive the copy→check icon
+  feedback), not just fire a one-way signal.
+- **No new render-result field.** The string to copy already exists on
+  the client side, verbatim, as `#code-content`'s `textContent` —
+  hljs's markup only adds `<span>` wrappers around tokens, never
+  alters whitespace or characters (must be empirically verified, not
+  assumed, per this project's standing discipline — see Test Plan).
+  Introducing a parallel `source`/raw field on `FileRenderedMessage`
+  to carry the same bytes a second time across IPC would be a
+  duplicated data channel with no behavioral gain — same reasoning
+  Task 4 already applied when it chose *not* to duplicate path data
+  the render channel already carried.
+- **The copy action is stateless and history-free.** One request, one
+  boolean success response, no queue, no retained "last copied" value
+  anywhere in main or preload — the renderer alone tracks the
+  transient (1.5s) post-copy visual feedback, and that tracking is UI
+  state, not domain state.
+
+### Pure Transformation Logic
+
+- **`canCopyRawSource(message) -> boolean`**: the one new pure
+  predicate this task introduces, same tier as
+  `shouldShowFrontmatter`/`firstDroppedFile` — gates the button's
+  `disabled` state on "does the most recent render message represent a
+  real, successfully-rendered file" (`message.ok === true`). An
+  error-variant message, or no message at all (pre-first-render), both
+  collapse to "nothing valid to copy" — the same two-inputs-one-outcome
+  shape `shouldShowFrontmatter` already established for its own two
+  independent gating conditions.
+- No transformation of the copied text itself occurs anywhere in this
+  task — the string that reaches `clipboard.writeText` is passed
+  through unmodified from `#code-content.textContent`, across
+  preload's `invoke`, to main's handler. Any transformation
+  (trimming, re-encoding, normalizing line endings) would violate the
+  "byte-for-byte" guardrail below and is explicitly not part of this
+  task's scope.
+
+### Edge-Case Invariant Guardrails
+
+(Continuing the sequential numbering from Task 33's #97.)
+
+98. **Copy must reproduce the on-disk file exactly, byte-for-byte**
+    (frontmatter + body, no markdown-it processing, no hljs-added
+    whitespace) — proven against the real OS clipboard
+    (`clipboard.readText()` via a running Electron instance) compared
+    to `fs.readFile()` on the fixture directly, never against
+    `#code-content`'s HTML string or any in-memory JS value standing
+    in for the clipboard.
+99. **Copy must work identically regardless of which tab (Preview or
+    Code) is currently visible** — `#code-content` is populated on
+    every `FILE_RENDERED` independent of `applyTab`'s hidden/shown
+    state (Task 32), so the copy action must read from it directly
+    rather than depending on tab visibility as a precondition.
+100. **The button must be inert whenever there is no successfully-
+     rendered file** — initial empty state, or the most recent render
+     was an error — never writes stale or wrong content to the
+     clipboard. This is `canCopyRawSource`'s entire reason to exist.
+101. **Clipboard writes cross the `main` process boundary exclusively**
+     (`ipcMain.handle` → `clipboard.writeText`) — never attempted
+     directly from renderer or preload, since `clipboard` is not among
+     the modules Electron's sandboxed preload `require()` exposes.
+     Attempting `require('electron').clipboard` from preload is a
+     known failure mode for this app's configuration, not a
+     hypothetical.
+102. **The icon markup is a disclosed, scoped exception to this app's
+     zero-icon-dependency default (ADR-006)** — not silent drift from
+     an established pattern. The CSS-drawn technique (window controls,
+     Task 29) remains the app's default for any future icon-bearing
+     control; this one control's two-state (copy→check) icon is the
+     stated, narrow exception.
+
+---

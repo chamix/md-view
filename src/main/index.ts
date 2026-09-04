@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell } from 'electron';
 import type { MenuItemConstructorOptions } from 'electron';
 import * as path from 'path';
 import * as fs from 'node:fs/promises';
@@ -413,6 +413,17 @@ app.whenReady().then(() => {
   // Task 17: first request-response IPC pair in the app (ipcMain.handle /
   // ipcRenderer.invoke) — every other channel above is fire-and-forget.
   ipcMain.handle(IPC_CHANNELS.REQUEST_LIST_DIRECTORY, (_e, dirPath: string) => listDirectoryEntries(dirPath));
+
+  // Task 34: second request-response IPC pair in the app (after Task 17's
+  // REQUEST_LIST_DIRECTORY). clipboard.writeText() must run main-process
+  // side — Electron's sandboxed-preload polyfilled require() does not
+  // expose the clipboard module (verified against Electron's sandbox
+  // docs before choosing this shape, not assumed).
+  ipcMain.handle(IPC_CHANNELS.COPY_RAW_SOURCE, (_e, text: string) => {
+    if (typeof text !== 'string') return false;
+    clipboard.writeText(text);
+    return true;
+  });
 
   // Task 27: "Up one level" tree navigation. Fire-and-forget, same shape as
   // Open Folder…/dropped-folder — the result comes back through the existing

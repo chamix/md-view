@@ -44,6 +44,9 @@ const api: BridgeApi = {
   selectTab: (tab) => {
     ipcRenderer.send(IPC_CHANNELS.SELECT_TAB, tab);
   },
+  copyRawSource: (text) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.COPY_RAW_SOURCE, text);
+  },
 };
 
 contextBridge.exposeInMainWorld('mdview', api);

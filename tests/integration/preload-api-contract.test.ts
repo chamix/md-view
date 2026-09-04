@@ -188,3 +188,48 @@ describe('Task 33: codeHtml field / SELECT_TAB channel', () => {
     expect(received).toBe('code');
   });
 });
+
+describe('Task 34: COPY_RAW_SOURCE channel / copyRawSource method', () => {
+  it('exposes a non-empty string channel name for COPY_RAW_SOURCE, distinct from every other existing channel', () => {
+    expect(typeof IPC_CHANNELS.COPY_RAW_SOURCE).toBe('string');
+    expect(IPC_CHANNELS.COPY_RAW_SOURCE.length).toBeGreaterThan(0);
+
+    const existing = [
+      IPC_CHANNELS.FILE_RENDERED,
+      IPC_CHANNELS.VIEW_SETTINGS,
+      IPC_CHANNELS.REQUEST_OPEN_FILE,
+      IPC_CHANNELS.FOLDER_TREE_ROOT,
+      IPC_CHANNELS.REQUEST_LIST_DIRECTORY,
+      IPC_CHANNELS.REQUEST_TREE_PARENT,
+      IPC_CHANNELS.MINIMIZE_WINDOW,
+      IPC_CHANNELS.TOGGLE_MAXIMIZE_WINDOW,
+      IPC_CHANNELS.CLOSE_WINDOW,
+      IPC_CHANNELS.POPUP_MENU,
+      IPC_CHANNELS.WINDOW_MAXIMIZED_STATE,
+      IPC_CHANNELS.SELECT_TAB,
+    ];
+    expect(existing).not.toContain(IPC_CHANNELS.COPY_RAW_SOURCE);
+  });
+
+  // Honest limitation: same as above -- BridgeApi is a TypeScript interface,
+  // erased at compile time. What this proves is that a copyRawSource method
+  // is usable as claimed at runtime, request-response shaped (a Promise it
+  // must be awaited); `tsc --strict` proves the interface shape itself.
+  it('BridgeApi is constructible with a copyRawSource method and it resolves with the request-response result', async () => {
+    let received: string | null = null;
+    const sample: BridgeApi = {
+      version: '0.0.0-test',
+      onFileRendered: () => {},
+      onViewSettings: () => {},
+      openDroppedFile: () => {},
+      copyRawSource: async (text) => {
+        received = text;
+        return true;
+      },
+    };
+
+    const ok = await sample.copyRawSource('# Hello\n');
+    expect(ok).toBe(true);
+    expect(received).toBe('# Hello\n');
+  });
+});

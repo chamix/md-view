@@ -50,6 +50,14 @@ function isPathUnder(childPath, parentPath) {
   );
 }
 
+// Task 34: pure gate for the raw-copy button — only ever true once a
+// file has actually rendered successfully; an error-variant message
+// (or no message at all, before the first FILE_RENDERED) has nothing
+// valid to copy.
+function canCopyRawSource(message) {
+  return !!message && message.ok === true;
+}
+
 // Everything below touches real DOM/window globals, which don't exist when
 // this file is `require()`d under plain Node (e.g. by
 // tests/unit/renderer-order.test.ts, tests/unit/statusBarText.test.ts,
@@ -73,6 +81,7 @@ if (typeof document !== 'undefined') {
   const tabPreviewEl = document.getElementById('tab-preview');
   const tabCodeEl = document.getElementById('tab-code');
   const codeContentEl = document.getElementById('code-content');
+  const copyRawSourceEl = document.getElementById('copy-raw-source');
 
   const markdownLightLink = document.getElementById('theme-markdown-light');
   const markdownDarkLink = document.getElementById('theme-markdown-dark');
@@ -144,6 +153,25 @@ if (typeof document !== 'undefined') {
     });
   }
 
+  // Task 34: copy the exact on-disk file content (frontmatter + body) to
+  // the system clipboard, regardless of which tab is currently visible.
+  // codeContentEl.textContent -- never container.innerHTML -- is the only
+  // source read here: hljs only wraps tokens in <span>, it never alters
+  // whitespace/newlines/characters, so this reconstructs the exact
+  // `source` string highlightMarkdownSource() received (see
+  // tests/e2e/ui-shell.spec.ts's byte-for-byte clipboard assertion for the
+  // empirical proof of that claim, not just this comment's assertion of it).
+  if (copyRawSourceEl) {
+    copyRawSourceEl.addEventListener('click', async () => {
+      if (!codeContentEl || !canCopyRawSource(lastMessage)) return;
+      const ok = await window.mdview.copyRawSource(codeContentEl.textContent || '');
+      if (ok) {
+        copyRawSourceEl.classList.add('copied');
+        setTimeout(() => copyRawSourceEl.classList.remove('copied'), 1500);
+      }
+    });
+  }
+
   const renderHtml = (html, baseUrl) => {
     applyRenderedContent(
       html,
@@ -201,6 +229,7 @@ if (typeof document !== 'undefined') {
     hideEmptyState();
     updateStatusBar(message);
     lastMessage = message;
+    if (copyRawSourceEl) copyRawSourceEl.disabled = !canCopyRawSource(message);
     updateFrontmatterVisibility();
 
     if (message.ok) {
@@ -568,5 +597,6 @@ if (typeof module !== 'undefined') {
     firstDroppedFile,
     needsFetch,
     isPathUnder,
+    canCopyRawSource,
   };
 }

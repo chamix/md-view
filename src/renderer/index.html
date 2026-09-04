@@ -32,6 +32,16 @@
           <div id="document-header">
             <button type="button" id="tab-preview" class="doc-tab active">Preview</button>
             <button type="button" id="tab-code" class="doc-tab">Code</button>
+            <div id="document-header-spacer"></div>
+            <button type="button" id="copy-raw-source" class="doc-header-action" aria-label="Copy raw Markdown" disabled>
+              <svg class="icon-copy" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.3"/>
+                <path d="M3.5 9V3C3.5 2.44772 3.94772 2 4.5 2H10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+              </svg>
+              <svg class="icon-check" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path d="M3 8.5L6.5 12L13 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
           </div>
           <div id="document-main">
             <pre id="frontmatter" hidden></pre>

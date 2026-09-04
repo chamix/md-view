@@ -4884,3 +4884,87 @@ literal instruction in the brief rather than silently renumbered —
 flagged here, not corrected unilaterally.
 
 ---
+
+## Task 34: Copy Raw Markdown Source Button
+
+Adds a "copy raw source" button to `#document-header`, opposite the
+Preview/Code tabs (same `flex: 1 1 auto` spacer shape `#title-bar`
+already solved via `#title-bar-spacer`, Task 29), that copies the
+on-disk file content to the system clipboard. See
+`functional_domain.md`'s Task 34 entry for the domain-level rationale;
+this section maps that to concrete files, following the Inward
+Dependency Rule (the new pure predicate has zero Electron/DOM
+dependency, same tier as `shouldShowFrontmatter`) and reusing the
+existing GoF/idiom precedents this codebase already established rather
+than inventing new ones.
+
+### The Inward Dependency Rule / SOLID Boundary Scan
+
+- `canCopyRawSource` is a leaf, dependency-free predicate (same
+  boundary tier as `shouldShowFrontmatter`/`firstDroppedFile`) —
+  importable and unit-testable with zero DOM, zero Electron, zero
+  bundler, guarded behind the file's existing `typeof module !==
+  'undefined'` export block.
+- The clipboard capability is exposed through `BridgeApi` as an
+  abstract contract (`copyRawSource(text): Promise<boolean>`) — the
+  renderer depends on that interface, not on `ipcRenderer` or
+  `clipboard` directly (DIP, same as every existing `BridgeApi`
+  method). The concrete implementation (`ipcRenderer.invoke` in
+  preload, `clipboard.writeText` in main) sits at the outer,
+  peripheral boundary; the renderer's click handler is the only
+  "core" caller and it only ever talks to `window.mdview.copyRawSource`.
+
+### Pattern Application
+
+- **Request-response IPC pair** (`ipcMain.handle`/`ipcRenderer.invoke`):
+  reuses Task 17's `REQUEST_LIST_DIRECTORY` pattern exactly — the
+  second instance of this shape in the app, grouped alongside it in
+  `main/index.ts` per the brief. Not a new pattern; a second
+  application of an existing one, which is itself evidence the app's
+  IPC surface isn't fragmenting into one-off shapes per feature.
+- **Two-state toggle via CSS class** (`.copied`): matches the existing
+  `.active`/`.dark-mode`/`hidden`-attribute toggling idioms already
+  used for `.doc-tab`, `body.dark-mode`, and `#empty-state` — no new
+  state-toggling mechanism introduced.
+- **Pure predicate + thin DOM wiring split**: same shape as every
+  other renderer.js predicate (`shouldShowFrontmatter`,
+  `firstDroppedFile`, `needsFetch`, `isPathUnder`) — decision logic
+  above the `typeof document` guard, DOM effects below it.
+
+### File-by-file mapping
+
+- **`src/preload/api.ts`**: add `COPY_RAW_SOURCE: 'md-view:copy-raw-source'`
+  to `IPC_CHANNELS`; add `copyRawSource(text: string): Promise<boolean>;`
+  to `BridgeApi`. Both additive — zero diff to any existing channel or
+  method signature.
+- **`src/preload/index.ts`**: `copyRawSource: (text) =>
+  ipcRenderer.invoke(IPC_CHANNELS.COPY_RAW_SOURCE, text)` — same
+  `invoke` shape as `listDirectory`.
+- **`src/main/index.ts`**: add `clipboard` to the existing Electron
+  import line; register `ipcMain.handle(IPC_CHANNELS.COPY_RAW_SOURCE,
+  ...)` grouped next to Task 17's handler, guarding on `typeof text ===
+  'string'` before calling `clipboard.writeText(text)` and returning
+  `true`/`false`.
+- **`src/renderer/index.html`**: `#document-header-spacer` +
+  `#copy-raw-source` button (disabled by default), inline SVG icons per
+  ADR-006, inserted after `#tab-code` inside `#document-header`.
+- **`src/renderer/app.css`**: `#document-header-spacer { flex: 1 1
+  auto; }` (mirrors `#title-bar-spacer`); `.doc-header-action` base +
+  hover + disabled + dark-mode styling; `.copied` icon-swap rules;
+  update the file's top-of-file zero-icon-dependency comment to
+  reference ADR-006.
+- **`src/renderer/renderer.js`**: `canCopyRawSource(message)` predicate
+  grouped with the other pure predicates above the `typeof document`
+  guard; DOM wiring (element lookup, `onFileRendered`-driven
+  `disabled` toggle, click handler awaiting `copyRawSource` and toggling
+  `.copied` for 1.5s) inside the existing `typeof document !==
+  'undefined'` block; export added to the `typeof module !==
+  'undefined'` block.
+
+### Governance note
+
+No new ADR needed for the IPC shape (Task 17 precedent covers it) —
+ADR-006 covers only the icon exception, per the Lead's decision, and
+must be written verbatim before any other file changes per the brief.
+
+---

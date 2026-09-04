@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { test, expect } from './support/fixtures';
 import { pollUntilStable } from './support/pollUntilStable';
@@ -11,6 +13,11 @@ test('no-argv launch: no legacy h1/button, empty-state visible, status bar shows
 
   const statusBar = window.locator('#status-bar');
   await expect(statusBar).toHaveText('No file open');
+
+  // Task 34 guardrail #100: the copy-raw-source button is disabled whenever
+  // there's no successfully-rendered file -- this is the initial, pre-first-
+  // file empty state itself.
+  await expect(window.locator('#copy-raw-source')).toBeDisabled();
 });
 
 test('DevTools shortcut guard: unreachable when packaged, reachable in dev builds', async ({ electronApp }) => {
@@ -282,5 +289,77 @@ test.describe('Task 33: Code tab wraps long lines instead of forcing horizontal 
       clientWidth: el.clientWidth,
     }));
     expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth + 2);
+  });
+});
+
+test.describe('Task 34: Copy Raw Markdown Source button', () => {
+  // Deliberately crafted (not reused from an existing fixture) to exercise
+  // every byte-preservation edge case the domain spec calls out: a trailing
+  // newline at EOF, a blank line, and a line with both leading and trailing
+  // spaces (which markdown/hljs tooling elsewhere in this app is prone to
+  // trim/normalize -- this fixture exists specifically to catch that).
+  // Written into a real temp file at describe-collection time (synchronously,
+  // same as every other describe block's own module-scope `fixturePath`
+  // above) rather than checked in as a new fixture asset, so this test stays
+  // fully self-contained inside this one in-scope spec file and can still use
+  // test.use({ electronArgs }) exactly like every other describe block here.
+  const RAW_FIXTURE_CONTENT = '# Copy Fixture Heading\n\n   leading and trailing spaces on this line   \n\nFinal line.\n';
+  const rawFixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-view-copy-raw-source-'));
+  const fixturePath = path.join(rawFixtureDir, 'copy-raw-fixture.md');
+  fs.writeFileSync(fixturePath, RAW_FIXTURE_CONTENT);
+
+  test.use({ electronArgs: [fixturePath] });
+
+  test.afterAll(() => {
+    fs.rmSync(rawFixtureDir, { recursive: true, force: true });
+  });
+
+  test('clicking the button copies the byte-identical on-disk file content to the real OS clipboard', async ({
+    electronApp,
+  }) => {
+    const window = await electronApp.firstWindow();
+    await expect(window.locator('#content')).toContainText('Copy Fixture Heading', { timeout: 10000 });
+
+    const copyButton = window.locator('#copy-raw-source');
+    await expect(copyButton).toBeEnabled();
+    await copyButton.click();
+
+    // Reach into the real running Electron main process, same
+    // electronApp.evaluate() pattern this file already uses above -- proves
+    // the write actually landed in the real OS clipboard via the
+    // main-process ipcMain.handle(COPY_RAW_SOURCE) round trip, not just some
+    // renderer-side in-memory string.
+    const clipboardText = await electronApp.evaluate(({ clipboard }) => clipboard.readText());
+    const onDiskContent = fs.readFileSync(fixturePath, 'utf8');
+
+    // The load-bearing assertion (guardrail #98): compared directly against
+    // fs.readFile's own output, never against #code-content's DOM
+    // textContent or any other in-memory JS/DOM string.
+    expect(clipboardText).toBe(onDiskContent);
+  });
+
+  test('clicking the button while #tab-preview is active still copies the raw source, not rendered HTML', async ({
+    electronApp,
+  }) => {
+    const window = await electronApp.firstWindow();
+    await expect(window.locator('#content')).toContainText('Copy Fixture Heading', { timeout: 10000 });
+
+    // Guardrail #99: Preview tab is the active/visible tab here -- never
+    // switched to #tab-code -- proving the copy is independent of which tab
+    // is currently visible.
+    await expect(window.locator('#tab-preview')).toHaveClass(/active/);
+    await expect(window.locator('#code-content')).toBeHidden();
+
+    const copyButton = window.locator('#copy-raw-source');
+    await expect(copyButton).toBeEnabled();
+    await copyButton.click();
+
+    const clipboardText = await electronApp.evaluate(({ clipboard }) => clipboard.readText());
+    const onDiskContent = fs.readFileSync(fixturePath, 'utf8');
+
+    expect(clipboardText).toBe(onDiskContent);
+    // Never the rendered HTML -- proves the copy path did not read from
+    // #content's innerHTML while Preview was the visible tab.
+    expect(clipboardText).not.toContain('<h1');
   });
 });

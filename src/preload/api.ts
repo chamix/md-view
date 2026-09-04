@@ -13,6 +13,7 @@ export const IPC_CHANNELS = {
   POPUP_MENU: 'md-view:popup-menu',
   WINDOW_MAXIMIZED_STATE: 'md-view:window-maximized-state',
   SELECT_TAB: 'md-view:select-tab',
+  COPY_RAW_SOURCE: 'md-view:copy-raw-source',
 } as const;
 
 export type DocumentTab = 'preview' | 'code';
@@ -90,4 +91,5 @@ export interface BridgeApi {
   popupMenu(section: 'file' | 'view' | 'help', x: number, y: number): void;
   onWindowMaximizedState(callback: (isMaximized: boolean) => void): void;
   selectTab(tab: DocumentTab): void;
+  copyRawSource(text: string): Promise<boolean>;
 }
