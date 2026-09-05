@@ -25,7 +25,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Preview and Code tabs in the main pane: Code shows the raw Markdown source, frontmatter included, with syntax highlighting.
 - A copy button in the document header copies the file's raw source to the clipboard, with a brief visual confirmation on click.
 - A frameless main window with a custom title bar, window controls, and popup File/View/Help menus.
-- An application icon, including a dedicated Windows `.ico` for packaged builds.
 
 ### Fixed
 
