@@ -1,5 +1,5 @@
 {
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "A minimal desktop Markdown previewer built with Electron + TypeScript, with live-reload and syntax highlighting.",
   "license": "MIT",

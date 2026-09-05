@@ -13,6 +13,9 @@ A minimal Electron + TypeScript desktop app for previewing Markdown files.
 - **Drag-and-drop** a `.md` file from the OS onto the window to open it — same validation as File → Open, and only the first file is opened if several are dropped
 - **Dark Mode and Show Frontmatter toggles** in the View menu control preview appearance and frontmatter visibility
 - **In-app Help window** with usage documentation, available via Help → md-view Help or the F1 key
+- **Folder sidebar** — File → Open Folder… (`Ctrl/Cmd+Shift+O`) opens a folder in a sidebar tree. Clicking a folder lazily expands it; clicking a file opens it in the main pane. The tree auto-expands to and highlights whichever file is currently open. A `.. (up one level)` row navigates to the parent folder. Drag the divider between the tree and the document to resize the sidebar. View → Show File Tree toggles the sidebar on or off. Dropping a folder onto the window also opens it as the tree root, the same as Open Folder…
+- **Preview and Code tabs** — View → Preview and View → Code switch the main pane between the rendered Markdown and a raw-source view with syntax highlighting. The raw view always includes frontmatter, regardless of the Show Frontmatter toggle, which only affects the rendered Preview
+- **Copy raw source** — a copy button in the document header copies the file's raw source, frontmatter included, to the clipboard regardless of which tab is active, with a brief visual confirmation on click
 
 ## Stack
 
@@ -43,6 +46,8 @@ npm run dev -- path/to/file.md
 npm run dev
 ```
 
+File → Open Folder… (`Ctrl/Cmd+Shift+O`) is a second way to start: it opens a folder tree in the sidebar instead of a single file.
+
 ## Commands
 
 | Command | Description |
@@ -58,7 +63,7 @@ npm run dev
 
 ## About this project
 
-**Status: MVP.** `md-view` is a small, working tool — and also a live testbed.
+**Status: v1.0.0.** `md-view` is a small, working tool — and also a live testbed.
 
 This app was built end-to-end under a governed, multi-agent development
 process: every feature went through explicit scope contracts, independent
