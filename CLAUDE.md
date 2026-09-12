@@ -52,7 +52,8 @@ You do **not** review your own delegated work. You wrote the spec; grading your 
 
 1. Run `/log-run` to append this task to `.agents/metrics/RUN_LOG.md` before closing out. Use `/cost` output for real cost data instead of estimates where available.
 2. Delete `.agents/current_scope.json` — the contract is closed.
-3. Present the final result to the user along with the reviewer's verdict summary.
+3. If the task's changes are ready to ship, follow the Branching & Merge Strategy below instead of committing to main directly.
+4. Present the final result to the user along with the reviewer's verdict summary.
 
 ## Scope Contract
 
@@ -75,3 +76,21 @@ A PreToolUse hook rejects any Edit/Write outside `in_scope` while this file exis
 - `CLAUDE.md`, `.claude/**`, and approved specs under `.agents/specs/` are **read-only during task execution**. A PreToolUse hook enforces this deterministically. If you believe a governance file must change, stop and ask the user explicitly — never self-edit the rulebook.
 - All planning, task lists, specifications, review reports, and walkthrough summaries live under the repository-local `.agents/` directory so they remain git-tracked.
 - `.agents/metrics/RUN_LOG.md` is append-only. Never rewrite or delete prior rows.
+
+## Branching & Merge Strategy
+
+- `main` is always deployable. No direct commits or pushes to `main` —
+  GitHub branch protection enforces this, including for repository admins.
+- Before implementation begins, create a branch named
+  `feature/<task-number>-<short-description>` off the latest `main`
+  (e.g. `feature/036-branching-strategy`), zero-padded to match
+  `RUN_LOG.md`'s task sequence.
+- All commits for the task land on that branch. The user performs every
+  `git commit`/`git push` — subagents never invoke git commit or push.
+- Once the task closes (Step 3 above), open a pull request from the
+  feature branch into `main`. The `CI` workflow must pass before
+  merging — it runs `test:unit`+`test:integration` only; `test:e2e`
+  stays a manual pre-merge check (see ADR-007).
+- Merge via "Squash and merge", then delete the branch.
+- Release tags (`vX.Y.Z`) are still cut from `main` only, unchanged from
+  today.
