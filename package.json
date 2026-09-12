@@ -32,7 +32,8 @@
     "chokidar": "^4.0.1",
     "github-markdown-css": "^5.8.1",
     "highlight.js": "^11.11.1",
-    "markdown-it": "^14.1.0"
+    "markdown-it": "^14.1.0",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.0",

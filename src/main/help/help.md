@@ -14,7 +14,10 @@ re-renders the preview automatically — no manual refresh needed.
 - **View → Dark Mode** toggles a dark color scheme for the preview and syntax highlighting.
 - **View → Show Frontmatter** shows or hides YAML frontmatter at the top of the document.
 
-Neither setting is remembered between launches — md-view always starts in its default light mode with frontmatter shown.
+View-menu toggles (Dark Mode, Show Frontmatter, Show File Tree) are saved to `settings.json` and restored automatically the next time md-view launches.
+
+## Settings file
+**File → Settings** opens `settings.json` (created automatically if it doesn't exist yet) in your OS's default text editor, so you can inspect or hand-edit it directly.
 
 ## Syntax highlighting
 Fenced code blocks with a recognized language tag are syntax-highlighted automatically.

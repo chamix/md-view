@@ -110,24 +110,42 @@ test('(c) dark mode toggle flips link-disabled states and a real computed style'
 
 // (d) is the one call site in this suite that genuinely needs two full,
 // sequential Electron launches within a single test (close, then relaunch,
-// to prove view settings don't persist across a process restart) -- the
+// to prove a view setting persists across a process restart) -- the
 // standard one-launch-per-test `electronApp` fixture doesn't fit this shape.
 // Deliberately reuses ONE fixture-style mkdtempSync userDataDir across both
 // sequential launches (not the base fixture's per-test isolation, and not
 // Electron's shared default profile either): this keeps this test isolated
-// from other parallel workers (the actual bug this task fixes) while
-// preserving the original test's real semantics -- second launch reopens
+// from other parallel workers while preserving the original test's
+// two-sequential-launches-same-profile structure -- second launch reopens
 // the SAME on-disk profile the first launch just used, which is what
-// actually proves "no persistence" rather than trivially passing because
-// the two launches never shared a profile in the first place.
-test('(d) close-and-relaunch proves no persistence of view settings', async () => {
+// actually proves persistence rather than trivially passing because the two
+// launches never shared a profile in the first place.
+//
+// The explicit `--user-data-dir=` switch (in `args`, not just Playwright's
+// own `userDataDir` launch option) is load-bearing, not redundant: verified
+// directly against this project's installed Playwright version (1.62.1) that
+// `_electron.launch({ userDataDir })` never actually passes that path to the
+// spawned Electron process at all (confirmed by reading
+// node_modules/playwright-core's own Electron.launch() source -- it builds
+// its argv from `options.args` only). Without this switch, every "isolated"
+// launch in this whole suite was silently sharing the real, single, default
+// %APPDATA%/Electron profile the whole time -- invisible before this task
+// because nothing was ever persisted to app.getPath('userData') to expose
+// it, and newly load-bearing now that settings.json actually lives there.
+//
+// Task 37 inverts this test's assertion: settings.json now persists
+// View-menu toggles to the same userDataDir, so the checkbox must come back
+// CHECKED after relaunch -- this supersedes Task 8 guardrail #6
+// ("session-scoped, never persisted"), disclosed explicitly in
+// functional_domain.md's Task 37 entry.
+test('(d) close-and-relaunch proves view settings now persist via settings.json', async () => {
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-view-e2e-'));
   const childEnv = { ...process.env };
   delete childEnv.ELECTRON_RUN_AS_NODE;
 
   try {
     const app = await electron.launch({
-      args: [ENTRY_POINT, fixturePath],
+      args: [`--user-data-dir=${userDataDir}`, ENTRY_POINT, fixturePath],
       env: childEnv,
       userDataDir,
     });
@@ -145,7 +163,7 @@ test('(d) close-and-relaunch proves no persistence of view settings', async () =
     await app.close();
 
     const secondApp = await electron.launch({
-      args: [ENTRY_POINT, fixturePath],
+      args: [`--user-data-dir=${userDataDir}`, ENTRY_POINT, fixturePath],
       env: childEnv,
       userDataDir,
     });
@@ -156,12 +174,36 @@ test('(d) close-and-relaunch proves no persistence of view settings', async () =
     const checkedAfterRelaunch = await secondApp.evaluate(
       ({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-dark-mode')?.checked
     );
-    expect(checkedAfterRelaunch).toBe(false);
+    expect(checkedAfterRelaunch).toBe(true);
 
     await secondApp.close();
   } finally {
     fs.rmSync(userDataDir, { recursive: true, force: true });
   }
+});
+
+// Task 37 guardrail #106: a toggle persists the *entire* current settings
+// object immediately, not a single-key patch -- read settings.json directly
+// out of the fixture's own userDataDir right after the click, no relaunch
+// needed (that's test (d)'s job, proving the read-back-on-boot half).
+test('(g) toggling a View setting immediately persists the full settings object to settings.json', async ({
+  electronApp,
+  userDataDir,
+}) => {
+  const window = await electronApp.firstWindow();
+  await expect(window.locator('#content')).toContainText('Frontmatter Fixture Heading', { timeout: 10000 });
+
+  await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-show-frontmatter')?.click());
+
+  const settingsPath = path.join(userDataDir, 'settings.json');
+  await expect
+    .poll(() => (fs.existsSync(settingsPath) ? fs.readFileSync(settingsPath, 'utf8') : null))
+    .not.toBeNull();
+
+  const onDisk = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+  expect(onDisk).toEqual({
+    View: { 'Dark Mode': false, 'Show Frontmatter': false, 'Show File Tree': true },
+  });
 });
 
 test("(e) #content's computed padding-bottom is non-zero", async ({ electronApp }) => {

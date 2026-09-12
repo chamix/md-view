@@ -12,6 +12,7 @@ A minimal Electron + TypeScript desktop app for previewing Markdown files.
 - **External links** open in your system's default browser, not inside the app
 - **Drag-and-drop** a `.md` file from the OS onto the window to open it — same validation as File → Open, and only the first file is opened if several are dropped
 - **Dark Mode and Show Frontmatter toggles** in the View menu control preview appearance and frontmatter visibility
+- **Persisted settings** — View-menu toggles (Dark Mode, Show Frontmatter, Show File Tree) are saved to a `settings.json` in the app's per-user data directory and restored on the next launch. **File → Settings** opens (creating it first if needed) that file in your OS's default text editor for direct inspection/editing
 - **In-app Help window** with usage documentation, available via Help → md-view Help or the F1 key
 - **Folder sidebar** — File → Open Folder… (`Ctrl/Cmd+Shift+O`) opens a folder in a sidebar tree. Clicking a folder lazily expands it; clicking a file opens it in the main pane. The tree auto-expands to and highlights whichever file is currently open. A `.. (up one level)` row navigates to the parent folder. Drag the divider between the tree and the document to resize the sidebar. View → Show File Tree toggles the sidebar on or off. Dropping a folder onto the window also opens it as the tree root, the same as Open Folder…
 - **Preview and Code tabs** — View → Preview and View → Code switch the main pane between the rendered Markdown and a raw-source view with syntax highlighting. The raw view always includes frontmatter, regardless of the Show Frontmatter toggle, which only affects the rendered Preview
@@ -24,6 +25,7 @@ A minimal Electron + TypeScript desktop app for previewing Markdown files.
 - **markdown-it** — Markdown → HTML conversion, with raw HTML passthrough explicitly disabled
 - **highlight.js** — syntax highlighting for fenced code blocks with an explicit, recognized language (no auto-detection)
 - **chokidar** — file watching for live-reload
+- **zod** — schema validation for the hand-editable `settings.json` file
 - **esbuild** — bundles the preload script into a single file (required to run under Electron's sandboxed preload context)
 - **Vitest** — unit and integration tests
 - **Playwright** (`@playwright/test`, `_electron`) — end-to-end tests against the built, packaged app

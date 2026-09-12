@@ -17,14 +17,21 @@ import type { FSWatcher } from 'chokidar';
 import { filterAndSortEntries } from './fileTree';
 import { IPC_CHANNELS } from '../preload/api';
 import type { FileRenderedMessage, DirectoryListResult, FolderTreeRootMessage, DocumentTab, ViewSettings } from '../preload/api';
+import { loadSettingsAtStartup, rereadSettingsOnFocus, ensureSettingsFileExists, writeSettingsFile } from './settingsStore';
+import { toPersistedViewSettings, fromViewSettings } from './settings';
 
 let mainWindow: BrowserWindow | null = null;
 let activeWatcher: FSWatcher | null = null;
 let helpWindow: BrowserWindow | null = null;
+let settingsFilePath: string;
 
-// Session-scoped, never persisted (functional_domain.md Task 8 guardrail #6):
-// resets to this exact default on every launch, regardless of a prior
-// session's choices.
+// currentTab is session-scoped only (Task 37 explicitly does NOT persist
+// it); darkMode/showFrontmatter/showTreePanel are persisted to
+// settings.json as of Task 37, superseding Task 8 guardrail #6's original
+// "session-scoped, never persisted" scope boundary -- a disclosed,
+// intentional lifting of that boundary, not silent drift. This default
+// object is overwritten with loadSettingsAtStartup()'s result (merged over
+// these same three keys) before createWindow() runs.
 let viewSettings: ViewSettings = {
   darkMode: false,
   showFrontmatter: true,
@@ -40,19 +47,29 @@ function broadcastViewSettings(): void {
   mainWindow?.webContents.send(IPC_CHANNELS.VIEW_SETTINGS, viewSettings);
 }
 
-function setDarkMode(checked: boolean): void {
+// Toggling a View-menu item always persists the *entire* current settings
+// object (functional_domain.md guardrail #106) -- never a single-key patch,
+// since settings.json has no defined partial-update semantics.
+async function persistCurrentViewSettings(): Promise<void> {
+  await writeSettingsFile(settingsFilePath, fromViewSettings(viewSettings));
+}
+
+async function setDarkMode(checked: boolean): Promise<void> {
   viewSettings = { ...viewSettings, darkMode: checked };
   broadcastViewSettings();
+  await persistCurrentViewSettings();
 }
 
-function setShowFrontmatter(checked: boolean): void {
+async function setShowFrontmatter(checked: boolean): Promise<void> {
   viewSettings = { ...viewSettings, showFrontmatter: checked };
   broadcastViewSettings();
+  await persistCurrentViewSettings();
 }
 
-function setShowTreePanel(checked: boolean): void {
+async function setShowTreePanel(checked: boolean): Promise<void> {
   viewSettings = { ...viewSettings, showTreePanel: checked };
   broadcastViewSettings();
+  await persistCurrentViewSettings();
 }
 
 // Session-scoped currentTab (Task 32 decision #3): check-then-act, same
@@ -82,7 +99,43 @@ function menuHandlers(): MenuHandlers {
     onToggleShowTreePanel: setShowTreePanel,
     onSelectTab: setCurrentTab,
     onOpenHelp,
+    onOpenSettings,
   };
+}
+
+// File -> Settings: create the file only if it doesn't already exist (never
+// overwrite an existing one, even a corrupt one -- ensureSettingsFileExists
+// owns that distinction), then hand the fixed, main-process-computed path to
+// the OS's own file-type handler. settingsFilePath never originates from,
+// or passes through, the renderer (functional_domain.md guardrail #105).
+async function onOpenSettings(): Promise<void> {
+  await ensureSettingsFileExists(settingsFilePath);
+  await shell.openPath(settingsFilePath);
+}
+
+// Registered on the BrowserWindow's 'focus' event (createWindow(), below).
+// Re-reads settings.json so an external hand-edit while the app was
+// unfocused is picked up -- but per functional_domain.md guardrail #103,
+// this path is protective, not self-healing: rereadSettingsOnFocus() already
+// returns null (and touches nothing) for any read/parse failure, so a null
+// result here means "ignore this event entirely". A non-null result is only
+// applied to memory/UI/menu together (guardrail #107), and only when it
+// actually differs from what's already in memory -- an unchanged read is a
+// no-op, no rebroadcast/rebuild for nothing.
+async function onWindowFocus(): Promise<void> {
+  const result = await rereadSettingsOnFocus(settingsFilePath);
+  if (result === null) return;
+
+  const persisted = toPersistedViewSettings(result);
+  const unchanged =
+    persisted.darkMode === viewSettings.darkMode &&
+    persisted.showFrontmatter === viewSettings.showFrontmatter &&
+    persisted.showTreePanel === viewSettings.showTreePanel;
+  if (unchanged) return;
+
+  viewSettings = { ...viewSettings, ...persisted };
+  broadcastViewSettings();
+  applyMenu();
 }
 
 function applyMenu(): void {
@@ -132,6 +185,10 @@ function createWindow(): void {
   // synthetically (functional_domain.md guardrail #69).
   mainWindow.on('maximize', () => mainWindow?.webContents.send(IPC_CHANNELS.WINDOW_MAXIMIZED_STATE, true));
   mainWindow.on('unmaximize', () => mainWindow?.webContents.send(IPC_CHANNELS.WINDOW_MAXIMIZED_STATE, false));
+
+  // Task 37: re-read settings.json on refocus, so an external hand-edit made
+  // while the window was unfocused is picked up without requiring a relaunch.
+  mainWindow.on('focus', onWindowFocus);
 
   mainWindow.webContents.on('will-navigate', (event, url) => {
     event.preventDefault(); // unconditional, before any URL classification — this is the load-bearing safety property
@@ -353,7 +410,15 @@ async function onOpenHelp(): Promise<void> {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  settingsFilePath = path.join(app.getPath('userData'), 'settings.json');
+  // Strictly before createWindow()/the did-finish-load listener
+  // registrations below -- those must stay synchronous relative to each
+  // other (existing invariant: a did-finish-load that fires while
+  // renderFile() is still reading from disk must never be missed).
+  const startupSettings = await loadSettingsAtStartup(settingsFilePath);
+  viewSettings = { ...viewSettings, ...toPersistedViewSettings(startupSettings) };
+
   createWindow();
 
   if (shouldSetDockIcon(app.isPackaged, process.platform)) {
