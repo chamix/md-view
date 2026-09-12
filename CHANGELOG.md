@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- File → Settings menu item, opening `settings.json` in the OS's default text editor (creating it with defaults first if it doesn't exist).
+
+### Changed
+
+- Dark Mode, Show Frontmatter, and Show File Tree now persist across relaunches (previously reset every session).
+
 ## [1.0.0] - 2026-09-04
 
 ### Added
