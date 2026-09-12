@@ -2331,3 +2331,169 @@ move that exact string to the OS clipboard.
      stated, narrow exception.
 
 ---
+
+## Task 37: Configuration Subsystem (settings.json)
+
+Introduces the app's first on-disk, human-editable persistence — a
+`settings.json` in Electron's per-user `userData` directory — starting
+with the three existing View-menu toggles (Dark Mode, Show Frontmatter,
+Show File Tree), plus a "File → Settings" menu item that creates (if
+needed) and opens that file via the OS default handler.
+
+**This task explicitly supersedes Task 8's guardrail #6** ("Session-
+scoped, not persisted... a deliberate scope boundary (no config file, no
+stored user profile) for this task, not an oversight to fix later
+without being asked"). The user is now asking. This is a disclosed,
+intentional lifting of a previously load-bearing boundary, not silent
+drift — recorded here exactly as Task 8's own guardrail #6 anticipated
+this moment would need to be recorded. `currentTab` (Preview/Code, also
+part of today's in-memory `ViewSettings`) is deliberately *not* part of
+this task's persisted schema and remains session-scoped, unaffected by
+this supersession.
+
+Confirmed with the user before writing this spec: `settings.json`'s v1
+defaults match today's existing session defaults exactly (Dark Mode:
+false, Show Frontmatter: true, Show File Tree: true) — the task
+description's own example JSON (`"Dark Mode": true`) was illustrative
+schema shape, not a literal instruction to flip the Task 8-established
+default.
+
+### Abstract Schema Contracts
+
+- **A settings file is a versioned, named-section document, not a flat
+  bag of booleans.** The v1 shape is `{ "View": { "Dark Mode": bool,
+  "Show Frontmatter": bool, "Show File Tree": bool } }` — a top-level
+  namespace (`View`) grouping keys by the menu/subsystem that owns them,
+  chosen because the task's own framing ("starting with the three
+  existing View-menu toggles") and the ADR-mandated "schema explicitly
+  meant to grow" both imply future sections (e.g. a hypothetical
+  `Editor` or `Window` namespace) living alongside `View`, not a
+  redesign of the file's shape when that day comes.
+- **The on-disk key spelling (`"Dark Mode"`, human-readable, Title
+  Case, matching the literal View-menu label text) is a distinct
+  contract from the in-memory `ViewSettings` field spelling
+  (`darkMode`, `showFrontmatter`, `showTreePanel`, camelCase, existing
+  `preload/api.ts` shape).** These are two different schemas for two
+  different audiences — the file is meant to be hand-edited by a human
+  reading menu labels; `ViewSettings` is an internal IPC/programming
+  contract already relied on by Tasks 8/28/32. A explicit mapping
+  function between the two, not a rename of either, is required — the
+  existing internal contract must not change shape just because a new
+  external one was introduced next to it.
+- **A settings file is either fully valid or it isn't — there is no
+  per-key partial schema.** Unlike `FileRenderedMessage`'s ok/error
+  split (which is about a *file being read*), settings validation is
+  about *shape conformance*: the parsed JSON either matches the whole
+  v1 schema (three known boolean keys under `View`, nothing missing, no
+  extra/wrong-typed keys) or the entire read is a single failure with no
+  usable partial result — explicitly ruled out from the parser's own
+  responsibility is any notion of "keep the two good keys, discard the
+  bad third one."
+- **The same abstract "is this valid settings data" question is asked
+  from two different moments in the app's lifecycle, and those two
+  moments have different obligations on failure — but that difference
+  belongs to the caller, not to the validation question itself.** The
+  pure parser answers one question only (valid data, or not); what
+  happens next (self-heal vs. discard-and-preserve) is data about *when*
+  the question was asked, supplied by main-process orchestration, never
+  encoded into the parser's own contract.
+- **`shell.openPath` is a new class of domain capability for this
+  app — "hand a specific, main-process-computed file path to the OS's
+  own file-type handler" — distinct from the existing
+  `shell.openExternal` capability ("hand a URL to the OS's own browser
+  handler").** Same trust tier as `shell.openExternal` (Task 5): both
+  delegate to the OS rather than rendering in-app, and both must never
+  be reachable with a renderer-supplied value — but they are two
+  separate capabilities gating two different kinds of target
+  (arbitrary external URL vs. one fixed, app-owned local file path),
+  and must not be modeled as the same function with a parameter.
+
+### Pure Transformation Logic
+
+- **`parseSettings(raw: unknown) -> Settings | null`** (or an
+  equivalent discriminated result): the one new pure function this task
+  introduces, same tier as `extractFrontmatter`/`filterAndSortEntries` —
+  takes arbitrary parsed-JSON-shaped input (or a raw string, if JSON
+  parsing itself is folded in) and returns either a fully-typed,
+  schema-valid `Settings` object or a clear "invalid" outcome. No
+  `fs`, no Electron, no knowledge of *why* it's being called
+  (startup vs. refocus) — same "just answers the question it was asked"
+  shape as `canCopyRawSource` and `shouldShowFrontmatter`.
+- **`settingsFromViewSettings` / `viewSettingsFromSettings` (naming
+  indicative, not prescriptive): pure, symmetric mapping functions
+  between the on-disk Title-Case/`View`-namespaced shape and the
+  in-memory `ViewSettings` camelCase shape.** Two pure, narrow
+  transformations — same tier as the schema-mapping already implicit
+  wherever `ViewSettings` is constructed today — introduced instead of
+  scattering ad hoc key-renaming inline at each of the (at least two)
+  call sites that need it (menu-toggle persistence, refocus re-read).
+- **Menu construction remains a pure description function, unchanged in
+  kind.** `buildMenuTemplate` already takes `(handlers, current
+  preferences) -> menu structure` (Task 8); this task requires the
+  *orchestration* around it to rebuild/re-check items when settings
+  change out-of-band (refocus), but introduces no new pure-function
+  shape for the menu itself — same precedent Task 32's `currentTab`
+  radio-item sync already established for "menu reflects live state,"
+  now triggered by a second event source (refocus) instead of only a
+  click.
+
+### Edge-Case Invariant Guardrails
+
+(Continuing the sequential numbering from Task 34's #102.)
+
+103. **Startup and refocus ask the identical validation question but
+     must never share a recovery path.** On invalid JSON or a schema
+     failure: startup discards the file's content entirely, uses full
+     schema defaults in memory, and immediately overwrites
+     `settings.json` on disk with those valid defaults (self-healing,
+     because there is no prior in-memory state to protect). Refocus
+     discards *only this read* — current in-memory settings, the live
+     UI, the native menu checkmarks, and the file on disk are all left
+     completely untouched, because there *is* prior known-good state
+     worth protecting from a since-corrupted file. Implementing refocus
+     recovery by reusing startup's overwrite-with-defaults behavior (or
+     vice versa) violates this guardrail even if each path is
+     individually "valid" in isolation — asymmetry here is the
+     specification, not a gap to reconcile.
+104. **No partial-merge or per-key recovery exists in this version, for
+     either load path.** A settings file with two valid keys and one
+     invalid/missing/extra key is exactly as invalid as a file that is
+     not JSON at all — `parseSettings` must reject the whole document,
+     never salvage the good two-thirds. Explicitly logged as a
+     `[Pending]` backlog item for future evolution, not attempted here.
+105. **`shell.openPath`'s argument must always be the fixed,
+     main-process-computed `userData`-relative settings path — never a
+     value that originated from, or passed through, the renderer.** Same
+     "renderer never supplies a filesystem-affecting path directly"
+     posture already implicit in this app's existing `dialog.
+     showOpenDialog`-mediated file access — a hypothetical future IPC
+     channel that let the renderer request `shell.openPath` with an
+     arbitrary string would violate this guardrail even though
+     `shell.openPath` itself is a legitimate, already-used-elsewhere-in-
+     Electron-apps capability.
+106. **Toggling a View-menu item must persist the *entire* current
+     settings object, not just the one changed key.** `settings.json`
+     always reflects all three keys' current values after any single
+     toggle — a toggle must never write a partial/single-key patch to
+     disk, since the file format has no defined partial-update
+     semantics and the refocus re-read path assumes a fully-formed
+     document on every valid read.
+107. **A refocus-triggered settings change must reach the live UI and
+     the native menu checkmarks together, atomically from the user's
+     perspective, or not at all.** Partially applying a valid external
+     edit (e.g. updating the in-memory dark-mode flag and the rendered
+     appearance but leaving a stale checkmark on the View menu, or vice
+     versa) is a worse outcome than applying nothing, because it creates
+     a UI that visibly disagrees with itself. This requires the native
+     `MenuItem` references built at menu-construction time to still be
+     reachable at refocus time, not re-derived or reconstructed from
+     scratch.
+108. **A missing `settings.json` is not an error state at any point in
+     the app's lifecycle.** The app must boot, render, and behave fully
+     correctly with defaults in memory even if the file has never been
+     written — the file is only ever created as a side effect of a
+     write (a View-menu toggle, or File → Settings), never as a
+     precondition checked at startup before the app is allowed to
+     proceed.
+
+---

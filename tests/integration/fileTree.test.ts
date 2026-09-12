@@ -37,6 +37,12 @@ vi.mock('electron', () => {
       whenReady: () => Promise.resolve(),
       on: () => {},
       dock: { setIcon: () => {} },
+      // Task 37: app.whenReady()'s callback now computes settingsFilePath
+      // via app.getPath('userData') unconditionally at startup -- this mock
+      // needs a return value so that computation (and the subsequent
+      // loadSettingsAtStartup() read, which resolves to a harmless ENOENT
+      // against this path) doesn't throw and produce an unhandled rejection.
+      getPath: () => '/tmp',
     },
     BrowserWindow: FakeBrowserWindow,
     dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) },

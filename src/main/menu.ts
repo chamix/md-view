@@ -9,6 +9,7 @@ export interface MenuHandlers {
   onToggleShowTreePanel: (checked: boolean) => void;
   onSelectTab: (tab: DocumentTab) => void;
   onOpenHelp: () => void;
+  onOpenSettings: () => void;
 }
 
 export function buildMenuTemplate(
@@ -26,6 +27,8 @@ export function buildMenuTemplate(
           accelerator: 'CmdOrCtrl+Shift+O',
           click: handlers.onOpenFolder,
         },
+        { type: 'separator' },
+        { id: 'menu-settings', label: 'Settings', click: handlers.onOpenSettings },
         { type: 'separator' },
         { id: 'menu-exit', label: 'Exit', role: 'quit' },
       ],

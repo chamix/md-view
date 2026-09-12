@@ -4968,3 +4968,241 @@ ADR-006 covers only the icon exception, per the Lead's decision, and
 must be written verbatim before any other file changes per the brief.
 
 ---
+
+## Task 37 Technical Specification — Configuration Subsystem (settings.json)
+
+See `functional_domain.md`'s Task 37 entry for the domain-level
+rationale, including the explicit, disclosed supersession of Task 8's
+"session-scoped, not persisted" guardrail #6. This section maps that to
+concrete files.
+
+**Confirmed with the user before this spec was finalized:** the
+persisted v1 defaults match today's existing session defaults exactly
+(`Dark Mode: false`, `Show Frontmatter: true`, `Show File Tree: true`)
+— the task brief's own example JSON (`"Dark Mode": true`) was
+illustrative shape only, not a literal instruction to also flip Task
+8's deliberately-chosen off-default.
+
+### The Inward Dependency Rule / SOLID Boundary Scan
+
+- **`src/main/settings.ts` (new) — pure core, zero `fs`/Electron
+  imports.** Same boundary tier as `frontmatter.ts`/`fileTree.ts`: the
+  zod schema, the `SettingsFile` type, `parseSettings(raw: string):
+  SettingsFile | null`, `defaultSettingsFile`, and the two symmetric
+  mapping functions between the on-disk shape and the in-memory
+  `ViewSettings` shape all live here, importable and unit-testable with
+  no Electron runtime required. `parseSettings` owns *both* JSON-syntax
+  failure and schema-shape failure as one pass/fail question — it does
+  not know or care whether it was called from a startup load or a
+  refocus re-read (DIP: the orchestration layer depends on this
+  abstraction's yes/no answer, never the reverse).
+- **`src/main/settingsStore.ts` (new) — I/O orchestration, no
+  Electron import, only `node:fs/promises` + `node:path`.** Same
+  architectural role `watcher.ts` already plays for chokidar: a
+  self-contained I/O module `index.ts` imports and calls, never
+  imported by `settings.ts` itself. This is where the startup-vs-
+  refocus asymmetry (functional_domain.md guardrail #103) actually
+  lives, expressed as two differently-named functions rather than one
+  function with an internal mode flag — each function's own body reads
+  as its own complete recovery policy, not a shared function branching
+  on a caller-supplied enum.
+- **`src/main/index.ts` and `src/main/menu.ts` — outer, peripheral
+  boundary, unchanged in kind.** `app.getPath('userData')`,
+  `shell.openPath`, and the `mainWindow.on('focus', ...)` listener are
+  exactly the class of "CLI shell / file-system I/O / third-party
+  runtime" concern the Inward Dependency Rule reserves for this layer
+  — same tier as the existing `dialog.showOpenDialog`/`clipboard.
+  writeText` calls already here. Neither `settings.ts` nor
+  `settingsStore.ts` ever imports `electron`.
+- **No new `BridgeApi`/`IPC_CHANNELS`/preload surface at all.** Verified
+  against the existing renderer code (`src/renderer/renderer.js`
+  `window.mdview.onViewSettings` handler, lines 249–261): it already
+  applies `darkMode`, `showFrontmatter`-driven visibility, and
+  `showTreePanel` idempotently on every `ViewSettings` broadcast, and
+  `broadcastViewSettings()` already fires once on `did-finish-load`
+  (main/index.ts, unconditional, Task 8) — i.e. "get current settings
+  once on load" and "subscription for settings-changed broadcasts" are
+  both *already* the existing `VIEW_SETTINGS` channel end to end. This
+  is the concrete instance of the brief's "reuse however Dark Mode's
+  initial state reaches the renderer today, don't build a parallel
+  mechanism" instruction: the correct implementation adds zero lines to
+  `preload/api.ts`, `preload/index.ts`, and `renderer.js`. A refocus
+  reconciliation only needs to (a) update `viewSettings` in main and (b)
+  call the existing `broadcastViewSettings()` again — the renderer side
+  requires no new code to react correctly.
+
+### Pattern Application
+
+- **Strategy-shaped recovery, expressed as two named functions, not one
+  flag-branching function**: `loadSettingsAtStartup` (self-healing:
+  overwrites on invalid content) and `rereadSettingsOnFocus`
+  (protective: never touches memory/UI/disk on invalid content) are
+  two distinct policies over the same `parseSettings` question —
+  closer to the GoF Strategy shape (interchangeable algorithms behind
+  a shared question) than an `if (mode === 'startup')` conditional
+  buried inside one function.
+- **Adapter-shaped mapping** between the on-disk Title-Case/`View`-
+  namespaced schema and the existing internal `ViewSettings` camelCase
+  shape (`toPersistedViewSettings`/`fromViewSettings` in `settings.ts`)
+  — the same kind of narrow, explicit translation already implicit
+  wherever this app crosses a schema boundary (e.g.
+  `FileRenderedMessage` vs. the DOM state `renderer.js` derives from
+  it), now made an explicit, named, independently-testable function
+  pair instead of inline reshaping at each call site.
+- **Full-menu-rebuild reconciliation, reusing the existing `applyMenu()`
+  idiom — not a new "hold `MenuItem` references and mutate `.checked`
+  in place" mechanism.** `applyMenu()` already rebuilds the entire
+  native menu from current `viewSettings` on every state change that
+  must be reflected in checkmarks (Task 28's
+  `forceShowTreePanelAndRebuildMenu`, Task 32's `setCurrentTab`) — a
+  freshly-built menu with the right `checked` values baked in is
+  behaviorally identical to mutating a persisted `MenuItem` reference,
+  and introducing a second, parallel "find item by id and set
+  `.checked`" mechanism alongside the existing rebuild-based one would
+  fragment a pattern this codebase has deliberately kept singular since
+  Task 28. **This is a deliberate, disclosed deviation from the task
+  brief's literal "requires keeping references to the built `MenuItems`"
+  wording** — flagged here explicitly for the user's approval alongside
+  this blueprint, rather than silently substituted.
+- **Request-response vs. fire-and-forget, matching existing precedent
+  per call shape**: `writeSettingsFile`/`ensureSettingsFileExists`/
+  `loadSettingsAtStartup`/`rereadSettingsOnFocus` are all `async`
+  functions `index.ts` `await`s internally — none of them need a new
+  IPC shape, since every trigger (menu toggle, focus event, File menu
+  click, app startup) already originates in the main process.
+
+### File-by-file mapping
+
+- **`src/main/settings.ts` (new)**: zod object schema (`z.object({
+  View: z.object({ 'Dark Mode': z.boolean(), 'Show Frontmatter':
+  z.boolean(), 'Show File Tree': z.boolean() }).strict() }).strict()`
+  — `.strict()` at both levels so extra keys fail validation, per
+  functional_domain.md guardrail #104. Exports: `SettingsFile` (zod-
+  inferred type), `defaultSettingsFile`, `parseSettings(raw: string):
+  SettingsFile | null` (catches `JSON.parse` syntax errors internally,
+  folds them into the same null result as a schema failure —
+  `parseSettings` reports one pass/fail outcome, never distinguishes
+  "bad JSON" from "bad shape" to its caller), `toPersistedViewSettings
+  (file: SettingsFile): Pick<ViewSettings, 'darkMode' |
+  'showFrontmatter' | 'showTreePanel'>`, `fromViewSettings(v:
+  Pick<ViewSettings, 'darkMode' | 'showFrontmatter' |
+  'showTreePanel'>): SettingsFile`.
+- **`src/main/settingsStore.ts` (new)**: `loadSettingsAtStartup
+  (filePath: string): Promise<SettingsFile>` — read; on any read
+  failure (including a simply-missing file — functional_domain.md
+  guardrail #108 / the brief's "not required to exist to boot") return
+  `defaultSettingsFile` with **no disk write**; on a successful read
+  that fails `parseSettings`, write `defaultSettingsFile` to disk
+  (self-heal) and return it. `rereadSettingsOnFocus(filePath: string):
+  Promise<SettingsFile | null>` — read; any read failure or
+  `parseSettings` failure returns `null` (discard-this-read, guardrail
+  #103), never writes, never touches anything else. `ensureSettings
+  FileExists(filePath: string): Promise<void>` — existence-check only
+  (`fs.access` or equivalent); writes `defaultSettingsFile` only when
+  the file is truly absent, leaves an existing-but-corrupt file
+  completely untouched (same "never salvage, never silently rewrite
+  what the user might be mid-editing" posture as the refocus path).
+  `writeSettingsFile(filePath: string, settings: SettingsFile):
+  Promise<void>` — `fs.mkdir(dirname, { recursive: true })` then
+  `fs.writeFile(filePath, JSON.stringify(settings, null, 2))` (pretty-
+  printed for human editing, per the brief).
+- **`src/main/menu.ts`**: add `onOpenSettings: () => void;` to
+  `MenuHandlers`; add a `{ id: 'menu-settings', label: 'Settings',
+  click: handlers.onOpenSettings }` item (with a bracketing separator)
+  to the File submenu, between "Open Folder…" and "Exit".
+- **`src/main/index.ts`**:
+  - `const settingsFilePath = path.join(app.getPath('userData'),
+    'settings.json');` computed once inside `app.whenReady()`.
+  - `app.whenReady()`'s callback becomes `async`; before
+    `createWindow()`, `await loadSettingsAtStartup(settingsFilePath)`
+    and merge its `toPersistedViewSettings(...)` result into the
+    existing `viewSettings` default object — preserving the existing
+    "register `did-finish-load` listeners synchronously, before any
+    further await" invariant (Task 2/ADR-001 precedent) by keeping the
+    `await` strictly *before* `createWindow()`/`applyMenu()`, never
+    between them.
+  - `setDarkMode`/`setShowFrontmatter`/`setShowTreePanel` each become
+    `async`, and each now also calls (and awaits) a new
+    `persistCurrentViewSettings()` helper — `writeSettingsFile
+    (settingsFilePath, fromViewSettings(viewSettings))` — after
+    updating `viewSettings` and broadcasting, so a toggle always
+    persists the *entire* current object (guardrail #106), never a
+    single-key patch. `MenuHandlers`'s existing `(checked: boolean) =>
+    void` click-handler type is unaffected — returning a `Promise<void>`
+    from a `void`-typed callback is legal TS and matches how Electron
+    already treats these as fire-and-forget from its own call site.
+  - New `onOpenSettings()` handler: `await ensureSettingsFileExists
+    (settingsFilePath); await shell.openPath(settingsFilePath);` —
+    `shell` is already imported in this file (Task 5).
+  - New `mainWindow.on('focus', onWindowFocus)` registered inside
+    `createWindow()`, where `onWindowFocus` calls
+    `rereadSettingsOnFocus(settingsFilePath)`; on `null`, returns
+    immediately (guardrail #103/#107 — no memory/UI/menu/disk change).
+    On a valid result, compares its three persisted fields against
+    current `viewSettings` (plain field equality — three booleans, no
+    new pure helper needed for this trivial glue check, same tier as
+    the existing inline `if (viewSettings.showTreePanel) return;` guard
+    already in this file) and, only if different, merges it in,
+    `broadcastViewSettings()`, and `applyMenu()` — applying the changed
+    settings to memory, the live UI (via the existing broadcast path),
+    and the menu checkmarks together, in that order, satisfying
+    guardrail #107's "together or not at all."
+  - `menuHandlers()` gains `onOpenSettings`.
+- **`package.json`**: add `zod` to `dependencies` (see ADR-008).
+- **`src/main/help/help.md`** / **`README.md`**: one bullet each
+  documenting the new File → Settings item and that View-menu toggles
+  now persist across relaunches — same "keep the README/help in sync
+  with each new discoverable menu entry" convention every prior menu-
+  affecting task has followed.
+
+### Existing test this task must knowingly invert
+
+`tests/e2e/view-menu.spec.ts` test (d), *"close-and-relaunch proves no
+persistence of view settings"*, currently asserts
+`checkedAfterRelaunch === false` and exists specifically to pin Task
+8's now-superseded guardrail #6. This task must rewrite that test (new
+name, inverted assertion — `checkedAfterRelaunch === true` after
+toggling and relaunching against the same `userDataDir` — the test's
+existing two-sequential-launches-same-profile structure is otherwise
+exactly what this task also needs to prove) rather than leave a stale,
+now-false assertion in the suite or silently delete the coverage.
+
+### Test Plan mapping (see functional_domain.md's Task 37 entry and the
+brief's own Test Plan for the full list)
+
+- `tests/unit/settings.test.ts`: `parseSettings` — valid input; invalid
+  JSON; valid JSON with wrong types / missing keys / extra keys (each
+  a separate case, all → `null`); `toPersistedViewSettings`/
+  `fromViewSettings` round-trip.
+- `tests/integration/settingsStore.test.ts`: real `fs` against a
+  `fs.mkdtempSync` temp dir (same isolation idiom as the e2e
+  `userDataDir` fixture) — startup-corrupt→defaults-in-memory-and-
+  file-rewritten; refocus-corrupt→`null`-returned-and-file-untouched;
+  `ensureSettingsFileExists` creates only when missing, never touches
+  an existing corrupt file; `writeSettingsFile` writes the full,
+  pretty-printed object.
+- `tests/e2e/view-menu.spec.ts` (rewritten test (d), per above) +
+  a new case: toggling a View setting persists the full object to
+  `settings.json` immediately (read the file directly from the
+  fixture's `userDataDir` after the click).
+- `tests/e2e/settings-menu.spec.ts` (new): File → Settings creates the
+  file if missing and calls `shell.openPath` with the exact computed
+  path — spy via `electronApp.evaluate` monkey-patching `shell.openPath`
+  before the click (same "intercept a main-process side effect for
+  assertion" idiom `ui-shell.spec.ts` already uses for the DevTools
+  guard bridge), never launching a real external editor in CI.
+- Fault-injection (per this project's now-standing discipline since
+  Task 4): temporarily break `parseSettings` (e.g. force it to always
+  return the parsed value without schema validation), confirm both the
+  startup-corrupt and refocus-corrupt integration tests go RED, restore
+  via `git apply -R`, confirm both GREEN again — required evidence in
+  the review report, not merely asserted.
+
+### Governance note
+
+Zod is a new dependency requiring an ADR per this project's standing
+convention (chokidar-over-`fs.watch`, highlight.js-over-Shiki
+precedents) — see `ADR-008_md-view.md`, written before any other file
+in this task's scope is touched.
+
+---

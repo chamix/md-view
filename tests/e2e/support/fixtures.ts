@@ -16,18 +16,39 @@ const ENTRY_POINT = path.join(__dirname, '../../../dist/main/index.js');
 export const test = base.extend<{
   electronArgs: string[];
   electronApp: ElectronApplication;
+  userDataDir: string;
 }>({
   electronArgs: [[], { option: true }],
-  electronApp: async ({ electronArgs }, use) => {
-    const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-view-e2e-'));
+  // Exposed as its own fixture (not just a local inside electronApp) so a
+  // test can read files directly out of the same per-user-data directory
+  // the running app itself resolves app.getPath('userData') to -- e.g.
+  // asserting settings.json's on-disk content immediately after a menu
+  // toggle, without adding any new IPC/test-only bridge to production code.
+  userDataDir: async ({}, use) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-view-e2e-'));
+    await use(dir);
+    fs.rmSync(dir, { recursive: true, force: true });
+  },
+  electronApp: async ({ electronArgs, userDataDir }, use) => {
+    // The explicit `--user-data-dir=` switch is load-bearing, not redundant
+    // with the `userDataDir` launch option below: verified directly against
+    // this project's installed Playwright version (1.62.1) that
+    // `_electron.launch({ userDataDir })` never actually forwards that path
+    // to the spawned Electron process (its own Electron.launch()
+    // implementation builds argv from `options.args` only, confirmed by
+    // reading node_modules/playwright-core's bundled source). Without this
+    // switch, app.getPath('userData') inside the launched app silently
+    // resolves to the real, shared, default %APPDATA%/Electron profile
+    // instead of this per-test temp directory -- invisible before Task 37
+    // (nothing was ever persisted to userData to expose it), newly
+    // load-bearing now that settings.json actually lives there.
     const app = await electron.launch({
-      args: [ENTRY_POINT, ...electronArgs],
+      args: [`--user-data-dir=${userDataDir}`, ENTRY_POINT, ...electronArgs],
       env: childEnv,
       userDataDir,
     });
     await use(app);
     await app.close();
-    fs.rmSync(userDataDir, { recursive: true, force: true });
   },
 });
 
