@@ -15,7 +15,13 @@
   "bugs": {
     "url": "https://github.com/chamix/md-view/issues"
   },
-  "keywords": ["markdown", "electron", "desktop", "previewer", "typescript"],
+  "keywords": [
+    "markdown",
+    "electron",
+    "desktop",
+    "previewer",
+    "typescript"
+  ],
   "name": "md-view",
   "main": "dist/main/index.js",
   "scripts": {
@@ -26,6 +32,7 @@
     "test:integration": "vitest run tests/integration",
     "test:e2e": "npm run build && playwright test",
     "test:all": "npm run test:unit && npm run test:integration && npm run test:e2e",
+    "test:coverage": "vitest run tests/unit --coverage",
     "package": "electron-builder"
   },
   "dependencies": {
@@ -39,6 +46,7 @@
     "@playwright/test": "^1.48.0",
     "@types/markdown-it": "^14.1.2",
     "@types/node": "^22.7.0",
+    "@vitest/coverage-v8": "^2.1.9",
     "electron": "^33.0.0",
     "electron-builder": "^25.1.0",
     "esbuild": "^0.24.0",

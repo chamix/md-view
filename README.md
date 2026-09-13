@@ -61,6 +61,7 @@ File → Open Folder… (`Ctrl/Cmd+Shift+O`) is a second way to start: it opens 
 | `npm run test:integration` | Run integration tests (`tests/integration`) |
 | `npm run test:e2e` | Build, then run the Playwright end-to-end tests against the built app |
 | `npm run test:all` | Run unit, integration, and e2e tests in sequence |
+| `npm run test:coverage` | Generate a code coverage report for the unit test suite (`tests/unit`). Informational only — no enforced threshold |
 | `npm run package` | Package the built app with electron-builder |
 
 ## About this project
