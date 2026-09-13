@@ -3,6 +3,7 @@ dist
 release
 test-results
 playwright-report
+/coverage
 
 # editor
 .vscode/*

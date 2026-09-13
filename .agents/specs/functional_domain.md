@@ -2497,3 +2497,53 @@ default.
      proceed.
 
 ---
+
+## Task 38: Unit test coverage reporting
+
+### Abstract Schema Contracts
+
+Not applicable. This task introduces no new incoming data map or output
+state in the application domain — it instruments an existing test run
+with an instrumentation/reporting layer. There is no schema to
+document here; the "input" is the existing `tests/unit/**` suite and
+the `src/**` code it already exercises, and the "output" is a
+human-readable report (terminal text + static HTML), not a value the
+application consumes or branches on.
+
+### Pure Transformation Logic
+
+Not applicable, for the same reason — no new data mutation or
+traversal rule is being added to the domain. The only "transformation"
+in scope is external to the app: V8's own instrumentation turning
+executed-line data into a report, which is bedrock/pytest-adjacent
+tooling behavior, not logic this project authors or owns.
+
+### Edge-Case Invariant Guardrails
+
+(Continuing the sequential numbering from Task 37's #108.)
+
+109. **Coverage reporting is informational-only.** No threshold, no
+     `coverage.thresholds` block, and no CI gate may be introduced as
+     part of this task. A future task may add enforcement, but doing so
+     here would silently change the meaning of a currently-green build.
+110. **Coverage scope is fixed to `tests/unit` only.** `test:coverage`
+     must never execute or fold in `tests/integration` or
+     `tests/e2e` — those suites exercise real `fs`/Electron/Playwright
+     surfaces that `v8` line-coverage over `src/**` was not scoped to
+     represent, and mixing them in would produce a number that looks
+     more authoritative than it is.
+111. **Strictly additive — zero behavior change to existing scripts.**
+     `test`, `test:unit`, `test:integration`, `test:e2e`, and `test:all`
+     must produce byte-identical behavior before and after this task.
+     `test:coverage` is a new, standalone, opt-in script; it must never
+     be folded into any existing script.
+112. **A misleading coverage number is worse than no coverage number.**
+     If a file appears in the generated report that is not genuinely
+     exercised by unit-level tests as understood by this project (e.g.
+     something pulled in only transitively, or a config/build artifact
+     masquerading as source), it must be explicitly excluded from the
+     `coverage.exclude` list and the reason recorded in the task's
+     PR description — never silently left in to inflate or deflate the
+     visible percentage.
+
+---
