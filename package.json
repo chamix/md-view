@@ -15,6 +15,9 @@
   "bugs": {
     "url": "https://github.com/chamix/md-view/issues"
   },
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "keywords": [
     "markdown",
     "electron",
@@ -45,7 +48,7 @@
   "devDependencies": {
     "@playwright/test": "^1.48.0",
     "@types/markdown-it": "^14.1.2",
-    "@types/node": "^22.7.0",
+    "@types/node": "^24.13.4",
     "@vitest/coverage-v8": "^2.1.9",
     "electron": "^33.0.0",
     "electron-builder": "^25.1.0",

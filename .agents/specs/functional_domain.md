@@ -2547,3 +2547,48 @@ tooling behavior, not logic this project authors or owns.
      visible percentage.
 
 ---
+
+## Task 39: Bump CI/build Node.js target from 20 to 24
+
+### Abstract Schema Contracts
+
+Not applicable. No incoming data map or output state exists in this
+task — it retargets which Node.js runtime executes CI/build tooling
+(`actions/setup-node`, local `npm` scripts) and records a minimum
+runtime floor in `package.json#engines`. Nothing here is an
+application-domain schema.
+
+### Pure Transformation Logic
+
+Not applicable, for the same reason — no data mutation or traversal
+rule is introduced. The "transformation" is external tooling
+(Node.js itself, `npm install`'s resolver) picking a different runtime
+and a different `@types/node` version; not logic this project authors.
+
+### Edge-Case Invariant Guardrails
+
+(Continuing the sequential numbering from Task 38's #112.)
+
+113. **The CI/build Node target and Electron's bundled Node runtime are
+     two distinct things and must not be conflated.** Electron 33
+     bundles Node 20.18.0 internally regardless of what version CI
+     uses to install dependencies, run TypeScript, and execute the
+     test suite. This task changes only the latter. The `electron`
+     devDependency, `electronBuilder`/`electron-builder.yml` config,
+     and any Electron-bundled-runtime assumption in source are
+     explicitly untouched — bumping those is a separate, larger task
+     (Task 40/41).
+114. **`engines.node` documents a floor, `setup-node`'s `node-version`
+     pins an exact reproducible version — they serve different
+     purposes and must not silently drift out of sync.** `engines`
+     (`>=24.0.0`) must be satisfied by whatever exact version CI pins;
+     it is not merely a copy of the CI value.
+115. **A major `@types/node` bump (22→24) is a type-only surface risk,
+     not a runtime one.** `@types/node` ships ambient type
+     declarations only — bumping it cannot change runtime behavior,
+     but it can surface new TypeScript compile errors if any source
+     file relied on now-changed/removed type signatures. This must be
+     verified by a clean `npm run build` and full test suite pass
+     after the bump, not assumed safe because "types don't run."
+
+---
