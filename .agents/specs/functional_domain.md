@@ -2592,3 +2592,218 @@ and a different `@types/node` version; not logic this project authors.
      after the bump, not assumed safe because "types don't run."
 
 ---
+
+## Task 40: Electron 33 → 38 checkpoint (first of two Electron migration steps)
+
+### Abstract Schema Contracts
+
+Not applicable. No incoming data map or output state changes — this task
+retargets which Electron runtime (and its bundled Node/Chromium/V8) the
+app ships on. Nothing here is an application-domain schema.
+
+### Pure Transformation Logic
+
+Not applicable, for the same reason as Task 39 — no data mutation or
+traversal rule is introduced. `markdownToHtml`'s transformation
+(`src/main/markdown.ts`) is untouched; this task only changes the host
+runtime it executes under.
+
+### Phase 1 Audit (required deliverable, completed before Phase 2)
+
+Sources consulted: Electron's cumulative breaking-changes doc
+(`electronjs.org/docs/latest/breaking-changes`) and the release blog
+posts `electron-34-0` through `electron-38-0`; a web search for
+`electron-builder`/Electron 38 compatibility issues; and this repo's
+own source (`src/main/index.ts`, `src/main/windowConfig.ts`,
+`src/preload/index.ts`, `src/preload/api.ts`, `src/main/markdown.ts`)
+to check whether any upstream change actually touches code this app
+runs.
+
+**(a) contextIsolation / sandbox / nodeIntegration:** No default or
+behavioral change found in 34.0–38.0 for any of the three. This app
+pins all three explicitly in `windowConfig.ts:8-12`
+(`contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`),
+so even an upstream default change would be moot — confirmed
+unaffected either way.
+
+**(b) preload/BridgeApi boundary and IPC:** Only additive changes
+found: 35.0 added preload-script attachment to Service Workers
+(`registerPreloadScript`/`unregisterPreloadScript`/
+`getPreloadScripts`, plus `ServiceWorkerMain.ipc`) and deprecated the
+old `Session.setPreloads`/`getPreloads` pair this app never calls; 35.0
+also added an experimental `contextBridge.executeInMainWorld()`. None
+of this app's `ipcMain`/`ipcRenderer`/`contextBridge.exposeInMainWorld`
+usage (`src/preload/index.ts`, `src/main/index.ts`) touches any
+deprecated or changed surface — confirmed by grep, no matches for
+`setPreloads`/`getPreloads`/service-worker preloads in `src/**`.
+
+**(c) Clipboard:** Explicitly confirmed none. No clipboard-related
+entry appears in the breaking-changes doc or any of the five release
+blog posts for 34.0–38.0. (35.0 added Chromium-level
+`document.execCommand("paste")` *permission* support, a renderer
+web-platform permission gate, not a change to Electron's `clipboard`
+module API that `src/main/index.ts:489`'s `clipboard.writeText()`
+call uses.) Matches the task's own expectation that clipboard changes
+land in Electron 44, not before.
+
+**(d) markdown-it HTML rendering path / webPreferences defaults
+relevant to `html: false`:** No change found affecting either. The one
+`webPreferences`-adjacent behavioral change in range is 35.0's
+`WebRequestFilter.urls` no longer treating an empty array as "match
+all" — this app never constructs a `WebRequestFilter` (grep confirmed,
+no matches in `src/**`). `markdown-it`'s `html: false` setting
+(`src/main/markdown.ts:15`) is this app's own dependency, not an
+Electron API, and is untouched by any Electron version.
+
+**(e) electron-builder@^25.1.0 compatibility with Electron 38:** No
+documented incompatibility found. `electron-builder` packages whatever
+Electron version is resolved from `devDependencies` rather than
+pinning against specific Electron majors; a GitHub search surfaced no
+open issue reporting an Electron 34-38 packaging failure against
+`electron-builder@25.x`. One adjacent feature — 36.0's "improved ASAR
+integrity checks on Windows" — is an opt-in Electron fuse this app
+does not currently enable (no `@electron/fuses` usage, grep confirmed),
+so it creates no forced `electron-builder` version requirement.
+**Conclusion: no `electron-builder` bump required for this checkpoint**
+— the actual packaging step in Phase 2 is the final confirming check,
+not just the doc search.
+
+**(f) Windows-specific platform-support changes:** None found that
+drop Windows support or alter a Windows capability this app uses. The
+one Windows-specific behavioral change in range is 34.0's fullscreen
+menu-bar visibility change (menu now hides during fullscreen on
+Windows, matching prior Linux behavior) — this app never calls
+`setFullScreen`/uses a fullscreen mode (grep confirmed) and manages its
+menu via `Menu.setApplicationMenu` regardless, so this is inert for
+this codebase. 38.0's platform-support drop (macOS 11) and Ozone/GTK
+default changes are macOS/Linux-only and out of scope per the task
+(CI and release target `windows-latest` only).
+
+**STOP-condition check:** None of (a), (b), or (d) surfaces anything
+requiring relaxation of a stated security invariant, and (f) surfaces
+no Windows platform-support change affecting this app. Per the task's
+own instruction, this clears Phase 1 without an escalation — proceeding
+to Phase 2 (Step 1 below) rather than stopping for the user.
+
+### Edge-Case Invariant Guardrails
+
+(Continuing the sequential numbering from Task 39's #115.)
+
+116. **The Electron bump must change exactly one dependency line's
+     version range** (`electron`: `^33.0.0` → `^38.x.x`, latest 38.x
+     patch) **plus its lockfile consequence** — no unrelated dependency
+     drift, and no `electron-builder` bump unless a genuine
+     incompatibility surfaces during Phase 2's actual packaging step
+     (Phase 1 found none expected).
+117. **`windowConfig.ts`'s three explicit security settings
+     (`contextIsolation: true`, `nodeIntegration: false`,
+     `sandbox: true`) must remain byte-identical after the bump** —
+     this task changes the runtime underneath them, never the settings
+     themselves. A diff touching `windowConfig.ts` is out of scope
+     unless Phase 2 discovers Electron 38 actually requires it (Phase 1
+     found no such requirement).
+118. **The bundled Node runtime must be independently confirmed as
+     22.18.0 post-bump** (via a packaged build's `process.version`, not
+     assumed from the changelog) — Electron's bundled Node is decoupled
+     from the CI/build Node target fixed in Task 39, and conflating the
+     two again would repeat the exact mistake guardrail #113
+     guards against.
+119. **A packaged-build manual verification is not optional for this
+     task.** Unlike a pure source-level dependency bump, Electron
+     itself is the runtime — automated tests running under
+     Playwright/vitest do not prove the *packaged* `electron-builder`
+     installer launches correctly on the new runtime. `npm run package`
+     must be run and the resulting installer manually exercised per
+     this repo's standing practice.
+
+### Post-implementation finding: an Electron-38 e2e race, and why the
+### argv-launch path was ruled out as at-risk
+
+During Phase 2, `tests/e2e/open-file-argv.spec.ts`'s third test ("shows
+a visible error state for a non-.md file selected via the dialog")
+failed reproducibly (3/3, then reproduced independently by the Lead via
+a standalone script, 5/5, then reproduced a third time by the
+independent reviewer via captured-patch fault injection, 5/5). Root
+cause, empirically confirmed by three independent parties — not
+assumed:
+
+The preload's `onFileRendered(callback)` (`src/preload/index.ts`) only
+calls `ipcRenderer.on(FILE_RENDERED, ...)` **when the renderer's own
+bootstrap script invokes it**, not at preload-injection time. The
+failing test calls `electronApp.firstWindow()` then immediately clicks
+the `menu-open` menu item, which drives `openFileViaDialog` →
+`renderFile` → `webContents.send(FILE_RENDERED, ...)` almost instantly.
+Electron 33's slower window-creation/paint pipeline apparently always
+left enough margin for the renderer's bootstrap (which calls
+`window.mdview.onFileRendered(...)`, attaching the real listener) to
+run before that send. Electron 38's faster startup (Chromium 140, plus
+whatever internal `firstWindow()`-adjacent timing changed) closes that
+margin — the IPC message is now sent before the listener exists and is
+silently dropped (Electron does not queue undelivered
+`webContents.send` calls). Proven via a standalone reproduction script:
+5/5 failures without a synchronization wait, 5/5 passes with
+`await window.waitForLoadState('domcontentloaded')` inserted between
+`firstWindow()` and the click.
+
+**Fix applied: test-only.** One line added to the dialog-triggered test
+(`waitForLoadState('domcontentloaded')`). No `src/**` change, no
+behavior change — a real human clicking File > Open always takes far
+longer than the renderer's bootstrap, so this race cannot manifest in
+actual usage, only in a script clicking programmatically within
+milliseconds of window creation.
+
+**Why the argv-launch path (`tests/e2e/open-file-argv.spec.ts`'s first
+two tests) was correctly ruled out as carrying the same risk**, without
+needing the same investigation: `src/main/index.ts`'s argv-triggered
+render is gated behind a `webContents.once('did-finish-load', ...)`
+listener (lines ~437-445), registered synchronously before any
+`await`. `did-finish-load` corresponds to the page's `load` event,
+which by definition cannot fire until the renderer's own synchronous
+bootstrap script (the one that calls `window.mdview.onFileRendered`,
+attaching the real IPC listener) has already executed. The trigger for
+argv-driven rendering and the renderer's listener attachment are both
+downstream of the same page-load milestone — structurally
+race-immune, not race-immune by luck. The dialog/menu-click path has no
+equivalent gate (a menu click is user-driven and can happen at any
+point after the window exists), which is exactly why it was the one
+path exposed once Electron's startup got fast enough to matter.
+
+**For the next checkpoint (Task 41, Electron 38→44):** if any other
+"trigger an action programmatically immediately after `firstWindow()`"
+pattern exists or gets added to the e2e suite, audit it against this
+same question first — is the trigger gated behind `did-finish-load` (or
+an equivalent renderer-ready signal), or does it fire on an ungated,
+user-driven event? Don't re-derive this investigation from scratch;
+the fix pattern (`waitForLoadState('domcontentloaded')` before any
+synthetic user-input trigger fired right after `firstWindow()`) applies
+generally.
+
+### Post-implementation finding: a pre-existing, machine-level
+### `ELECTRON_RUN_AS_NODE` env-var hazard (not caused by this task)
+
+Both the independent reviewer and, initially, the Lead hit a false
+"packaged build won't launch" signal (`exit code 0`, no stdout/stderr,
+no live process) when trying to verify `release/win-unpacked/
+md-view.exe` (guardrail #119). Root cause: this dev machine has
+`ELECTRON_RUN_AS_NODE=1` persisted at the Windows **User**
+environment-variable scope (confirmed via `[System.Environment]::
+GetEnvironmentVariable("ELECTRON_RUN_AS_NODE","User")` → `1`), which
+silently forces any Electron binary launched from a fresh shell/session
+to run as plain Node instead of booting the GUI — this is the exact
+hazard `tests/e2e/support/fixtures.ts` already strips defensively for
+the automated e2e suite (`delete childEnv.ELECTRON_RUN_AS_NODE`), but a
+manual/ad hoc launch (via a fresh Bash or PowerShell session, as a
+reviewer or the Lead would do for exploratory verification) inherits it
+fresh and is not automatically protected. Resolution: explicitly strip
+it in the launching shell/session before a manual launch
+(`Remove-Item Env:\ELECTRON_RUN_AS_NODE` in PowerShell, or
+`env -u ELECTRON_RUN_AS_NODE <cmd>` in Bash) — a plain `unset`/
+`$env:X = $null` in one shell does not fix a *new* shell/session
+spawned afterward, since the User-scope registry value is what gets
+re-inherited at session start, not the parent shell's live env.
+**For any future manual packaged-build verification on this same
+machine** (Task 41 included): remember this is a pre-existing local
+environment quirk, not a regression to chase, and strip the variable
+explicitly rather than assuming a plain launch will work.
+
+---

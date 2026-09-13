@@ -47,6 +47,7 @@ test('shows a visible error state for a non-.md file selected via the dialog, an
   }, nonMdPath);
 
   const window = await electronApp.firstWindow();
+  await window.waitForLoadState('domcontentloaded');
   await electronApp.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open')?.click());
 
   const content = window.locator('#content');
