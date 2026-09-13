@@ -422,7 +422,7 @@ app.whenReady().then(async () => {
   createWindow();
 
   if (shouldSetDockIcon(app.isPackaged, process.platform)) {
-    app.dock.setIcon(path.join(__dirname, 'icon.png'));
+    app.dock?.setIcon(path.join(__dirname, 'icon.png'));
   }
 
   applyMenu();
