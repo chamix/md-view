@@ -399,6 +399,22 @@ packaging — not assumed fine just because Windows was.
   the established fix pattern, reapplied here). Still non-blocking,
   still open, still a candidate for the dedicated contention
   investigation this bucket has requested since Task 18.
+  
+  **Update (Task 42):** recurred again on `npm run test:e2e`'s full
+  2-worker run during this task's manual pre-merge e2e gate — same
+  bucket, a different call site within the same file this time
+  (`ui-shell.spec.ts:158`, "argv launch with sample.md ... status bar
+  shows the real absolute path", `containerBox.width > 800` received
+  `576`). Task 42's diff is docs/metadata-only (`package.json`,
+  `package-lock.json`, `CHANGELOG.md`, `README.md`,
+  `src/main/help/help.md`) — no rendering, layout, or window-sizing
+  code was touched, ruling out a Task 42 regression by construction,
+  not just by absence of reproduction. Isolated rerun confirmed clean:
+  `npx playwright test tests/e2e/ui-shell.spec.ts -g "argv launch:
+  empty-state disappears, status bar shows the real absolute path"
+  --workers=1 --repeat-each=5` → 5/5 passed. Another data point for
+  the still-open, still-unscoped contention investigation first
+  requested by the Task 18 reviewer.
 
 - [Pending] Task 21's `tests/e2e/tree-panel.spec.ts` FI-1 proof (the
   "exactly one `listDirectory` call per folder, ever" caching guardrail)
