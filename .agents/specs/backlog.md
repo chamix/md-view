@@ -385,6 +385,21 @@ packaging — not assumed fine just because Windows was.
   both call sites are spec-mandated verbatim). Reported honestly per
   this task's own instructions rather than treated as a clean pass.
 
+  **Update (Task 41):** recurred again during the Electron 38→44
+  checkpoint's regression run — same test, same check (h),
+  `containerBox.width` received `143.2` (below the `> 800` threshold),
+  2 of 3 isolated reruns. Confirmed via this backlog's own history
+  (Task 16/19/21/22 above) that this is the identical, already-tracked
+  mechanism, not a new Electron-44 regression: the engineer did not
+  reproduce it as a fresh finding requiring investigation, and no
+  `src/**` or `tests/**` change was made for it. Distinguished from the
+  genuine, new, Electron-44-caused regression this same checkpoint did
+  fix (`tree-panel.spec.ts` guardrail #50, a ~2px DPI-rounding
+  overshoot on the height axis — see the Task 29/31 entries above for
+  the established fix pattern, reapplied here). Still non-blocking,
+  still open, still a candidate for the dedicated contention
+  investigation this bucket has requested since Task 18.
+
 - [Pending] Task 21's `tests/e2e/tree-panel.spec.ts` FI-1 proof (the
   "exactly one `listDirectory` call per folder, ever" caching guardrail)
   only exercises the cache-defeat scenario against a non-empty folder
@@ -578,3 +593,28 @@ packaging — not assumed fine just because Windows was.
   for `#main-panel`'s own guardrail #51 conversion) would be a stronger,
   more direct proof than the page-level `document.documentElement`
   comparison this test still relies on.
+
+- [Pending] Task 41's independent review (`review_report_task41.md`)
+  surfaced a new, previously-unlogged e2e flake during the full
+  `npm run test:all` run: `view-menu.spec.ts`'s "(g) toggling a View
+  setting immediately persists the full settings object to
+  settings.json" failed once with `SyntaxError: Unexpected end of JSON
+  input`. Root cause, confirmed by the reviewer via direct source
+  reading: `src/main/settingsStore.ts`'s `writeSettingsFile()` uses a
+  plain `fs.writeFile(filePath, JSON.stringify(...), 'utf8')` with no
+  temp-file+rename atomicity, and the test itself polls
+  `fs.readFileSync` until non-null, then discards that read and calls
+  `fs.readFileSync` a *second*, independent time for the actual
+  `JSON.parse` -- under enough concurrent-process load, the second read
+  can land mid-write, on a partially-flushed file. Reproduced isolated
+  from the rest of the suite at `--repeat-each=8`: 8/8 passed cleanly,
+  confirming this only surfaces under the same full-suite contention
+  pressure already tracked for `ui-shell.spec.ts`/`live-reload.spec.ts`
+  above -- same bucket, new instance, not caused by Task 41's diff
+  (`settingsStore.ts` and the test file are both outside that diff).
+  Non-blocking. If this file is ever touched again, the durable fix
+  would be either (a) make `writeSettingsFile()` atomic (write to a
+  temp path, then `fs.rename()` over the target), which incidentally
+  also hardens the app's real settings-corruption resistance, not just
+  this test, or (b) have the test reuse its own already-successful poll
+  read instead of re-reading the file a second time.
