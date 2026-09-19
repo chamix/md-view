@@ -654,3 +654,42 @@ packaging — not assumed fine just because Windows was.
   read-only during task execution) — if the user wants this made
   structural rather than per-task-brief, that is a governance edit for
   them to make.
+
+- [Open 2026-09-19, Task 43 finding] `settingsStore.ts`'s `writeSettingsFile()`
+  (plain `fs.writeFile`, no temp+rename) is already tracked above as a
+  partial-read hazard. Task 43 additionally measured, on Windows, that
+  `fs.rename()` *over an existing file* fails transiently with EPERM under
+  concurrent reads (`state.json` stress script against the built module: 4
+  errors in 3000 writes with no reader, 25 in 300 with a reader polling every
+  5ms, 2984 in 3000 with a tight read loop) and it caused a real ~1-in-100
+  e2e failure. `appStateStore.ts` now wraps its rename in a bounded
+  `renameWithRetry` (EPERM/EBUSY/EACCES, 6 attempts, 10ms x attempt backoff).
+  Whoever makes `writeSettingsFile` atomic (the durable fix recorded in the
+  Task 41 entry) must NOT use a bare `rename` -- reuse or share that retry,
+  or the atomic fix will trade a partial-read flake for an EPERM one. Also
+  consider extracting the shared atomic-write helper instead of duplicating it
+  (ADR-009 deferred this deliberately). Non-blocking.
+
+- [Open 2026-09-19, Task 43 finding] Four e2e specs still launch Electron
+  themselves with an explicit `ENTRY_POINT` (`dist/main/index.js`) instead of
+  the shared fixture's `electron .`: `tree-panel.spec.ts` (~:336/346),
+  `view-menu.spec.ts` (~:147/165), `window-chrome.spec.ts` (~:129). With an
+  explicit entry script `app.getVersion()` returns Electron's runtime version
+  (`44.3.0`), not `package.json`'s, and the ones that pass only `userDataDir`
+  (not forwarded to the app) write into the shared real `%APPDATA%\Electron`
+  profile -- `state.json` there now contains `{"lastSeenVersion":"44.3.0"}`.
+  Harmless today (no changelog section exists for an Electron version, so no
+  What's New window can appear), but any future version-dependent behavior
+  would silently not fire in those specs, and they leak state into a real
+  profile. Cleanup: route them through the fixture / pass
+  `--user-data-dir` and launch `electron .`. Non-blocking; out of Task 43's
+  scope.
+
+- [Open 2026-09-19, Task 43 finding] `tests/integration/fileTree.test.ts`
+  imports `index.ts` with a mocked `electron` whose `app` has no
+  `getVersion`, so every run prints a swallowed `What's New: unexpected
+  failure: TypeError: ... app.getVersion is not a function` on stderr.
+  Harmless (the fire-and-forget `.catch` in `app.whenReady()` swallows it,
+  which incidentally proves guardrail #140 at the wiring level). Add a
+  `getVersion` stub to that mock the next time the file is touched.
+  Non-blocking.

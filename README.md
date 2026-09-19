@@ -17,6 +17,7 @@ A minimal Electron + TypeScript desktop app for previewing Markdown files.
 - **Folder sidebar** — File → Open Folder… (`Ctrl/Cmd+Shift+O`) opens a folder in a sidebar tree. Clicking a folder lazily expands it; clicking a file opens it in the main pane. The tree auto-expands to and highlights whichever file is currently open. A `.. (up one level)` row navigates to the parent folder. Drag the divider between the tree and the document to resize the sidebar. View → Show File Tree toggles the sidebar on or off. Dropping a folder onto the window also opens it as the tree root, the same as Open Folder…
 - **Preview and Code tabs** — View → Preview and View → Code switch the main pane between the rendered Markdown and a raw-source view with syntax highlighting. The raw view always includes frontmatter, regardless of the Show Frontmatter toggle, which only affects the rendered Preview
 - **Copy raw source** — a copy button in the document header copies the file's raw source, frontmatter included, to the clipboard regardless of which tab is active, with a brief visual confirmation on click
+- **What's New on update** — the first time you launch md-view after an update, a small window shows that version's release notes. Shown once per version, then not again until the next update
 
 ## Stack
 

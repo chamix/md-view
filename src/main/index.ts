@@ -5,7 +5,7 @@ import * as fs from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { defaultWindowOptions } from './windowConfig';
 import { markdownToHtml, highlightMarkdownSource } from './markdown';
-import { baseUrlForFile } from './paths';
+import { baseUrlForFile, changelogPathFor } from './paths';
 import { watchFile } from './watcher';
 import { isExternalHttpUrl } from './linkPolicy';
 import { buildMenuTemplate } from './menu';
@@ -13,6 +13,10 @@ import type { MenuHandlers } from './menu';
 import { extractFrontmatter } from './frontmatter';
 import { shouldSetDockIcon } from './dockIcon';
 import { shouldCreateHelpWindow, buildHelpHtml } from './helpWindow';
+import { shouldCreateWhatsNewWindow, buildWhatsNewMarkdown } from './whatsNewWindow';
+import { prepareWhatsNew, recordVersionSeen } from './whatsNew';
+import type { WhatsNewPorts } from './whatsNew';
+import { loadAppState, writeAppStateFile } from './appStateStore';
 import type { FSWatcher } from 'chokidar';
 import { filterAndSortEntries } from './fileTree';
 import { IPC_CHANNELS } from '../preload/api';
@@ -23,6 +27,11 @@ import { toPersistedViewSettings, fromViewSettings } from './settings';
 let mainWindow: BrowserWindow | null = null;
 let activeWatcher: FSWatcher | null = null;
 let helpWindow: BrowserWindow | null = null;
+let whatsNewWindow: BrowserWindow | null = null;
+// In-flight "seen version" write started by the What's New window's 'closed'
+// handler; the 'will-quit' handler (bottom of file) holds the process until it
+// settles. recordVersionSeen never rejects, so this promise always settles.
+let pendingSeenWrite: Promise<void> | null = null;
 let settingsFilePath: string;
 
 // currentTab is session-scoped only (Task 37 explicitly does NOT persist
@@ -350,6 +359,68 @@ async function openFolderViaDialog(): Promise<void> {
   await establishTreeRoot(result.filePaths[0]);
 }
 
+// Stylesheets shared by the static (Help / What's New) windows.
+function staticWindowCssHrefs(): string[] {
+  return [
+    pathToFileURL(path.join(__dirname, '../renderer/app.css')).href,
+    pathToFileURL(path.join(__dirname, '../renderer/github-markdown-light.css')).href,
+    pathToFileURL(path.join(__dirname, '../renderer/github.css')).href,
+  ];
+}
+
+// Single, shared construction + lockdown of the static, read-only,
+// app-authored windows (Help and What's New) -- security-sensitive, so it
+// lives in exactly one place rather than being copy-pasted per window
+// (functional_domain.md guardrail #142). Callers own their own window
+// variable, single-instance guard, and 'closed' handling; the window is
+// returned before its content finishes loading so they can attach handlers
+// without racing the load.
+function createStaticWindow(): BrowserWindow {
+  const win = new BrowserWindow({
+    ...defaultWindowOptions,
+    webPreferences: {
+      ...defaultWindowOptions.webPreferences,
+    },
+  });
+
+  // Static windows are read-only, app-authored content. On
+  // Windows/Linux, Menu.setApplicationMenu() becomes the default menu for
+  // every BrowserWindow unless that window explicitly clears it — without
+  // this, a static window would expose the full File/View/Help bar and its
+  // live handlers (openFileViaDialog, setDarkMode, setShowFrontmatter, even
+  // onOpenHelp itself) behind what should be a static screen.
+  // Unconditional: removeMenu() is a documented no-op on macOS (menu bar
+  // there is process-wide via Menu.setApplicationMenu, not per-window), so
+  // no platform branch is needed.
+  win.removeMenu();
+
+  win.webContents.on('will-navigate', (event, url) => {
+    event.preventDefault(); // unconditional, before any URL classification — same safety property as the main window
+    if (isExternalHttpUrl(url)) {
+      shell.openExternal(url);
+    }
+  });
+
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (isExternalHttpUrl(url)) {
+      shell.openExternal(url);
+    }
+    return { action: 'deny' };
+  });
+
+  return win;
+}
+
+async function loadStaticHtml(win: BrowserWindow, html: string): Promise<void> {
+  try {
+    await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+  } catch {
+    // Navigation can be aborted (ERR_FAILED) if the window is closed while
+    // the data: URL is still loading — not a real failure to surface, just
+    // a race between window teardown and an in-flight load.
+  }
+}
+
 async function onOpenHelp(): Promise<void> {
   if (!shouldCreateHelpWindow(helpWindow)) {
     helpWindow?.focus();
@@ -358,56 +429,54 @@ async function onOpenHelp(): Promise<void> {
 
   const source = await fs.readFile(path.join(__dirname, 'help', 'help.md'), 'utf8');
   const contentHtml = markdownToHtml(source);
-  const cssHrefs = [
-    pathToFileURL(path.join(__dirname, '../renderer/app.css')).href,
-    pathToFileURL(path.join(__dirname, '../renderer/github-markdown-light.css')).href,
-    pathToFileURL(path.join(__dirname, '../renderer/github.css')).href,
-  ];
-  const html = buildHelpHtml(contentHtml, cssHrefs);
+  const html = buildHelpHtml(contentHtml, staticWindowCssHrefs());
 
-  helpWindow = new BrowserWindow({
-    ...defaultWindowOptions,
-    webPreferences: {
-      ...defaultWindowOptions.webPreferences,
-    },
-  });
-
-  // The Help window is static, read-only, app-authored content. On
-  // Windows/Linux, Menu.setApplicationMenu() becomes the default menu for
-  // every BrowserWindow unless that window explicitly clears it — without
-  // this, the Help window would expose the full File/View/Help bar and its
-  // live handlers (openFileViaDialog, setDarkMode, setShowFrontmatter, even
-  // onOpenHelp itself) behind what should be a static help screen.
-  // Unconditional: removeMenu() is a documented no-op on macOS (menu bar
-  // there is process-wide via Menu.setApplicationMenu, not per-window), so
-  // no platform branch is needed.
-  helpWindow.removeMenu();
-
-  helpWindow.webContents.on('will-navigate', (event, url) => {
-    event.preventDefault(); // unconditional, before any URL classification — same safety property as the main window
-    if (isExternalHttpUrl(url)) {
-      shell.openExternal(url);
-    }
-  });
-
-  helpWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (isExternalHttpUrl(url)) {
-      shell.openExternal(url);
-    }
-    return { action: 'deny' };
-  });
-
-  helpWindow.on('closed', () => {
+  const win = createStaticWindow();
+  helpWindow = win;
+  win.on('closed', () => {
     helpWindow = null;
   });
 
-  try {
-    await helpWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
-  } catch {
-    // Navigation can be aborted (ERR_FAILED) if the window is closed while
-    // the data: URL is still loading — not a real failure to surface, just
-    // a race between window teardown and an in-flight load.
-  }
+  await loadStaticHtml(win, html);
+}
+
+// Task 43: shows the current version's release notes the first time the app
+// launches after an update. Persistence/decision logic lives in whatsNew.ts
+// behind ports; this only binds the concrete paths and Electron window.
+// Every failure is contained (guardrail #140): the caller also .catch()es.
+async function showWhatsNewIfDue(): Promise<void> {
+  const stateFilePath = path.join(app.getPath('userData'), 'state.json');
+  const ports: WhatsNewPorts = {
+    loadState: () => loadAppState(stateFilePath),
+    saveState: (state) => writeAppStateFile(stateFilePath, state),
+    readChangelog: () => fs.readFile(changelogPathFor(__dirname), 'utf8'),
+  };
+
+  const content = await prepareWhatsNew(ports, app.getVersion());
+  if (content === null || !shouldCreateWhatsNewWindow(whatsNewWindow)) return;
+
+  const html = buildHelpHtml(
+    markdownToHtml(buildWhatsNewMarkdown(content.version, content.body)),
+    staticWindowCssHrefs(),
+    `What's New in md-view ${content.version}`
+  );
+
+  const win = createStaticWindow();
+  whatsNewWindow = win;
+  // The version is recorded as seen only when the window is closed, never at
+  // open time (guardrail #139): a crash while it is open leaves the update
+  // un-acknowledged. recordVersionSeen never throws.
+  win.on('closed', () => {
+    whatsNewWindow = null;
+    const write = recordVersionSeen(ports, content.version);
+    pendingSeenWrite = write;
+    // Once settled it no longer needs to hold the quit (see 'will-quit').
+    void write.then(() => {
+      if (pendingSeenWrite === write) pendingSeenWrite = null;
+    });
+  });
+
+  await loadStaticHtml(win, html);
 }
 
 app.whenReady().then(async () => {
@@ -537,6 +606,14 @@ app.whenReady().then(async () => {
       y,
     });
   });
+
+  // Last step, after createWindow() and the did-finish-load registrations
+  // above, so the main window stays firstWindow() and the synchronous-
+  // registration invariant is untouched. Fire-and-forget: What's New must
+  // never block or crash startup or file opening (guardrail #140).
+  showWhatsNewIfDue().catch((error) => {
+    console.warn("What's New: unexpected failure:", error);
+  });
 });
 
 app.on('window-all-closed', () => {
@@ -546,6 +623,33 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', stopWatching);
+
+// Guardrail #139 on the exit paths. The seen-version write is async, and the
+// What's New window can be the last one closed (window-all-closed ->
+// app.quit()) or the app can quit while it is still open (Electron then
+// destroys the window, firing 'closed', after 'before-quit'). In both cases
+// 'will-quit' is the first event after every 'closed' has run, so it is where
+// the process can still be held until the write has landed; otherwise the
+// process may exit first and the notes would replay on every launch. The
+// second app.quit() re-enters this handler with pendingSeenWrite already
+// cleared, so quitting proceeds. A write that has already settled is cleared
+// by its own completion, so it never holds a later, ordinary quit. The wait is bounded so a stalled disk can
+// never make the app unquittable. With no pending write (no What's New
+// window, or Help only) this returns immediately: the normal quit path is
+// untouched.
+const SEEN_WRITE_QUIT_TIMEOUT_MS = 3000;
+app.on('will-quit', (event) => {
+  if (!pendingSeenWrite) return;
+  event.preventDefault();
+  const pending = pendingSeenWrite;
+  pendingSeenWrite = null;
+  const timeout = new Promise<void>((resolve) => setTimeout(resolve, SEEN_WRITE_QUIT_TIMEOUT_MS));
+  // Re-quit on a fresh tick, after this handler has returned to Electron: an
+  // app.quit() issued synchronously from a microtask inside the handler is
+  // ignored while the prevented quit is still being unwound, leaving the app
+  // stuck open.
+  void Promise.race([pending, timeout]).finally(() => setImmediate(() => app.quit()));
+});
 
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) {
