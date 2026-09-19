@@ -399,6 +399,22 @@ packaging — not assumed fine just because Windows was.
   the established fix pattern, reapplied here). Still non-blocking,
   still open, still a candidate for the dedicated contention
   investigation this bucket has requested since Task 18.
+  
+  **Update (Task 42):** recurred again on `npm run test:e2e`'s full
+  2-worker run during this task's manual pre-merge e2e gate — same
+  bucket, a different call site within the same file this time
+  (`ui-shell.spec.ts:158`, "argv launch with sample.md ... status bar
+  shows the real absolute path", `containerBox.width > 800` received
+  `576`). Task 42's diff is docs/metadata-only (`package.json`,
+  `package-lock.json`, `CHANGELOG.md`, `README.md`,
+  `src/main/help/help.md`) — no rendering, layout, or window-sizing
+  code was touched, ruling out a Task 42 regression by construction,
+  not just by absence of reproduction. Isolated rerun confirmed clean:
+  `npx playwright test tests/e2e/ui-shell.spec.ts -g "argv launch:
+  empty-state disappears, status bar shows the real absolute path"
+  --workers=1 --repeat-each=5` → 5/5 passed. Another data point for
+  the still-open, still-unscoped contention investigation first
+  requested by the Task 18 reviewer.
 
 - [Pending] Task 21's `tests/e2e/tree-panel.spec.ts` FI-1 proof (the
   "exactly one `listDirectory` call per folder, ever" caching guardrail)
@@ -618,3 +634,23 @@ packaging — not assumed fine just because Windows was.
   also hardens the app's real settings-corruption resistance, not just
   this test, or (b) have the test reuse its own already-successful poll
   read instead of re-reading the file a second time.
+
+- [Resolved 2026-09-19, governance finding] Reviewer-checklist gap: Task
+  37 shipped a leaked internal scope note (`## Out of scope for this task
+  (explicitly, do not implement)`) in `src/main/help/help.md` — user-facing
+  content bundled into the app — and it went undetected through review and
+  release (v1.0.0, v1.1.0-dev) until Task 42. Root cause: the review
+  confirmed that `help.md` was *in the diff and in `current_scope.json`*,
+  but did not read the file's *content*. Being in scope is not the same as
+  being correct. Task 42 removed the section (grep confirmed no twin under
+  `src/`) and its review read the full `help.md`/`README.md` diffs line by
+  line. Standing reviewer-checklist rule going forward: for any task that
+  touches a shipped prose file (`help.md`, `README.md`, `CHANGELOG.md`, or
+  any text the app renders to users), the reviewer must read the complete
+  diff and the resulting file, not merely confirm the path appears in the
+  scope manifest, and must scan for leaked internal process text (task
+  numbers, "out of scope", "do not implement", spec/guardrail references).
+  Not fixed in `code-reviewer`'s own agent definition (`.claude/**` is
+  read-only during task execution) — if the user wants this made
+  structural rather than per-task-brief, that is a governance edit for
+  them to make.

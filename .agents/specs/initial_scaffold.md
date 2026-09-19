@@ -5515,3 +5515,51 @@ plus its lockfile regeneration, not a rewrite of either file.
 `functional_domain.md` Task 41 section, guardrails #120-124.
 
 ---
+
+## Task 42: v1.1.0 release documentation & housekeeping (Step 1)
+
+No architectural impact: no runtime code, no layer boundary, no interface,
+no GoF pattern applicable (explicitly noted, matching Task 38/39 precedent
+rather than force-fitted). The inward-dependency rule is unaffected because
+no source file is touched.
+
+### Changes
+
+1. `package.json` `version` 1.0.0 → 1.1.0; `package-lock.json` top-level
+   `version` and `packages[""].version` hand-edited to match (two-line
+   edit, no `npm install`).
+2. `CHANGELOG.md`: `## [Unreleased]` → `## [1.1.0] - 2026-09-19`, nothing
+   else touched.
+3. `README.md`: "Status: v1.0.0." → "Status: v1.1.0."; add a
+   `CHANGELOG.md` link to the "About this project" process-link list.
+4. `src/main/help/help.md`: add Folder sidebar section, Preview/Code tabs
+   section, copy-raw-source line, `Ctrl/Cmd+Shift+O` shortcut row; delete
+   the trailing "Out of scope for this task" section.
+
+### Verification
+
+- `git diff --stat` shows exactly the five in-scope files.
+- Reviewer reads the README.md and help.md diffs line by line (guardrail
+  #131) and greps `src/` for `Out of scope for this task`.
+- `npm run test:unit` + `npm run test:integration` still green (CI gate,
+  ADR-007); help.md is loaded by the Help window, so a build sanity check
+  is worthwhile. No TDD RGR loop applies — no testable logic (Task 19/35/36
+  docs-task exemption).
+
+### In-scope files
+
+- `package.json`
+- `package-lock.json`
+- `CHANGELOG.md`
+- `README.md`
+- `src/main/help/help.md`
+
+### Expected output format
+
+Diff (targeted edits), not full rewrites.
+
+### Spec section this closes
+
+`functional_domain.md` Task 42 section, guardrails #125-131.
+
+---

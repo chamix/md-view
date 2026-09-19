@@ -66,7 +66,7 @@ File → Open Folder… (`Ctrl/Cmd+Shift+O`) is a second way to start: it opens 
 
 ## About this project
 
-**Status: v1.0.0.** `md-view` is a small, working tool — and also a live testbed.
+**Status: v1.1.0.** `md-view` is a small, working tool — and also a live testbed.
 
 This app was built end-to-end under a governed, multi-agent development
 process: every feature went through explicit scope contracts, independent
@@ -80,6 +80,7 @@ If you're curious about the process rather than just the app:
 - [`RUN_LOG.md`](.agents/metrics/RUN_LOG.md) — one row per completed task: cycles to green, reviewer verdict, notes
 - [`backlog.md`](.agents/specs/backlog.md) — known follow-ups, tracked openly rather than fixed silently
 - [`.agents/specs/decisions/`](.agents/specs/decisions/) — architecture decision records for the non-obvious calls
+- [`CHANGELOG.md`](CHANGELOG.md) — release history: what changed in each version
 
 This is part of a broader learning project comparing agentic development
 workflows — this app is the first thing built under the current system,

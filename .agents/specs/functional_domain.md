@@ -2998,3 +2998,52 @@ Phase 2 (Step 1 below) rather than stopping for the user.
      anything upstream in this task's own diff.
 
 ---
+
+## Task 42: v1.1.0 release documentation & housekeeping (Step 0)
+
+Pure documentation/metadata task. No application behavior, schema, or
+transformation logic changes; the "domain" here is the *accuracy and
+consistency of shipped prose and version metadata* relative to behavior
+that already exists.
+
+### Abstract contracts
+
+- **Release identity:** one version string (`1.1.0`) must be the same
+  everywhere it is declared: `package.json` `version`, `package-lock.json`
+  top-level `version`, `package-lock.json` `packages[""].version`, the
+  CHANGELOG heading for the release, and the README "Status" line.
+- **User-facing help content** (`src/main/help/help.md`) is shipped to end
+  users. It may only describe behavior that already exists and is already
+  documented in README.md; it must contain no internal task/process notes.
+
+### Invariants / guardrails
+
+125. **All five version declarations above agree on `1.1.0`.** The lockfile
+     is hand-edited on those two fields only — no `npm install`, no
+     dependency-tree churn (Task 13 sync-commit precedent).
+126. **CHANGELOG.md's `## [Unreleased]` heading becomes
+     `## [1.1.0] - 2026-09-19`; every line beneath it is byte-identical
+     to before.** No new empty `[Unreleased]` section is added (premature
+     until Task 43 lands its own entry). The date must equal the actual
+     tag day; corrected in the tagging commit if it differs.
+127. **help.md restates, never invents.** Folder-sidebar, Preview/Code-tab,
+     and copy-raw-source descriptions must each be traceable to an existing
+     README.md feature bullet. The Code tab must be documented as always
+     showing frontmatter regardless of the Show Frontmatter toggle.
+128. **help.md's keyboard-shortcuts table gains
+     `Ctrl/Cmd+Shift+O | Open a folder`.**
+129. **help.md contains no leaked task-scope text.** The entire trailing
+     `## Out of scope for this task (explicitly, do not implement)` section
+     is deleted; a repo-wide grep (excluding node_modules) for
+     `Out of scope for this task` under `src/` returns no matches
+     afterward. (Confirmed pre-task: help.md:35 is the only occurrence.)
+130. **No file outside the five in-scope files changes.** In particular no
+     `src/main/index.ts`/`menu.ts`/other source, no ADR, and no
+     "What's New on update" work (Task 43).
+131. **Reviewer-checklist gap (governance finding).** Task 37 shipped a
+     leaked scope note in help.md because review confirmed the file
+     *appeared in the diff / scope manifest* without reading its content.
+     For shipped prose files, the review must read the full diff line by
+     line. To be recorded in backlog.md and the RUN_LOG entry at close.
+
+---
