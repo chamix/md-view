@@ -6,13 +6,19 @@ export function shouldCreateHelpWindow(existing: DestroyableWindow | null): bool
   return existing === null || existing.isDestroyed();
 }
 
-export function buildHelpHtml(contentHtml: string, cssHrefs: string[]): string {
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// Shared static-window HTML shell: the What's New window reuses it with its
+// own title rather than duplicating the template.
+export function buildHelpHtml(contentHtml: string, cssHrefs: string[], title: string = 'md-view Help'): string {
   const links = cssHrefs.map((href) => `<link rel="stylesheet" href="${href}">`).join('\n    ');
   return `<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>md-view Help</title>
+    <title>${escapeHtml(title)}</title>
     ${links}
   </head>
   <body>

@@ -5563,3 +5563,202 @@ Diff (targeted edits), not full rewrites.
 `functional_domain.md` Task 42 section, guardrails #125-131.
 
 ---
+
+## Task 43: "What's New" release notes on update (Step 1)
+
+### The Inward Dependency Rule
+
+```
+[ Domain: pure, no fs/Electron ]     changelog.ts   appState.ts
+                ^
+[ Use case: Electron-free, ports ]   whatsNew.ts   (domain + port interfaces only)
+                ^
+[ Adapters ]                         appStateStore.ts (node:fs)
+                                     whatsNewWindow.ts / helpWindow.ts (pure HTML + decision)
+                ^
+[ Composition root / Electron ]      index.ts (paths, BrowserWindow, app.getVersion())
+```
+
+Dependencies point inward only. `changelog.ts`/`appState.ts` import nothing
+but `zod`; `whatsNew.ts` imports them and declares the ports it needs;
+`appStateStore.ts` implements persistence with `node:fs`; only `index.ts`
+touches Electron and binds concrete paths.
+
+### SOLID Boundary Scan
+
+- **SRP:** extraction (changelog.ts), state schema + announcement decision
+  (appState.ts), state persistence (appStateStore.ts), the show/skip/record
+  workflow (whatsNew.ts), HTML shell + window decision (whatsNewWindow.ts,
+  helpWindow.ts), Electron wiring (index.ts). One reason to change each.
+- **OCP:** `buildHelpHtml(contentHtml, cssHrefs, title = 'md-view Help')` gains
+  an optional third parameter; every existing call site and test stays valid.
+- **DIP:** `whatsNew.ts` receives a `WhatsNewPorts` object (`loadState`,
+  `saveState`, `readChangelog`) instead of importing `fs`, so the workflow is
+  unit-tested with in-memory fakes. `appStateStore.ts` is the concrete adapter,
+  wired in `index.ts`.
+- **ISP:** three narrow single-function ports, not a store-shaped interface.
+- **LSP:** n/a (no inheritance introduced).
+
+### Pattern Application
+
+- **Ports & Adapters / Strategy (function-valued ports)** for `whatsNew.ts` I/O.
+- **Facade:** `prepareWhatsNew()` / `recordVersionSeen()` hide the
+  read-state / decide / read-changelog / extract sequence behind two calls
+  `index.ts` composes.
+- **Parameterization over inheritance** (composition rule): one HTML shell,
+  varying `title`.
+- **Extract shared lockdown helper** (`openStaticWindow(html)` in index.ts):
+  the `removeMenu()` + `will-navigate` + `setWindowOpenHandler` block is
+  security-sensitive; copy-pasting ~30 lines would let the two windows drift.
+  `onOpenHelp` is refactored to use it (behavior identical; covered by
+  help-menu.spec.ts (a)-(e)). Alternative: leave Help untouched and duplicate
+  -- rejected for drift risk; this is the fallback if `onOpenHelp` must not be
+  touched.
+
+### Concrete Plan
+
+**Pure modules**
+1. `src/main/changelog.ts` -- `extractChangelogSection(text, version): string | null`.
+   Split on `/\r?\n/`; heading = `/^##\s+\[([^\]]+)\]/`; compare captured token
+   with `===`; slice to the next `## [` heading or EOF; trim blank
+   leading/trailing lines. Guardrails #132-134.
+2. `src/main/appState.ts` -- zod `.strict()` schema, `AppState`,
+   `parseAppState(raw)`, `decideWhatsNew(last: string | null, current: string)`
+   -> `'first-launch' | 'up-to-date' | 'announce'`. #135, #137/#138/#144 (decision).
+3. `src/main/paths.ts` -- add `changelogPathFor(mainDir)` =
+   `path.join(mainDir, '..', 'CHANGELOG.md')`, so `index.ts` (`__dirname`) and
+   the dist test share one formula (resolves to `dist/CHANGELOG.md`).
+
+**Use case**
+4. `src/main/whatsNew.ts` -- `prepareWhatsNew(ports, currentVersion): Promise<{ version, body } | null>`
+   (first-launch -> `saveState(current)` in try/catch, return null; up-to-date
+   -> null, no write; announce -> `readChangelog` + extract in try/catch,
+   blank/missing -> warn + null, **no state write**) and
+   `recordVersionSeen(ports, version)` (catches + warns). #137-140, #144.
+
+**I/O adapter**
+5. `src/main/appStateStore.ts` -- `loadAppState(filePath): Promise<AppState | null>`
+   (missing/unreadable/invalid -> null; never throws, never writes) and
+   `writeAppStateFile(filePath, state)`: `mkdir -p`, `writeFile` to a unique
+   temp name in the same directory, `rename` over the target, best-effort `rm`
+   of the temp on failure then rethrow. #141.
+
+**Window layer**
+6. `src/main/helpWindow.ts` -- optional `title` param (default preserves
+   today's output); HTML-escape the title inside the builder.
+7. `src/main/whatsNewWindow.ts` -- `shouldCreateWhatsNewWindow(existing)` (same
+   contract as the Help one; a deliberate separate one-liner -- two windows may
+   diverge, and only two exist) and `buildWhatsNewMarkdown(version, body)` =
+   heading `What's New in md-view <version>` + blank line + body. HTML via
+   `buildHelpHtml(..., title)`.
+8. `src/main/index.ts` -- extract `openStaticWindow(html)`; `onOpenHelp` uses it;
+   new `showWhatsNewIfDue()` fire-and-forget (`.catch` -> warn) as the *last*
+   step of `app.whenReady()` (after `createWindow()` and the `did-finish-load`
+   registrations, preserving the synchronous-registration invariant and keeping
+   the main window as `firstWindow()`). On the What's New window's `closed`
+   event: `recordVersionSeen`. Binds `app.getVersion()`, `userData/state.json`,
+   `changelogPathFor(__dirname)`.
+
+**Packaging**
+9. `package.json` build script: append
+   `require('fs').copyFileSync('CHANGELOG.md','dist/CHANGELOG.md')` to the
+   existing `node -e` chain (explicit copy, no glob). #143.
+
+**Docs**
+10. `ADR-009_md-view.md` (Lead-authored after approval, before the scope
+    manifest; ADR-008 structure): separate `state.json` chosen; "extend
+    settings.json" rejected (user-facing/hand-editable; strict schema; whole-file
+    rewrite on every toggle couples bookkeeping to preferences; a user resetting
+    their settings would replay old notes); also rejected `electron-store` (new
+    dependency for one string). Documents the atomic write.
+11. `CHANGELOG.md`: add `## [Unreleased]` with an "Added" bullet (Task 42
+    guardrail #126 deferred the Unreleased section "until Task 43 lands its own
+    entry").
+
+### Test Plan mapping (TDD Red-Green-Refactor, 3-cycle stop)
+
+Unit (`tests/unit/`)
+- `changelog.test.ts` (#132-134): middle/first/last(EOF) section; missing ->
+  null; `1.1` vs `1.1.0`, `1.1.0` vs `1.1.01`/`11.1.0`/`1x1y0`; CRLF; `###`
+  doesn't end a section; `## [Unreleased]` ends the previous; heading without
+  date; empty text / no headings / preamble only; empty body -> `''`;
+  duplicate heading -> first wins; never throws.
+- `appState.test.ts` (#135 + decision): valid; invalid JSON; array/null/string
+  JSON; missing key; extra key; number / empty-string value;
+  `decideWhatsNew` first-launch / up-to-date / announce / downgrade (announce).
+- `whatsNew.test.ts` (#137-140, #144; in-memory fakes): first launch saves
+  current + null; corrupt state (loadState -> null) same; first-launch save
+  throws -> resolves null; up-to-date -> null and `saveState` not called;
+  announce returns only the current version's body while older skipped
+  sections exist; `readChangelog` rejects -> null, no save; version not found
+  -> null, no save; blank section -> null, no save; `recordVersionSeen` saves;
+  its save rejecting doesn't throw.
+- `whatsNewWindow.test.ts`: `shouldCreateWhatsNewWindow` null/destroyed/live;
+  `buildWhatsNewMarkdown`.
+- `buildHelpHtml.test.ts` (append): default title still `md-view Help`; custom
+  title used; title with `<` `&` `"` escaped. Existing 3 tests untouched.
+- `changelogPath.test.ts`: `changelogPathFor('/x/dist/main')` -> `/x/dist/CHANGELOG.md`.
+
+Integration (`tests/integration/`)
+- `appStateStore.test.ts` (temp dirs): load missing/corrupt/wrong-shape -> null
+  and no write; valid -> state; write creates parent dir + round-trips;
+  overwrite replaces; no `.tmp` leftovers after success; write onto a directory
+  target rejects and leaves no `.tmp` orphan; an existing valid `state.json` is
+  unchanged after a failed write. (A concurrent reader/writer stress test is
+  welcome only if stable under `--repeat-each`; no flaky test to police a flake.)
+- `dist-changelog.test.ts` (**built-output proof, #143**): needs `dist/` built
+  (CI already runs `npm run build` first; fail with an explicit "run npm run
+  build" message otherwise). Reads `changelogPathFor(<repo>/dist/main)` -- the
+  same function `index.ts` uses -- and calls the *compiled*
+  `dist/main/changelog.js` extractor with `package.json`'s version, asserting a
+  non-null, non-blank body; also asserts `dist/CHANGELOG.md` equals `CHANGELOG.md`.
+
+E2E (`tests/e2e/whats-new.spec.ts`; manual gate per ADR-007; runs against `dist/`)
+- `fixtures.ts` gains an `initialUserDataFiles` option fixture written into
+  `userDataDir` before launch.
+- Fresh userData -> exactly 1 window; `state.json` == current version.
+- Seeded `lastSeenVersion` == current -> exactly 1 window; `state.json` unchanged.
+- Seeded `0.0.1` -> a 2nd window with a title containing the current version and
+  the current section's content; older-version content absent; **`state.json`
+  still `0.0.1` while the window is open and the current version after it is
+  closed** (#139); no menu (same probe as help-menu.spec (e)); no
+  `window.mdview` bridge.
+- Sanity: `app.getVersion()` (via `electronApp.evaluate`) equals `package.json`'s
+  version when launched as `electron dist/main/index.js`. **Verify, don't
+  assume**: if Electron reports its own runtime version for an explicit entry
+  script the feature would silently never match in e2e -- report back.
+- Existing e2e suites are unaffected: a fresh userData dir hits the silent
+  first-launch path (no extra window).
+
+### In-scope files
+
+- `src/main/changelog.ts` (new), `appState.ts` (new), `appStateStore.ts` (new),
+  `whatsNew.ts` (new), `whatsNewWindow.ts` (new)
+- `src/main/helpWindow.ts`, `src/main/paths.ts`, `src/main/index.ts`
+- `package.json` (build script only)
+- `CHANGELOG.md` (`[Unreleased]` entry only)
+- `tests/unit/changelog.test.ts`, `appState.test.ts`, `whatsNew.test.ts`,
+  `whatsNewWindow.test.ts`, `changelogPath.test.ts`, `buildHelpHtml.test.ts`
+- `tests/integration/appStateStore.test.ts`, `dist-changelog.test.ts`
+- `tests/e2e/whats-new.spec.ts`, `tests/e2e/support/fixtures.ts`
+- `.agents/specs/decisions/ADR-009_md-view.md` (Lead-authored, before the manifest)
+
+Explicitly NOT touched: `settingsStore.ts`, `settings.ts`, `menu.ts`,
+`electron-builder.yml`, `.github/**`, `README.md`, `help.md`.
+
+### Expected output format
+
+New files: full content. Existing files: diff (targeted edits).
+
+### Spec section this closes
+
+`functional_domain.md` Task 43 section, guardrails #132-144.
+
+### Governance note
+
+`CHANGELOG.md` is shipped prose rendered to end users, so the standing
+reviewer rule from the Task 42 governance finding applies: the reviewer reads
+the full CHANGELOG diff and resulting file and scans for leaked internal
+process text.
+
+---

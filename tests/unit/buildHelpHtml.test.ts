@@ -30,3 +30,21 @@ describe('buildHelpHtml (pure HTML templating)', () => {
     expect(html.startsWith('<!DOCTYPE html>')).toBe(true);
   });
 });
+
+describe('buildHelpHtml title parameter', () => {
+  it('defaults to "md-view Help" when no title is given', () => {
+    expect(buildHelpHtml('<p>x</p>', [])).toContain('<title>md-view Help</title>');
+  });
+
+  it('uses a custom title when given', () => {
+    expect(buildHelpHtml('<p>x</p>', [], "What's New in md-view 1.2.0")).toContain(
+      "<title>What's New in md-view 1.2.0</title>"
+    );
+  });
+
+  it('HTML-escapes & < > and " in the title', () => {
+    const html = buildHelpHtml('<p>x</p>', [], 'a & <b> "c"');
+    expect(html).toContain('<title>a &amp; &lt;b&gt; &quot;c&quot;</title>');
+    expect(html).not.toContain('<b>');
+  });
+});

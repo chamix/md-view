@@ -3047,3 +3047,101 @@ that already exists.
      line. To be recorded in backlog.md and the RUN_LOG entry at close.
 
 ---
+
+## Task 43: "What's New" release notes on update (Step 0)
+
+Depends on Task 42 (merged to main as #8): the `## [1.1.0] - 2026-09-19`
+CHANGELOG heading and `package.json` version `1.1.0` exist to build against.
+
+### Abstract contracts
+
+- **Changelog document** (input): an opaque text made of zero or more
+  *release sections*. A section = a heading line `## [<version>]` (optionally
+  followed by ` - <date>`) plus every following line up to, but excluding,
+  the next line that begins a `## [` heading, or end of text. Text before the
+  first section (title/preamble) belongs to no section.
+- **Release section body** (output): the section's lines *after* its heading,
+  with leading/trailing blank lines removed. Absent ("not found") is a normal,
+  first-class outcome, not an error.
+- **AppState** (internal bookkeeping): `{ lastSeenVersion: non-empty string }`,
+  nothing else. It records the last version whose notes the user actually
+  saw (or that was silently adopted on a fresh install). It is *not* a
+  user setting and is never presented for editing.
+- **Announcement decision** (pure): from `(lastSeenVersion | none,
+  currentVersion)` yield exactly one of `first-launch` | `up-to-date` |
+  `announce`.
+
+### Pure transformation logic
+
+- `extractSection(changelogText, version) -> body | null`: line-oriented scan;
+  a heading matches iff its bracketed token equals `version` **exactly**
+  (string equality, never substring/regex-of-the-version). First match wins.
+- `parseAppState(raw) -> AppState | null`: one pass/fail question; bad JSON
+  and bad shape are indistinguishable to the caller (same posture as #104).
+- `decide(last, current)`: `none` -> `first-launch`; `last === current` ->
+  `up-to-date`; otherwise `announce` (inequality, not ordering).
+
+### Invariants / guardrails
+
+132. **`extractSection` never throws** on any string input (empty text,
+     no headings, CRLF, malformed headings). "Not found" -> `null`.
+133. **Exact-token version match.** `1.1` never matches `[1.1.0]`; `1.1.0`
+     never matches `[1.1.01]`, `[11.1.0]` or `[1x1y0]`. Regex metacharacters
+     in the version are never interpreted.
+134. **Section boundaries.** A section ends at the next `## [` heading of
+     *any* kind (including `## [Unreleased]`), or EOF. `###`-and-deeper
+     headings inside a section do not end it. CRLF and LF are equivalent.
+     Known accepted limitation: a `## [` line inside a fenced code block in
+     the changelog would be read as a heading (not present in this project's
+     Keep-a-Changelog file; not guarded against).
+135. **AppState is strict and all-or-nothing** (same posture as #103/#104):
+     unknown key, missing key, wrong type, empty string, non-object JSON, or
+     invalid JSON -> entirely invalid (`null`); no partial recovery.
+136. **Separate persistence file.** AppState lives in `state.json` in the
+     same `userData` directory as `settings.json`, never as a key inside
+     `settings.json` (settings.json is user-facing/hand-editable and its
+     strict schema would reject an extra key; #106 rewrites it whole on every
+     toggle). Rationale recorded in ADR-009.
+137. **First launch is silent.** No/invalid/unreadable `state.json` => fresh
+     install semantics: record the current version, show nothing. (A corrupt
+     file is treated as absent: overwrite with current, show nothing --
+     analogous to #103 self-healing; we cannot know what the user has seen,
+     and re-nagging is the worse failure.)
+138. **Only the current version is ever announced**, never a concatenation of
+     skipped versions' sections, regardless of how many releases were
+     skipped.
+139. **"Seen" means seen.** `lastSeenVersion` is written only when the
+     What's New window is *closed* -- never at open time -- so a crash
+     between open and close leaves the update un-acknowledged. Corollary: if
+     nothing was shown (changelog unreadable, section missing/blank), nothing
+     is recorded as seen; the next launch simply tries again silently.
+140. **What's New failures never block the app** (mirrors #108). Unreadable
+     `CHANGELOG.md`, section not found, blank section, `state.json` write
+     failure on first launch, or write failure on close => `console.warn`
+     at most; the app boots and opens files exactly as if the feature did
+     not exist.
+141. **Atomic state writes.** `state.json` is replaced by write-to-temp-in-
+     the-same-directory + `rename`; a reader never observes a partial file,
+     and a failed write leaves any existing `state.json` byte-identical and
+     leaves no orphan temp file. (Deliberately *not* inherited from
+     `writeSettingsFile`'s non-atomic pattern -- backlog.md, Task 41 entry.)
+     `settingsStore.ts` itself is untouched by this task.
+142. **The window is static, non-modal, menu-less, and link-locked** exactly
+     like the Help window: `removeMenu()`, `will-navigate` always prevented,
+     `setWindowOpenHandler` always denies, external http(s) links go to the
+     OS browser, default sandboxed `webPreferences`, no preload bridge, at
+     most one instance.
+143. **Packaged-app reachability.** The changelog the app reads at runtime
+     must exist inside the shipped `dist/` tree (`electron-builder.yml` ships
+     only `dist/**/*`). Proof must come from the built `dist/` output, not the
+     source tree.
+144. **Up-to-date launches perform no disk write and open no window.**
+
+### Explicitly out of scope (not built without asking)
+
+- A manual "Help -> What's New" menu entry (open question: re-render current
+  version vs the last-shown one).
+- Browsing older versions' notes.
+- Making `writeSettingsFile` atomic (tracked in backlog.md).
+
+---
