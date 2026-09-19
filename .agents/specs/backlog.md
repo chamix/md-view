@@ -618,3 +618,23 @@ packaging — not assumed fine just because Windows was.
   also hardens the app's real settings-corruption resistance, not just
   this test, or (b) have the test reuse its own already-successful poll
   read instead of re-reading the file a second time.
+
+- [Resolved 2026-09-19, governance finding] Reviewer-checklist gap: Task
+  37 shipped a leaked internal scope note (`## Out of scope for this task
+  (explicitly, do not implement)`) in `src/main/help/help.md` — user-facing
+  content bundled into the app — and it went undetected through review and
+  release (v1.0.0, v1.1.0-dev) until Task 42. Root cause: the review
+  confirmed that `help.md` was *in the diff and in `current_scope.json`*,
+  but did not read the file's *content*. Being in scope is not the same as
+  being correct. Task 42 removed the section (grep confirmed no twin under
+  `src/`) and its review read the full `help.md`/`README.md` diffs line by
+  line. Standing reviewer-checklist rule going forward: for any task that
+  touches a shipped prose file (`help.md`, `README.md`, `CHANGELOG.md`, or
+  any text the app renders to users), the reviewer must read the complete
+  diff and the resulting file, not merely confirm the path appears in the
+  scope manifest, and must scan for leaked internal process text (task
+  numbers, "out of scope", "do not implement", spec/guardrail references).
+  Not fixed in `code-reviewer`'s own agent definition (`.claude/**` is
+  read-only during task execution) — if the user wants this made
+  structural rather than per-task-brief, that is a governance edit for
+  them to make.
