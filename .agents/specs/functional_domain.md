@@ -2807,3 +2807,194 @@ environment quirk, not a regression to chase, and strip the variable
 explicitly rather than assuming a plain launch will work.
 
 ---
+
+## Task 41: Electron 38 → 44 checkpoint (second of two Electron migration steps)
+
+### Abstract Schema Contracts
+
+Not applicable — same reasoning as Task 40. No incoming data map or
+output state changes; this task only retargets the Electron runtime.
+
+### Pure Transformation Logic
+
+Not applicable, for the same reason as Task 40. `markdownToHtml`'s
+transformation (`src/main/markdown.ts`) is untouched.
+
+### Phase 1 Audit (required deliverable, completed before Phase 2)
+
+Sources consulted: Electron's cumulative breaking-changes doc
+(`electronjs.org/docs/latest/breaking-changes`, filtered to the 39.0–44.0
+range), the `electron-39-0` through `electron-44-0` release blog posts,
+`npm view electron dist-tags`/`versions`, `npm view electron-builder
+dist-tags`/`versions`, electron-builder's GitHub releases, and this
+repo's own source (`src/main/index.ts`, `src/main/windowConfig.ts`,
+`src/preload/index.ts`, `src/preload/api.ts`, `src/renderer/renderer.js`,
+`src/main/markdown.ts`, `electron-builder.yml`, `.github/workflows/ci.yml`,
+`tests/e2e/*.spec.ts`, `tests/e2e/support/*.ts`) — re-run independently
+against 39–44, not assumed carried over from Task 40's 34–38 audit.
+
+**(a) contextIsolation / sandbox / nodeIntegration:** No default change
+found in 39.0–44.0. One adjacent behavioral change exists — 44.0's
+"workers created by subframes need `nodeIntegrationInSubFrames`" — but
+this app has no `<iframe>`/subframe usage anywhere in `src/**` (grep
+confirmed; the sole `<iframe>` in the repo is inert test fixture markup
+in `tests/test-content/test-fixture.md`, stripped by `markdown-it`'s
+`html: false` per guardrail (d) below) and creates no Web Workers (grep
+confirmed, no `new Worker` in `src/**`). `windowConfig.ts:8-12`'s three
+explicit settings (`contextIsolation: true`, `nodeIntegration: false`,
+`sandbox: true`) remain moot-but-unaffected either way, same as Task 40.
+
+**(b) preload/BridgeApi/IPC:** No change found touching this app's
+actual usage. 44.0's "preload scripts only run in DevTools extension
+frames hosted by DevTools" is inert — this app has no DevTools
+extensions. Confirmed by re-reading `src/preload/index.ts` end-to-end:
+all nine `BridgeApi` methods route through plain
+`ipcRenderer.on`/`.send`/`.invoke` and `contextBridge.exposeInMainWorld`,
+none of which changed shape in 39–44.
+
+**(c) Clipboard — live this time.** Electron 44.0 ships two clipboard
+changes: (i) **Removed:** the `clipboard` module is no longer available
+in the renderer process at all (closing the security gap RFC 0019
+targeted; renderers must use `navigator.clipboard` or a preload-exposed
+helper), and (ii) the *main-process* `clipboard` module API is
+rearchitected to align with the W3C Clipboard API (async
+read/write, `ClipboardItem`) — this second change does not affect
+`clipboard.writeText()`, which remains present and synchronous (40.0
+already deprecated, not removed, renderer-side clipboard access as the
+lead-up to this).
+
+Re-verified, not assumed carried over: `grep -rn clipboard src/renderer
+src/preload` returns **zero code matches** — the only hits are two
+comment lines in `src/renderer/renderer.js` (156-157, 162) describing
+the *feature*, not calling any clipboard API. The only `clipboard`
+symbol import/usage anywhere in `src/**` is
+`src/main/index.ts:1`'s import and `:489`'s
+`clipboard.writeText(text)` call, inside the `ipcMain.handle` for
+`IPC_CHANNELS.COPY_RAW_SOURCE` (`src/main/index.ts:487-491`). The full
+path is: renderer click → `window.mdview.copyRawSource(text)`
+(`src/preload/index.ts:47-49`, a plain `ipcRenderer.invoke`, no
+clipboard symbol) → main process `ipcMain.handle` → `clipboard.writeText`.
+This is genuinely main-process-only today. **Electron 44's renderer-side
+`clipboard` removal has no effect on this app** — there is no
+architecture to change, and no STOP-condition escalation is triggered by
+(c).
+
+**(d) markdown-it `html:false` / webPreferences:** No change found.
+`markdown-it`'s `html: false` (`src/main/markdown.ts:15`, unchanged) is
+this app's own dependency, orthogonal to any Electron version. No
+39–44 breaking-changes entry touches `webPreferences` defaults relevant
+to this setting.
+
+**(e) electron-builder@^25.1.0 (installed: 25.1.8) compatibility with
+Electron 44:** The one real breaking change in this space — "fail fast
+on Windows ia32 / Linux armv7l with Electron 44+, expand arch 'all' to
+x64+arm64" — ships only in `electron-builder@27.0.0-alpha.6` onward
+(confirmed via `npm view electron-builder versions`: stable branch tops
+out at `26.16.1`/dist-tag `latest`→`26.15.3`; `27.x` is alpha-only,
+dist-tag `next`). It does not exist in any 25.x or 26.x release. This
+repo's installed `25.1.8` predates the alpha entirely, and
+`electron-builder.yml`'s `win.target` (`nsis`, `portable`) sets no
+`arch`, so even under that alpha's stricter check the build would use
+electron-builder's default — the current build machine's own
+architecture (x64) — never ia32/armv7l. Separately, Electron 44.0 itself
+removes ia32/armv7l prebuilt binaries entirely (irrelevant here for the
+same reason). No other electron-builder/Electron-44 packaging
+incompatibility was found via GitHub issue/changelog search.
+**Conclusion: no `electron-builder` bump required** — as with Task 40,
+Phase 2's actual `npm run package` step is the final confirming check,
+not just the doc search.
+
+**(f) Windows-specific platform-support changes:** None found affecting
+this app. 44.0 requires macOS 13+ and drops Unity desktop support on
+Linux (both irrelevant, Windows-only app/CI/release target). 44.0's
+ia32/armv7l removal is covered under (e) above and does not apply (x64
+build machine, no arch override). No other Windows-specific capability
+drop found in 39.0–44.0.
+
+**(g) Native module ABI:** Electron 44 bundles Node 24 (a different ABI
+than 38's Node 22). Checked via `npm ls chokidar highlight.js
+markdown-it zod github-markdown-css` (all present, pure-JS resolution,
+no native install step reported) and independently via `find
+node_modules -iname "*.node" -o -iname binding.gyp`, run across the
+**entire** `node_modules` tree, not just these five packages — zero
+matches. **Confirmed: no native/prebuilt-binary dependency exists in
+this project**, so no ABI-specific rebuild step is required.
+
+**(h) Startup-timing race check (per Task 40's forward note):** Applied
+Task 40's exact question — is a programmatic trigger fired right after
+`firstWindow()` gated behind a renderer-ready signal, or does it fire
+ungated? — to every other `firstWindow()`/`app.firstWindow()` call site
+across all 15 `tests/e2e/*.spec.ts` files (~100 call sites) plus
+`tests/e2e/support/fixtures.ts`/`pollUntilStable.ts`. **No other
+at-risk site found.** Every call site falls into one of three
+structurally-safe categories: (1) the test asserts on a real DOM element
+(Playwright's auto-waiting `expect(locator).toContainText/toBeVisible`)
+before firing any menu-click/IPC trigger — and `src/renderer/renderer.js`
+registers all four push-channel listeners (`onFileRendered`,
+`onViewSettings`, `onFolderTreeRoot`, `onWindowMaximizedState`)
+synchronously, with no `await` in between, before any DOM
+click-handler is wired up, so a visible DOM effect cannot precede
+listener attachment; (2) some tests (`file-tree.spec.ts`,
+`drag-drop.spec.ts`, parts of `tree-panel.spec.ts`) explicitly call
+`window.evaluate(() => window.mdview.onXxx(cb))` themselves and `await`
+that registration before firing the trigger — the listener is attached
+by the test itself, independent of renderer bootstrap timing; (3) some
+triggers (`menu-help`, `menu-settings`, non-maximize `setBounds()`)
+never touch any of the four raced push channels at all. The
+already-fixed `open-file-argv.spec.ts` third test was excluded from
+re-investigation per the task's own instruction.
+
+**STOP-condition check:** None of (a), (b), (c), or (d) requires
+relaxing a stated security invariant or changing the clipboard
+architecture — (c) confirms the app already conforms to Electron 44's
+tightened renderer-clipboard restriction, with nothing to relax. (g)
+finds no native dependency needing an ABI rebuild. Per the task's own
+instruction, this clears Phase 1 without an escalation — proceeding to
+Phase 2 (Step 1 below) rather than stopping for the user.
+
+### Edge-Case Invariant Guardrails
+
+(Continuing the sequential numbering from Task 40's #119.)
+
+120. **The Electron bump must change exactly one dependency line's
+     version range** (`electron`: `^38.8.6` → `^44.x.x`, latest 44.x
+     patch — `44.3.0` confirmed via `npm view electron dist-tags` →
+     `44-x-y: 44.3.0` — as of this writing) **plus its lockfile
+     consequence** — no unrelated dependency drift, and no
+     `electron-builder` bump unless a genuine incompatibility surfaces
+     during Phase 2's actual packaging step (Phase 1 found none
+     expected; see audit item (e)).
+121. **`windowConfig.ts`'s three explicit security settings
+     (`contextIsolation: true`, `nodeIntegration: false`,
+     `sandbox: true`) must remain byte-identical after the bump** — same
+     invariant as guardrail #117, re-asserted for this checkpoint. A
+     diff touching `windowConfig.ts` is out of scope unless Phase 2
+     discovers Electron 44 genuinely requires it (Phase 1 found no such
+     requirement).
+122. **`clipboard.writeText()` must remain called exclusively from
+     `src/main/index.ts`, inside the `COPY_RAW_SOURCE` IPC handler** —
+     Electron 44 removes renderer-side `clipboard` access entirely, and
+     this app was already architected to never touch it there (audit
+     item (c)). No `src/renderer/**` or `src/preload/**` file may gain a
+     `clipboard`/`navigator.clipboard` reference as part of this task —
+     any such change would mean something in Phase 2 deviated from the
+     bump-only scope, not a required migration (there is nothing to
+     migrate).
+123. **The bundled Node runtime must be independently confirmed as a
+     24.x version post-bump** (via `ELECTRON_RUN_AS_NODE=1 npx electron
+     -e "console.log(process.version)"`, not assumed from the
+     changelog) — same decoupling discipline as guardrail #118. The
+     exact patch is not predetermined; a different-but-same-major patch
+     from whatever the 44.0.0 release notes originally stated is
+     expected drift, not a discrepancy (same resolution pattern as Task
+     40's 22.18.0-expected/22.22.0-actual finding).
+124. **A packaged-build manual verification is not optional for this
+     task**, and must produce window-title-level evidence of a real
+     visible window — not just process liveness — per Task 40's review
+     finding that process-alive alone is an insufficient check. The
+     `ELECTRON_RUN_AS_NODE` machine-level env-var hazard documented
+     above (post-Task-40 finding) must be stripped explicitly in the
+     launching shell before this manual launch — it is not fixed by
+     anything upstream in this task's own diff.
+
+---

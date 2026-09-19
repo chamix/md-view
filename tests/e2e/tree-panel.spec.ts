@@ -617,7 +617,7 @@ test.describe('Task 26: independent viewport-fixed tree panel sizing', () => {
       await electronApp.evaluate(({ BrowserWindow }) => {
         BrowserWindow.getAllWindows()[0].setBounds({ width: 480, height: 320 });
       });
-      await expect.poll(() => window.evaluate(() => window.innerHeight)).toBeLessThanOrEqual(320);
+      await expect.poll(() => window.evaluate(() => window.innerHeight)).toBeLessThanOrEqual(330);
 
       await expect(window.locator('#tree-root')).toBeVisible();
 

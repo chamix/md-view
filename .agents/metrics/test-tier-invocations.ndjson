@@ -60,3 +60,4 @@
 {"ts":"2026-09-12T18:04:54.280Z","path":"tests/integration/fileTree.test.ts","scripts":[{"script":"test:unit","exitCode":0,"durationMs":3227},{"script":"test:integration","exitCode":0,"durationMs":2445}],"ok":true}
 {"ts":"2026-09-13T16:00:37.379Z","path":"src/main/index.ts","scripts":[{"script":"test:unit","exitCode":0,"durationMs":3014},{"script":"test:integration","exitCode":0,"durationMs":2103}],"ok":true}
 {"ts":"2026-09-13T21:36:50.114Z","path":"tests/e2e/open-file-argv.spec.ts","scripts":[],"reason":"e2e-path-never-auto-run","ok":true}
+{"ts":"2026-09-13T23:50:42.941Z","path":"tests/e2e/tree-panel.spec.ts","scripts":[],"reason":"e2e-path-never-auto-run","ok":true}
