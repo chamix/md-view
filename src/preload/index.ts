@@ -47,6 +47,10 @@ const api: BridgeApi = {
   copyRawSource: (text) => {
     return ipcRenderer.invoke(IPC_CHANNELS.COPY_RAW_SOURCE, text);
   },
+  onDocumentClosed: (callback) => {
+    // Zero payload: the IPC event object is deliberately not forwarded.
+    ipcRenderer.on(IPC_CHANNELS.DOCUMENT_CLOSED, () => callback());
+  },
 };
 
 contextBridge.exposeInMainWorld('mdview', api);

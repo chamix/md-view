@@ -231,6 +231,7 @@ test.describe('(d) title-bar menu labels popup the real, shared buildMenuTemplat
     expect(fileItemIds).toEqual([
       'menu-open',
       'menu-open-folder',
+      'menu-close',
       'separator',
       'menu-settings',
       'separator',
@@ -522,6 +523,7 @@ test.describe('(g) #title-bar stays fixed and remains functional while the page 
     expect(fileItemIds).toEqual([
       'menu-open',
       'menu-open-folder',
+      'menu-close',
       'separator',
       'menu-settings',
       'separator',

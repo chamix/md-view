@@ -12,6 +12,8 @@ function handlers(overrides: Partial<MenuHandlers> = {}): MenuHandlers {
     onToggleShowTreePanel: () => {},
     onSelectTab: () => {},
     onOpenHelp: () => {},
+    onOpenSettings: () => {},
+    onClose: () => {},
     ...overrides,
   };
 }
@@ -21,24 +23,44 @@ function viewSettings(overrides: Partial<ViewSettings> = {}): ViewSettings {
 }
 
 describe('buildMenuTemplate (pure menu structure)', () => {
-  it('returns exactly one top-level item (File) whose submenu has exactly 6 entries', () => {
-    const template = buildMenuTemplate(handlers(), viewSettings());
+  it('File submenu has exactly 7 entries in the Task 44 #151 order', () => {
+    const template = buildMenuTemplate(handlers(), viewSettings(), false);
 
     expect(template[0].label).toBe('File');
 
     const submenu = template[0].submenu as Array<Record<string, unknown>>;
-    expect(submenu).toHaveLength(6);
+    expect(submenu).toHaveLength(7);
     expect(submenu[0].id).toBe('menu-open');
     expect(submenu[1].id).toBe('menu-open-folder');
-    expect(submenu[2].type).toBe('separator');
-    expect(submenu[3].id).toBe('menu-settings');
-    expect(submenu[4].type).toBe('separator');
-    expect(submenu[5].id).toBe('menu-exit');
+    expect(submenu[2].id).toBe('menu-close');
+    expect(submenu[3].type).toBe('separator');
+    expect(submenu[4].id).toBe('menu-settings');
+    expect(submenu[5].type).toBe('separator');
+    expect(submenu[6].id).toBe('menu-exit');
+  });
+
+  it('menu-close has label Close, accelerator CmdOrCtrl+W, and click reference-equal to the onClose handler (#151)', () => {
+    const onClose = () => {};
+    const template = buildMenuTemplate(handlers({ onClose }), viewSettings(), true);
+    const submenu = template[0].submenu as Array<Record<string, unknown>>;
+    const closeItem = submenu[2];
+
+    expect(closeItem.id).toBe('menu-close');
+    expect(closeItem.label).toBe('Close');
+    expect(closeItem.accelerator).toBe('CmdOrCtrl+W');
+    expect(closeItem.click).toBe(onClose);
+  });
+
+  it.each([true, false])('menu-close enabled mirrors documentOpen = %s (#151)', (documentOpen) => {
+    const template = buildMenuTemplate(handlers(), viewSettings(), documentOpen);
+    const submenu = template[0].submenu as Array<Record<string, unknown>>;
+
+    expect(submenu[2].enabled).toBe(documentOpen);
   });
 
   it('menu-open has label, accelerator, and click reference-equal to the onOpen handler', () => {
     const onOpen = () => {};
-    const template = buildMenuTemplate(handlers({ onOpen }), viewSettings());
+    const template = buildMenuTemplate(handlers({ onOpen }), viewSettings(), false);
 
     const submenu = template[0].submenu as Array<Record<string, unknown>>;
     const openItem = submenu[0];
@@ -50,7 +72,7 @@ describe('buildMenuTemplate (pure menu structure)', () => {
 
   it('menu-open-folder has label, accelerator, and click reference-equal to the onOpenFolder handler', () => {
     const onOpenFolder = () => {};
-    const template = buildMenuTemplate(handlers({ onOpenFolder }), viewSettings());
+    const template = buildMenuTemplate(handlers({ onOpenFolder }), viewSettings(), false);
 
     const submenu = template[0].submenu as Array<Record<string, unknown>>;
     const openFolderItem = submenu[1];
@@ -61,23 +83,23 @@ describe('buildMenuTemplate (pure menu structure)', () => {
   });
 
   it('the separator entry has type: separator', () => {
-    const template = buildMenuTemplate(handlers(), viewSettings());
+    const template = buildMenuTemplate(handlers(), viewSettings(), false);
     const submenu = template[0].submenu as Array<Record<string, unknown>>;
 
-    expect(submenu[2].type).toBe('separator');
+    expect(submenu[3].type).toBe('separator');
   });
 
   it('menu-exit has label Exit and role quit', () => {
-    const template = buildMenuTemplate(handlers(), viewSettings());
+    const template = buildMenuTemplate(handlers(), viewSettings(), false);
     const submenu = template[0].submenu as Array<Record<string, unknown>>;
-    const exitItem = submenu[5];
+    const exitItem = submenu[6];
 
     expect(exitItem.label).toBe('Exit');
     expect(exitItem.role).toBe('quit');
   });
 
   it('template now has 3 top-level items: File, View, Help', () => {
-    const template = buildMenuTemplate(handlers(), viewSettings());
+    const template = buildMenuTemplate(handlers(), viewSettings(), false);
 
     expect(template).toHaveLength(3);
     expect(template[0].label).toBe('File');
@@ -86,7 +108,7 @@ describe('buildMenuTemplate (pure menu structure)', () => {
   });
 
   it("View's submenu has exactly 6 entries: menu-dark-mode, menu-show-frontmatter, menu-show-tree-panel, a separator, menu-view-preview, menu-view-code", () => {
-    const template = buildMenuTemplate(handlers(), viewSettings());
+    const template = buildMenuTemplate(handlers(), viewSettings(), false);
     const viewSubmenu = template[1].submenu as Array<Record<string, unknown>>;
 
     expect(viewSubmenu).toHaveLength(6);
@@ -100,7 +122,7 @@ describe('buildMenuTemplate (pure menu structure)', () => {
   });
 
   it.each([true, false])('menu-dark-mode reflects initialViewSettings.darkMode = %s', (darkMode) => {
-    const template = buildMenuTemplate(handlers(), viewSettings({ darkMode }));
+    const template = buildMenuTemplate(handlers(), viewSettings({ darkMode }), false);
     const viewSubmenu = template[1].submenu as Array<Record<string, unknown>>;
     const darkModeItem = viewSubmenu[0];
 
@@ -111,7 +133,7 @@ describe('buildMenuTemplate (pure menu structure)', () => {
 
   it("menu-dark-mode's click invokes onToggleDarkMode with the mock menuItem's checked value", () => {
     const onToggleDarkMode = vi.fn();
-    const template = buildMenuTemplate(handlers({ onToggleDarkMode }), viewSettings());
+    const template = buildMenuTemplate(handlers({ onToggleDarkMode }), viewSettings(), false);
     const viewSubmenu = template[1].submenu as Array<Record<string, unknown>>;
     const darkModeItem = viewSubmenu[0] as { click: (menuItem: { checked: boolean }) => void };
 
@@ -121,7 +143,7 @@ describe('buildMenuTemplate (pure menu structure)', () => {
   });
 
   it.each([true, false])('menu-show-frontmatter reflects initialViewSettings.showFrontmatter = %s', (showFrontmatter) => {
-    const template = buildMenuTemplate(handlers(), viewSettings({ showFrontmatter }));
+    const template = buildMenuTemplate(handlers(), viewSettings({ showFrontmatter }), false);
     const viewSubmenu = template[1].submenu as Array<Record<string, unknown>>;
     const showFrontmatterItem = viewSubmenu[1];
 
@@ -132,7 +154,7 @@ describe('buildMenuTemplate (pure menu structure)', () => {
 
   it("menu-show-frontmatter's click invokes onToggleShowFrontmatter with the mock menuItem's checked value", () => {
     const onToggleShowFrontmatter = vi.fn();
-    const template = buildMenuTemplate(handlers({ onToggleShowFrontmatter }), viewSettings());
+    const template = buildMenuTemplate(handlers({ onToggleShowFrontmatter }), viewSettings(), false);
     const viewSubmenu = template[1].submenu as Array<Record<string, unknown>>;
     const showFrontmatterItem = viewSubmenu[1] as { click: (menuItem: { checked: boolean }) => void };
 
@@ -142,7 +164,7 @@ describe('buildMenuTemplate (pure menu structure)', () => {
   });
 
   it.each([true, false])('menu-show-tree-panel reflects initialViewSettings.showTreePanel = %s', (showTreePanel) => {
-    const template = buildMenuTemplate(handlers(), viewSettings({ showTreePanel }));
+    const template = buildMenuTemplate(handlers(), viewSettings({ showTreePanel }), false);
     const viewSubmenu = template[1].submenu as Array<Record<string, unknown>>;
     const showTreePanelItem = viewSubmenu[2];
 
@@ -153,7 +175,7 @@ describe('buildMenuTemplate (pure menu structure)', () => {
 
   it("menu-show-tree-panel's click invokes onToggleShowTreePanel with the mock menuItem's checked value", () => {
     const onToggleShowTreePanel = vi.fn();
-    const template = buildMenuTemplate(handlers({ onToggleShowTreePanel }), viewSettings());
+    const template = buildMenuTemplate(handlers({ onToggleShowTreePanel }), viewSettings(), false);
     const viewSubmenu = template[1].submenu as Array<Record<string, unknown>>;
     const showTreePanelItem = viewSubmenu[2] as { click: (menuItem: { checked: boolean }) => void };
 
@@ -163,7 +185,7 @@ describe('buildMenuTemplate (pure menu structure)', () => {
   });
 
   it.each(['preview', 'code'] as const)('menu-view-preview reflects initialViewSettings.currentTab = %s (checked when preview)', (currentTab) => {
-    const template = buildMenuTemplate(handlers(), viewSettings({ currentTab }));
+    const template = buildMenuTemplate(handlers(), viewSettings({ currentTab }), false);
     const viewSubmenu = template[1].submenu as Array<Record<string, unknown>>;
     const previewItem = viewSubmenu[4];
 
@@ -174,7 +196,7 @@ describe('buildMenuTemplate (pure menu structure)', () => {
 
   it("menu-view-preview's click invokes onSelectTab with 'preview'", () => {
     const onSelectTab = vi.fn();
-    const template = buildMenuTemplate(handlers({ onSelectTab }), viewSettings());
+    const template = buildMenuTemplate(handlers({ onSelectTab }), viewSettings(), false);
     const viewSubmenu = template[1].submenu as Array<Record<string, unknown>>;
     const previewItem = viewSubmenu[4] as { click: () => void };
 
@@ -184,7 +206,7 @@ describe('buildMenuTemplate (pure menu structure)', () => {
   });
 
   it.each(['preview', 'code'] as const)('menu-view-code reflects initialViewSettings.currentTab = %s (checked when code)', (currentTab) => {
-    const template = buildMenuTemplate(handlers(), viewSettings({ currentTab }));
+    const template = buildMenuTemplate(handlers(), viewSettings({ currentTab }), false);
     const viewSubmenu = template[1].submenu as Array<Record<string, unknown>>;
     const codeItem = viewSubmenu[5];
 
@@ -195,7 +217,7 @@ describe('buildMenuTemplate (pure menu structure)', () => {
 
   it("menu-view-code's click invokes onSelectTab with 'code'", () => {
     const onSelectTab = vi.fn();
-    const template = buildMenuTemplate(handlers({ onSelectTab }), viewSettings());
+    const template = buildMenuTemplate(handlers({ onSelectTab }), viewSettings(), false);
     const viewSubmenu = template[1].submenu as Array<Record<string, unknown>>;
     const codeItem = viewSubmenu[5] as { click: () => void };
 
@@ -205,7 +227,7 @@ describe('buildMenuTemplate (pure menu structure)', () => {
   });
 
   it("Help's submenu has exactly 1 entry: menu-help", () => {
-    const template = buildMenuTemplate(handlers(), viewSettings());
+    const template = buildMenuTemplate(handlers(), viewSettings(), false);
     const helpSubmenu = template[2].submenu as Array<Record<string, unknown>>;
 
     expect(helpSubmenu).toHaveLength(1);
@@ -214,7 +236,7 @@ describe('buildMenuTemplate (pure menu structure)', () => {
 
   it('menu-help has label, F1 accelerator, and click reference-equal to the onOpenHelp handler', () => {
     const onOpenHelp = () => {};
-    const template = buildMenuTemplate(handlers({ onOpenHelp }), viewSettings());
+    const template = buildMenuTemplate(handlers({ onOpenHelp }), viewSettings(), false);
     const helpSubmenu = template[2].submenu as Array<Record<string, unknown>>;
     const helpItem = helpSubmenu[0];
 

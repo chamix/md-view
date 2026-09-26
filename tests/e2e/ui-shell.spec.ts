@@ -3,21 +3,19 @@ import * as os from 'os';
 import * as path from 'path';
 import { test, expect } from './support/fixtures';
 import { pollUntilStable } from './support/pollUntilStable';
+import { expectPristineDocumentView } from './support/pristine';
 
 test('no-argv launch: no legacy h1/button, empty-state visible, status bar shows "No file open"', async ({ electronApp }) => {
   const window = await electronApp.firstWindow();
 
   await expect(window.locator('h1')).toHaveCount(0);
   await expect(window.locator('#open-file-btn')).toHaveCount(0);
-  await expect(window.locator('#empty-state')).toBeVisible();
 
-  const statusBar = window.locator('#status-bar');
-  await expect(statusBar).toHaveText('No file open');
-
-  // Task 34 guardrail #100: the copy-raw-source button is disabled whenever
-  // there's no successfully-rendered file -- this is the initial, pre-first-
-  // file empty state itself.
-  await expect(window.locator('#copy-raw-source')).toBeDisabled();
+  // Task 44 #146: the shared pristine definition (#empty-state visible, status
+  // bar "No file open", #copy-raw-source disabled per Task 34 #100, plus the
+  // rest of the pristine facts) -- the same helper close-document.spec.ts
+  // asserts after Close.
+  await expectPristineDocumentView(window);
 });
 
 test('DevTools shortcut guard: unreachable when packaged, reachable in dev builds', async ({ electronApp }) => {
