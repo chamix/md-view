@@ -6089,3 +6089,605 @@ condition and the blueprint disagree, the condition wins.
    before running `/log-run`.
 
 ---
+
+## Task 45: Mermaid diagram support + main-window CSP (Step 1)
+
+Closes `functional_domain.md` Task 45, guardrails #156-#168. Branch:
+`feature/045-mermaid-support` (off `main` @ `8e80fa0`).
+
+### Evidence this plan rests on (measured, not assumed)
+
+Probes ran against a scratch copy of the built app (`npm run build` output +
+`mermaid@11.17.2` installed outside the repo). The repo was not modified
+apart from these spec files.
+
+**Static reading of `mermaid@11.17.2/dist/mermaid.min.js` (3 572 661 bytes):**
+- Exactly 4 `Function("return this")` sites, all lodash/core-js global
+  lookups written as `…||self&&self.Object===Object&&self||Function(…)()`, so
+  `self` short-circuits them in a window. There is no `eval(`, no
+  `new Function`, no `Worker`, no `importScripts` and no `blob:`. The bundle
+  contains no CDN, font or icon-pack URL: every `https://` literal is
+  documentation or licence text.
+- Default `secure` list: `["secure","securityLevel","startOnLoad",
+  "maxTextSize","suppressErrorRendering","maxEdges"]`. **`theme` is not in it.**
+- The IIFE assigns `globalThis.mermaid` (and `globalThis.__esbuild_esm_mermaid_nm`).
+- `maxTextSize` defaults to `5e4`. Over that limit Mermaid does **not throw**:
+  it swaps the source for `graph TB;a[Maximum text size in diagram
+  exceeded];style a fill:#faa` and renders that diagram successfully.
+  `suppressErrorRendering` does not affect this.
+
+**Runtime probes (Electron 44, real main window, `file://`):**
+
+| Probe | Result |
+|---|---|
+| Mermaid render under `script-src 'self'` (no `'unsafe-eval'`) | 3/3 valid diagrams render, and there are **zero** `script-src` violations. This settles the #160 lodash question at runtime. |
+| `style-src 'self'` without `'unsafe-inline'` | 190+ `style-src-elem`/`style-src-attr` violations. Node fill falls back to `rgb(0,0,0)` and the stroke to `none`, so the diagram is visibly broken. The exception is required for **both** `<style>` elements and `style=` attributes. |
+| Inline `<script>` appended to the DOM | Blocked (`script-src-elem`), and the canary stays `undefined`. |
+| `<img onerror=…>` inserted via `insertAdjacentHTML` | Blocked (`script-src-attr`), and the canary stays `undefined`. |
+| `fetch('https://example.com/')`, `fetch(file:…)` | Both blocked (`connect-src`). |
+| Dynamic `<base href>` retarget to the document's folder, and a relative local image there | Works under `base-uri 'self' file:` / `img-src 'self' file:`. |
+| Full `tests/test-content/test-fixture.md` with the final policy | **Zero** `securitypolicyviolation` events, including the remote `https:` image. |
+| `%%{init: {"securityLevel":"loose","themeCSS":…,"fontFamily":…}}%%` plus `click` callback/`javascript:` href | No `on*` attribute, no `javascript:`, no attacker CSS or font in the output, and no handler fires. |
+| `%%{init: {"theme":"forest"}}%%` or frontmatter `config: theme: forest`, with the Step 0 `secure` list | **Theme overridden** (node fill `#cde498` instead of dark `#1f2020`). Adding `theme` to `secure` restores the app theme. See Decision D2. |
+| `<script src=file:///…/other-folder/evil.js>` | **Loaded and executed.** Chromium matches `'self'` against *every* `file:` URL when the page itself is `file:`. See the disclosure under the CSP. |
+
+**Startup cost** (medians, n=9 launches per variant for navigation timing,
+n=7 for wall-clock; variants alternated; wall-clock is measured from
+`electron.launch` to the given DOM state):
+
+| Variant | DOMContentLoaded | Doc w/o diagrams: content visible | Doc with diagrams: content / first SVG |
+|---|---|---|---|
+| Today (no Mermaid) | 197 ms | 976 ms | n/a |
+| Eager `<script src=mermaid.min.js>` | 693 ms (**+496**) | 1441 ms (**+465**) | 1568 / 1688 ms |
+| On demand (inject on first placeholder) | unchanged | 965 ms (**±0**) | 1052 / 1799 ms |
+
+`main` sends the first `FILE_RENDERED` only on `did-finish-load`
+(`index.ts:497/506`). An eager bundle therefore delays **every** document's
+first paint by about 0.5 s, including documents with no diagrams. This is
+the "measured regression" Step 0 asks for before lazy loading. See
+Decision D1.
+
+### Decisions D1-D4 (all resolved at Step 1 review; see the approval conditions at the end)
+
+- **D1. Load the bundle on demand (recommended).** Step 0 lists lazy
+  loading as out of scope "not built without asking", and makes it
+  conditional on a measured regression. The regression is measured above
+  (+~0.5 s on every launch). Recommendation: inject `mermaid.min.js` on the
+  first diagram pass that finds at least one placeholder, memoized once per
+  window. The cost moves to the first diagram document only (+~110 ms to
+  first SVG relative to eager), and plain documents pay nothing.
+  Alternative: accept eager loading and the +0.5 s. The rest of this plan
+  assumes D1 = on demand; the eager variant changes only the engine adapter
+  and one `<script>` tag.
+  **Resolved: on demand, approved.**
+- **D2. Add `theme` and `darkMode` to the locked `secure` keys.** This is a
+  strict superset of #158's list. Without it, a directive or frontmatter
+  `config:` overrides the app theme, which contradicts #164 ("diagrams use
+  `dark` … `default`") and #158's own stated limitation ("per-diagram theme
+  customization is not supported"). `theme` is proven by probe. `darkMode`
+  is added by reading and will be proven by the same e2e.
+  **Resolved: approved and folded into #158.** Both keys are tested via
+  `%%{init}%%` and frontmatter `config:`.
+- **D3. `'self'` is scheme-wide under `file:` (disclosure, not a change).**
+  `script-src 'self'` stops inline and attribute script, `eval`, and every
+  non-`file:` origin. It does **not** stop a `<script src>` pointing at
+  another local file. Exploiting that needs a script element that is
+  actually *inserted and executed*. Markup reaching the DOM through
+  `innerHTML` never executes `<script>` elements, and every path into
+  `#content` is `innerHTML` (markdown-it with `html: false`, and
+  DOMPurify-sanitized SVG). The only `createElement('script')` in the app
+  is the D1 loader, and its URL is a constant resolved against
+  `initialBaseURI` (see below). Residual risk accepted. Hardening via
+  SRI-hash `script-src` or a custom `app://` protocol is rejected for this
+  task (ADR-010) and becomes a backlog candidate.
+- **D4. Oversized-diagram pre-check.** #162 can only hold if the app checks
+  `source.length > 50000` itself, because Mermaid renders a pink substitute
+  diagram instead of failing. This is a design consequence, not a scope
+  change. Stated here so it isn't read as scope creep.
+
+### The main-window CSP (exact string)
+
+Delivered as the **first element after `<meta charset>`** in
+`src/renderer/index.html`, before `<base>`, every `<link>` and every
+`<script>`, so it governs all of them:
+
+```html
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' file: data: http: https:; connect-src 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'self' file:" />
+```
+
+Justification per directive against #160:
+
+| Directive | Justification |
+|---|---|
+| `default-src 'none'` | Deny by default. `font-src`, `media-src`, `worker-src` and `manifest-src` fall back to `'none'`. The app loads no fonts (no `@font-face` in any shipped CSS), which also enforces #161's "no fonts". |
+| `script-src 'self'` | #160: app files only, with no `'unsafe-inline'` and no `'unsafe-eval'`. Proven sufficient for Mermaid 11.17.2 at runtime. Scheme-wide under `file:` (D3). |
+| `style-src 'self' 'unsafe-inline'` | The #160 disclosed exception. Proven necessary: Mermaid emits a `<style>` per SVG **and** `style=` attributes. It also keeps Playwright `addStyleTag` in `tree-panel.spec.ts:713` working. |
+| `img-src 'self' file: data: http: https:` | #160 as amended: **preserves today's behavior**, which is the guardrail (`https:` in the original #160 text was only an example). Local images through the dynamic `<base href>` (`file:` is explicit, so it doesn't rest on the `'self'` quirk), `data:` URIs, and remote `http:` and `https:` images (fixture line 359 is `https:`). Disclosed trade-off: remote images remain an outbound channel for CSS-only tricks. |
+| `connect-src 'none'` | #160. Closes the `fetch()` exfiltration channel that motivates this CSP. The renderer uses IPC, never `fetch`/XHR (grep-verified). |
+| `object-src 'none'` | #160: no plugins or `<embed>`. |
+| `frame-src 'none'` | #160: no iframes (also rules out Mermaid `sandbox` mode, which was rejected anyway). |
+| `form-action 'none'` | #160: no form submission. `form-action` does not fall back to `default-src`, so it is set explicitly. |
+| `base-uri 'self' file:` | Permits exactly the Task 4 retarget (`renderer.js` sets `<base href>` to the document's `file:` folder), and forbids an `https:`/`data:` base. `base-uri` does not fall back to `default-src`, so without it any base would be allowed. |
+
+Omitted on purpose: `frame-ancestors`, `report-uri`/`report-to` and
+`sandbox`, which are ignored in `<meta>` policies. `upgrade-insecure-requests`
+is also omitted: it would rewrite `http:` images, not block them.
+
+**Interaction with the dynamic `<base href>` (Task 4 / ADR-004):**
+1. The policy is attached to the *document* and parsed once. Retargeting
+   `<base>` changes URL resolution, not the policy or `'self'`.
+   `base-uri` is re-checked on every `href` assignment, and `file:`
+   satisfies it.
+2. All static `<script>`/`<link>` URLs are resolved at parse time, before
+   any retarget, so they are unaffected (the ADR-004 precedent already
+   handles the deferred `disabled` stylesheets).
+3. **The D1 loader must resolve `./mermaid.min.js` against
+   `initialBaseURI`, never `document.baseURI`.** After a retarget, a
+   relative `src` would resolve into the *user's document folder*, and
+   because `'self'` is scheme-wide (D3), a file named `mermaid.min.js`
+   sitting next to a Markdown file **would be executed**. This is the one
+   place where the base/CSP interaction is security-relevant. The invariant
+   is that the URL is **resolved to an absolute URL before any `<base>`
+   retarget** (amended at Task 45 review: S2). It is pinned by a decoy e2e
+   test (see the test plan) and a fault injection (F5).
+
+### How `mermaid.min.js` reaches `dist/` and is loaded (#161, #167)
+
+- `package.json` `dependencies`: `"mermaid": "11.17.2"`, exact with no caret.
+  `package-lock.json` is regenerated by `npm install`. This is the only
+  new runtime dependency (#167).
+- `package.json` `build`: the existing `node -e` copy chain gains two
+  `copyFileSync` calls:
+  `node_modules/mermaid/dist/mermaid.min.js -> dist/renderer/mermaid.min.js`
+  and `src/renderer/diagrams.js -> dist/renderer/diagrams.js`.
+  `electron-builder.yml` already ships `dist/**/*`, so it is not changed.
+- Loading (D1 = on demand): `index.html` does **not** reference
+  `mermaid.min.js`. The engine adapter creates one `<script>` with
+  `src = new URL('./mermaid.min.js', initialBaseURI).href`, where
+  `initialBaseURI` is the **existing** constant in `renderer.js`, captured
+  before any `<base href>` retarget and already used for the theme `<link>`
+  fix (ADR-004). It is passed into the adapter as `scriptUrl`; no second
+  capture is introduced. The adapter appends the `<script>` to
+  `<head>`, and memoizes the resulting promise, which resolves to
+  `globalThis.mermaid`. A load error rejects the promise, and every
+  placeholder of that pass (and later passes) shows the failure notice (#162).
+- The renderer's own new file, `diagrams.js`, is a static
+  `<script src="./diagrams.js">` placed **before** `renderer.js`. Like
+  `renderer.js`, it is a classic script whose pure functions are exported
+  under a `typeof module` guard, so Vitest can `require()` it without
+  jsdom or a bundler.
+
+### Placeholder element and markdown-it fence rule (#156, #157)
+
+`src/main/markdown.ts` wraps markdown-it's own `renderer.rules.fence`
+(a **Decorator**: it delegates every non-mermaid fence to the captured
+original rule, unchanged):
+
+```ts
+const defaultFence = md.renderer.rules.fence!;
+md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+  const token = tokens[idx];
+  if (isMermaidFence(token.info)) return mermaidPlaceholder(token.content);
+  return defaultFence(tokens, idx, options, env, self);
+};
+```
+
+- `isMermaidFence(info)` (exported, pure) uses the same derivation
+  markdown-it uses for the language name:
+  `unescapeAll(info).trim().split(/\s+/)[0] === 'mermaid'`. This is
+  case-sensitive, so `Mermaid`, `mermaid-js` and `mermaidx` are not
+  mermaid fences. Indented code blocks are `code_block` tokens and never
+  reach `fence`. Inline code is never a fence.
+- Placeholder shape (one line, no whitespace inside `<code>`):
+
+  ```html
+  <div class="md-view-diagram" data-diagram="mermaid"><pre class="md-view-diagram-source"><code>ESCAPED_BODY</code></pre></div>
+  ```
+
+  `ESCAPED_BODY = md.utils.escapeHtml(token.content)` (escapes `& < > "`).
+  The info string is **not** echoed (no `class="language-…"`), so no
+  author-controlled text sits in an attribute. The Help and What's New
+  windows, which have no script, show the `<pre>` as readable source (#166).
+- The renderer reads the source back as `code.textContent`, so the DOM
+  decodes the escaping exactly once and `html: false` holds end to end
+  (#157).
+- `highlightCode` and hljs are untouched. Every other fence is produced by
+  the original rule with the same arguments, which is why #156's golden
+  test holds byte for byte.
+
+### Diagram pass: generation design (#163, #164, #165, #162)
+
+New file `src/renderer/diagrams.js`. The dependency direction inside the
+renderer is:
+
+```
+[ pure policy ]  mermaidConfig(theme), diagramThemeFor(isDark),
+                 exceedsMaxTextSize(source), createGenerationGate()
+       ^
+[ use case ]     createDiagramController({ engine, view })
+                 - depends on two PORTS only, no DOM and no mermaid global
+       ^
+[ adapters ]     createMermaidEngine({ scriptUrl, appendScript, getGlobal })  -> engine port
+                 createDiagramDomView(containerEl, document)                 -> view port
+       ^
+[ composition ]  renderer.js wires them next to the existing handlers
+```
+
+**Ports (ISP: narrow and single-purpose):**
+- `engine.ready() -> Promise<void>` (memoized bundle load)
+- `engine.render(id, source, theme) -> Promise<svgString>`
+- `view.collectSlots() -> Slot[]`, where
+  `Slot = { source, showSvg(svg), showFailure(message) }`
+
+**Locked configuration** (`mermaidConfig(theme)`, pure, returns a fresh
+object). `MERMAID_MAX_TEXT_SIZE = 50000` is **one** exported constant in
+`diagrams.js`, read by both `mermaidConfig` and `exceedsMaxTextSize`
+(#162 as amended). A unit test asserts
+`mermaidConfig(t).maxTextSize === MERMAID_MAX_TEXT_SIZE`, and the boundary
+tests are written against the constant, not the literal:
+```js
+{ startOnLoad: false, securityLevel: 'strict', suppressErrorRendering: true,
+  maxTextSize: MERMAID_MAX_TEXT_SIZE, theme,
+  secure: ['secure','securityLevel','startOnLoad','maxTextSize',
+           'suppressErrorRendering','maxEdges',
+           'themeCSS','themeVariables','fontFamily','altFontFamily',
+           'theme','darkMode'] }          // last two: D2
+```
+
+**Generation gate:** `createGenerationGate()` returns
+`{ advance() -> token, isCurrent(token) }`, a monotonic integer (same class
+as `revealToken` and Task 44's epoch).
+
+**Controller** (the only stateful piece, holding `slots`, `isDark` and the
+gate):
+
+| Event (from `renderer.js`) | Controller call | Effect |
+|---|---|---|
+| `FILE_RENDERED` ok, after `renderHtml` | `documentRendered()` | `advance()`, `slots = view.collectSlots()` (source captured **now**), and a pass starts if `slots.length > 0`. With zero slots, the engine is never touched, so no bundle load happens (D1). |
+| `FILE_RENDERED` error | `documentCleared()` | `advance()`, `slots = []` |
+| `DOCUMENT_CLOSED` | `documentCleared()` | `advance()`, `slots = []` |
+| `VIEW_SETTINGS` | `darkModeChanged(settings.darkMode)` | No-op if the value equals the stored `isDark` (so the frontmatter toggle, tree toggle and tab switch never re-render, #164). Otherwise it stores the value, calls `advance()`, and starts a pass over the **stored** `slots` if any exist. The file is never re-read. |
+
+**Pass** (`async`, sequential over slots):
+```
+token = gate.advance() (done by the caller above); theme = diagramThemeFor(isDark)
+await engine.ready()   (memoized bundle load; rejection -> every slot showFailure, gated)
+if !gate.isCurrent(token): return                         // after the load (#163 amended)
+for (i, slot) of slots:
+  if !gate.isCurrent(token): return                       // before each render
+  if exceedsMaxTextSize(slot.source): slot.showFailure(TOO_LARGE_MSG); continue   // D4
+  try   svg = await engine.render(`mdv-diagram-${token}-${i}`, slot.source, theme)
+  catch e: if gate.isCurrent(token) slot.showFailure(messageOf(e)); continue
+  if gate.isCurrent(token): slot.showSvg(svg)             // after each await
+```
+- **No stale writes (#163):** every write is gated by a check made *after*
+  the last `await`, including the bundle-load `await` (engine port gains
+  `ready() -> Promise<void>`, the memoized load). A Close or a newer
+  `FILE_RENDERED` during the load advances the generation, so the old pass
+  returns without writing when the load settles, whether it succeeded or
+  failed. `documentCleared()`, a new document and a theme change
+  all `advance()` synchronously inside their IPC handler, so an in-flight
+  pass writes nothing afterwards. The check → `initialize` → `render`
+  sequence inside `engine.render` is synchronous up to Mermaid's own queue,
+  so a superseded pass can never re-`initialize` Mermaid with the old
+  theme after a newer pass has started.
+- **Unique IDs (#165):** `mdv-diagram-<token>-<index>` is unique across
+  diagrams in a pass and across passes, including theme re-renders.
+  Mermaid's temporary `#d<id>` scratch nodes are removed by Mermaid itself
+  **only while `suppressErrorRendering: true`**. The Step 1 review probe
+  showed that a failed render with it `false` leaves `DIV#d<id>` in
+  `<body>`, and that maxEdges overflow throws ("Edge limit exceeded"), so
+  it takes the ordinary failure path.
+- **Failure isolation (#162):** each slot has its own `try`, and the pass
+  never throws out of the controller (a final `catch` also covers the
+  bundle-load rejection). `showFailure` builds
+  `<p class="md-view-diagram-error">` (message via `textContent`) plus
+  `<pre><code>` (source via `textContent`). `suppressErrorRendering: true`
+  removes Mermaid's bomb graphic.
+- **Theme re-render reuses the stored source (#164):** `slots[i].source` is
+  the string captured at `collectSlots()` time, before any SVG replaced the
+  placeholder's `<pre>`. `showSvg` replaces the *children* of the same
+  `.md-view-diagram` wrapper, so the wrapper (and the slot's reference to
+  it) survives theme re-renders.
+- **DOM adapter's writes:** `showSvg` is the renderer's second `innerHTML`
+  sink (`wrapper.innerHTML = svg`), with the same trust class as the
+  existing `container.innerHTML`. Its input is Mermaid `strict` output
+  sanitized by DOMPurify, with the CSP as the backstop (no script can
+  execute from it). This is documented in a comment at the sink.
+- **Engine adapter:** `render()` awaits the memoized load, then calls
+  `mermaid.initialize(mermaidConfig(theme))` followed by
+  `mermaid.render(id, source)`, and returns `.svg`. `bindFunctions` is
+  **never called**, a third independent layer behind `strict` and the CSP
+  for #158's click handlers.
+- **Wrapper styling (`app.css`):** `.md-view-diagram` centers the SVG and
+  sets `max-width: 100%`. `.md-view-diagram-error` uses the existing error
+  colours in both themes. No per-diagram theming (#158 limitation).
+
+`renderer.js` changes are wiring only: build the controller once, next to
+`initialBaseURI`, and add one call in each of `onFileRendered` (ok/error
+branches), `onDocumentClosed` and `onViewSettings`. The Task 44 Close
+handler's existing clears stay as they are, so `container.textContent = ''`
+still produces the pristine state (#163 via the shared
+`expectPristineDocumentView` helper).
+
+### SOLID boundary scan
+
+- **SRP:** `markdown.ts` recognizes and escapes. `diagrams.js` policy
+  functions decide, the controller sequences and gates, the engine adapter
+  talks to Mermaid, the DOM view reads and writes elements, and
+  `renderer.js` only wires. The CSP lives in markup, not code.
+- **OCP:** the fence rule is extended by decoration without editing
+  markdown-it or `highlightCode`. A future diagram language is a new
+  `isXFence`/engine pair behind the same placeholder `data-diagram` key.
+- **LSP:** no inheritance. The fake engine and fake view in unit tests
+  honour the port contracts exactly, including rejection semantics.
+- **ISP:** two one- and two-method ports. No bridge or IPC change (#168).
+- **DIP:** the controller depends on `engine`/`view` abstractions. Only
+  the composition root (`renderer.js`) knows about `document`,
+  `globalThis.mermaid` and `initialBaseURI`.
+- **Clean Architecture:** `main` gains no knowledge of Mermaid beyond the
+  string `mermaid` in a pure recognizer. The render seam (`FileRenderedMessage`)
+  is unchanged.
+
+### GoF patterns
+
+- **Decorator:** the fence rule wraps markdown-it's original fence renderer.
+- **Adapter:** `createMermaidEngine` adapts Mermaid's global
+  `initialize`/`render` API to the `engine.render(id, source, theme)` port.
+- **Proxy (virtual proxy):** the same adapter defers loading the real
+  3.5 MB subject until the first `render` (D1).
+- **DIP port (not Strategy):** `diagramThemeFor(isDark)` is a pure mapping
+  function, not a Strategy object. The swappable part is the engine port
+  (a fake in unit tests, Mermaid at runtime), which is dependency inversion
+  rather than a GoF Strategy (amended at Task 45 review: Nit 4).
+- **Command token / guard:** the generation gate, as with `revealToken` and
+  the Task 44 epoch.
+
+### Test plan (TDD Red-Green-Refactor, 3-cycle stop)
+
+**Unit (`vitest`, Node, no jsdom):**
+- `tests/unit/markdown.test.ts` (extend):
+  - **#156:** `isMermaidFence`: `mermaid`, `mermaid title`, and
+    `  mermaid  ` are true; `Mermaid`, `MERMAID`, `mermaid-js`, `mermaidx`,
+    `js mermaid` and `''` are false. An indented code block with mermaid
+    source and inline `` `mermaid` `` produce no `md-view-diagram`.
+  - **#156 golden:** `markdownToHtml(tests/e2e/fixtures/with-code/doc.md)`
+    equals `tests/unit/golden/with-code.html`, byte for byte. The golden
+    file is generated from **unmodified** `markdown.ts` (`main` @ `8e80fa0`)
+    as the *first* step, before any production edit. It is a
+    characterization test, green before and after.
+  - **#157 security regression:** a mermaid fence with body
+    `</pre><script>alert(1)</script><img src=x onerror=alert(1)>` yields
+    HTML containing no `<script`, no `<img` and no `onerror`, and the body
+    appears as `&lt;/pre&gt;&lt;script&gt;…`. Also `"`/`&` escaping, and
+    placeholder shape equality for a simple body.
+- `tests/unit/diagrams.test.ts` (new):
+  - **#158:** `mermaidConfig(t)` contains `securityLevel:'strict'`,
+    `startOnLoad:false`, `suppressErrorRendering:true` and
+    `maxTextSize:50000`; `secure` ⊇ Mermaid defaults ∪
+    {themeCSS, themeVariables, fontFamily, altFontFamily, theme, darkMode};
+    it returns a fresh object on each call.
+  - **#164:** `diagramThemeFor(true)==='dark'`, `diagramThemeFor(false)==='default'`.
+  - **D4:** `exceedsMaxTextSize` at 50000 is false and at 50001 is true.
+  - **Gate:** `advance` is monotonic and `isCurrent` is false for every
+    earlier token.
+  - **Controller with a fake engine** (controllable deferred promises)
+    **and a fake view:**
+    - N slots produce N `render` calls with unique ids, and `showSvg` for each.
+    - A rejecting slot shows the failure, and the other slots still render (#162).
+    - An oversized slot shows the failure without calling `engine.render` (D4).
+    - #163: `documentCleared()` while a render is pending gives zero writes
+      after resolution. `documentRendered()` with new slots while old
+      renders are pending writes only the new slots. `darkModeChanged(!dark)`
+      mid-pass writes nothing from the old pass, and the new pass uses the
+      new theme.
+    - #164: `darkModeChanged(sameValue)` produces zero `render` calls. A
+      theme change re-renders from `slot.source` captured at collection
+      (the fake view mutates its "DOM" after `showSvg`, proving the stored
+      source is used), and `collectSlots` is not called again.
+    - #165: a second `documentRendered()` re-collects and re-renders.
+    - D1: zero slots means the engine is never called (lazy-load guard).
+  - #163 (amended), load respects generations: with `ready()` pending,
+    `documentCleared()` (or `documentRendered()` with new slots) and then
+    `ready()` resolving gives zero writes from the old pass and zero
+    `render` calls for it. The same holds when `ready()` **rejects**: no
+    `showFailure` from the old pass.
+  - #162 (amended): `ready()` rejecting on a current pass shows
+    `showFailure` on every slot. `exceedsMaxTextSize` boundaries are
+    `MERMAID_MAX_TEXT_SIZE` (false) and `MERMAID_MAX_TEXT_SIZE + 1` (true).
+  - **Engine adapter** (fake `appendScript`/`getGlobal`): one script
+    append across many renders (memoized); `initialize` receives
+    `mermaidConfig(theme)` before every `render`; `bindFunctions` is never
+    invoked; a load failure rejects every `render`; `scriptUrl` is exactly
+    the value passed in.
+
+**Integration:**
+- `tests/integration/dist-mermaid.test.ts` (new, #161, same posture as
+  `dist-changelog.test.ts`, requiring `npm run build`):
+  `dist/renderer/mermaid.min.js` is byte-equal to
+  `node_modules/mermaid/dist/mermaid.min.js`; the installed
+  `node_modules/mermaid/package.json` version is `11.17.2`; `package.json`
+  pins `"mermaid": "11.17.2"` exactly (no `^`/`~`); `dist/renderer/diagrams.js`
+  exists; `dist/renderer/index.html`'s CSP meta content equals the exact
+  string above and precedes `<base>`; and `mermaid` is the only dependency
+  added relative to the Task 44 set (#167).
+
+**E2E (Playwright/Electron).** Violation listeners are registered *after
+launch and before opening the file*, using the stubbed-dialog File > Open
+path from `close-document.spec.ts`, because an inline listener script would
+itself be blocked.
+- `tests/e2e/csp.spec.ts` (new, #160):
+  - (b) Open `tests/test-content/test-fixture.md` (it includes a mermaid
+    fence, so it exercises the diagram pass and the lazy load). Wait for
+    the diagram SVG, then assert **zero** `securitypolicyviolation` events.
+  - **(c) inline-script canary:** append a `<script>` whose `textContent`
+    sets `window.__cspCanary`. The canary stays `undefined`. Companion:
+    `insertAdjacentHTML('<img src=x onerror=…>')` leaves its canary
+    `undefined` as well.
+  - `fetch('https://example.com')` rejects.
+  - The CSP meta is the first element after `charset` in the loaded
+    document, and its `content` equals the spec string.
+  - (a) is not a new test: the full existing e2e suite runs unmodified,
+    with zero diff to existing spec files.
+- `tests/e2e/mermaid.spec.ts` (new):
+  - Basic: `test-fixture.md`'s diagram becomes an `svg` inside
+    `.md-view-diagram`. Two diagrams in one fixture give two SVGs with
+    distinct ids (#165).
+  - **#159 XSS suite:** fixture diagrams whose node labels, edge labels,
+    `click … href "javascript:…"`, `click … call`, `<script>`,
+    `<img src=x onerror=…>` and HTML entities (`&lt;b&gt;`, `&#60;script&#62;`)
+    set the canary. After the pass, `#content` has no `script` element, no
+    attribute matching `/^on/i` on any element, no `javascript:` in any
+    `href`/`xlink:href`/attribute, and `window.__mdvCanary === undefined`.
+    Clicking every `.node` and `a` still leaves the canary undefined.
+  - **#158 directive override:** `%%{init: {"securityLevel":"loose"}}%%` +
+    `click A callback` gives no handler, and clicking leaves the canary
+    undefined. `%%{init: {"themeCSS":".mdv-attacker{…}", "fontFamily":"AttackerFont"}}%%`
+    gives no `mdv-attacker` or `AttackerFont` in the SVG. Frontmatter
+    `config: { securityLevel: loose, themeCSS: … }` gives the same result.
+    `%%{init: {"theme":"forest"}}%%` in dark mode renders with the dark
+    palette (D2).
+  - **#162:** an invalid diagram shows `.md-view-diagram-error` with the
+    source text, while its siblings render. A diagram with more than 500
+    edges shows the notice (Mermaid throws). A generated 50 001-character
+    diagram shows the notice, not Mermaid's pink substitute. No
+    `pageerror` event fires.
+  - **#161 no network:** during the pass, `performance.getEntriesByType
+    ('resource')` and `page.on('request')` show only `file:` URLs. A
+    positive control (the fixture's `https:` image) confirms the
+    observation channel actually sees remote requests before a zero is
+    trusted.
+  - **D1/base decoy:** the fixture folder contains a decoy
+    `mermaid.min.js` that sets `window.__decoyCanary`. Opening a diagram
+    document from that folder renders diagrams, and the decoy canary
+    stays undefined. A plain document produces no `mermaid.min.js`
+    resource entry.
+  - **#164:** toggle Dark Mode and the SVG re-renders with dark colours
+    without re-reading the file (assert via the same stubbed-read counter
+    pattern, or file-unchanged plus no `FILE_RENDERED`). Toggling
+    frontmatter, the tree and Code/Preview tabs keeps the SVG element's
+    identity (tagged via `evaluate`, still the same node).
+  - **#165 live reload:** rewrite the file's diagram, and the new SVG
+    reflects the new label.
+  - **#163:** open a document with several diagrams, then Close before the
+    pass completes (the first load of the bundle gives a natural window of
+    about 100 ms or more; the test forces it by closing immediately after
+    `FILE_RENDERED`). After a settle wait, `expectPristineDocumentView`
+    passes and `#content` stays empty. Also: dark toggle mid-pass leaves
+    no old-theme SVG, and a newer document mid-pass contains none of the
+    older document's diagrams.
+  - **Orphan-free body (review addition):** snapshot the list of
+    `document.body` children (tag, id, class) at pristine launch. Then (a)
+    after a document whose diagrams include a failing one has finished its
+    pass, and (b) after closing that document, the body's children equal
+    the snapshot exactly. Mermaid's temporary `#d<id>` render containers
+    (and anything else) must not linger. The loader's `<script>` goes to
+    `<head>`, so it is outside this assertion by construction, and the test
+    also asserts it is in `<head>`.
+  - **#166:** the Code tab shows the raw fence, and copy-raw-source is
+    byte-identical to the file (reusing `ui-shell.spec.ts`'s assertion
+    pattern). The status bar and frontmatter view are unaffected.
+- Fixtures (new): `tests/e2e/fixtures/with-mermaid/{basic,multi,xss,override,invalid}.md`
+  plus `mermaid.min.js` (decoy). The >500-edge diagram is generated at
+  runtime, like the oversized one. The oversized diagram is generated at
+  runtime into a temp dir.
+
+**Fault-injection plan.** The reviewer runs F1 at minimum, and the engineer
+records each F in the review evidence. Each change is applied to the built
+app or source, the named test is observed **red**, and the change is
+reverted:
+
+| # | Injected fault | Must go red |
+|---|---|---|
+| **F1** | Delete the CSP `<meta>` from `src/renderer/index.html`, rebuild | `csp.spec.ts` (c) inline-script canary **and** the `onerror` companion (and the meta-content assertions) |
+| F2 | Remove `'theme'` / `'themeCSS'` from `secure` | `mermaid.spec.ts` override tests (forest palette / attacker CSS present) |
+| F3 | `securityLevel: 'loose'` and call `bindFunctions` | #159 XSS / #158 click tests |
+| F4 | Drop the post-`await` `isCurrent` check | `diagrams.test.ts` stale-write cases, and e2e Close-mid-pass |
+| F5 | Resolve the bundle URL lazily, at load time, against the retargeted base (e.g. a relative `scriptUrl`, or `new URL('./mermaid.min.js', document.baseURI)` evaluated inside the appender). Resolving against `document.baseURI` once at composition time is **not** a fault: no retarget has happened yet, so it equals `initialBaseURI`, and the reviewer observed it stay green (amended at Task 45 review: S2) | e2e decoy canary |
+| F6 | Remove `escapeHtml` from the placeholder | #157 unit test |
+| F7 | Remove the `exceedsMaxTextSize` pre-check | unit oversize case and e2e 50 001-character case |
+| F8 | Case-insensitive fence match | #156 `Mermaid` unit case |
+| F9 | `suppressErrorRendering: false` in `mermaidConfig` (Mermaid then leaves `DIV#d<id>` in `<body>` after a failed render; probe-confirmed) | e2e orphan-free body test (and the #158 config unit test) |
+| F10 | Drop the post-`ready()` `isCurrent` check | unit "load respects generations" cases |
+| F11 | Hard-code `50000` in `exceedsMaxTextSize` and change the constant to 40000 | unit shared-constant/boundary test |
+
+Every e2e RED/GREEN observation requires `npm run build` **before** the
+Playwright run (a targeted `playwright test` does not rebuild `dist/`).
+Reverts use a captured patch and `git apply -R`, never `git checkout`,
+`git restore` or `git reset`.
+
+### Alternatives rejected (-> ADR-010)
+
+| Alternative | Why rejected |
+|---|---|
+| `@mermaid-js/tiny` | A reduced build that omits some diagram types and features (mindmap, architecture, KaTeX math, per its README; the Lead has not re-verified this), so diagrams that render on GitHub could fail here. It is maintained as a secondary artifact, and its size saving matters little once loading is on demand (D1). |
+| Pre-render in `main` via mermaid-cli/puppeteer | Ships a second headless Chromium (100 MB+), spawns a process per render, and moves an untrusted-input renderer into the privileged process. It is also slow for live reload. |
+| Remote renderer (Kroki, mermaid.ink) | Sends document content off-machine, breaks offline use, and needs `connect-src`/`img-src` to a third party. It contradicts #161 and the reason this CSP exists. |
+| `securityLevel: 'sandbox'` | One iframe per diagram: needs `frame-src` (weakening the CSP), fixed-height iframes that don't size to content, no inherited dark-mode CSS, and no text selection/find across the document. `strict` + DOMPurify + CSP gives equivalent protection for this threat model. |
+| Mermaid 12.0.0 | Released 2026-09-10 (16 days old): a new major with ELK as default layout and a new default look (visual churn for users), 5.4 MB vs 3.5 MB, and it leaves the same CVE-2026-41159 keys overridable, so it buys no security. Backlog candidate. |
+| Split the CSP into a separate prerequisite task | The Lead's recommendation, overruled by the user (Step 0). Kept together because the CSP is the control that makes rendering untrusted diagrams in the bridge-bearing window acceptable; landing Mermaid first would ship a window with no exfiltration barrier. Recorded as a user decision. |
+| Render in `main` (jsdom + Mermaid) | Mermaid needs real layout (`getBBox`, text measurement). jsdom has none, so output is wrong or crashes. It would also enlarge the privileged process's attack surface. |
+| Eager `<script>` load | Measured +~0.5 s on every launch (D1). |
+| CSP via `session.webRequest.onHeadersReceived` | Response-header hooks don't fire for `file://` loads (no HTTP response). The `<meta>` policy is the mechanism that works for `loadFile`. |
+| SRI-hash `script-src` / custom `app://` protocol to fix D3 | Both would tighten `'self'` beyond `file:`, but need a build-time hash generator plus `integrity` attributes, or a protocol handler that changes every relative URL and ADR-004's base logic. That is disproportionate given D3's exploit preconditions. Backlog candidate. |
+
+### In-scope files (proposed `current_scope.json` `in_scope`)
+
+- `package.json` (dependency + two build copy steps), `package-lock.json`
+- `src/main/markdown.ts`
+- `src/renderer/index.html` (CSP meta + `diagrams.js` script tag)
+- `src/renderer/diagrams.js` (new)
+- `src/renderer/renderer.js` (wiring only)
+- `src/renderer/app.css` (`.md-view-diagram`, `.md-view-diagram-error`)
+- `tests/unit/markdown.test.ts`, `tests/unit/diagrams.test.ts` (new),
+  `tests/unit/golden/with-code.html` (new)
+- `tests/integration/dist-mermaid.test.ts` (new)
+- `tests/e2e/csp.spec.ts` (new), `tests/e2e/mermaid.spec.ts` (new)
+- `tests/e2e/fixtures/with-mermaid/basic.md`, `multi.md`, `xss.md`,
+  `override.md`, `invalid.md`, `mermaid.min.js` (all new)
+- `.agents/specs/review_report_task45.md` (reviewer output)
+- `.agents/specs/decisions/ADR-010_md-view.md` stays **Proposed** until
+  close-out. It is not in the engineer's scope; the Lead flips it at Step 3.
+
+Explicitly NOT touched: `src/main/index.ts` (no send-path change),
+`src/preload/**` (#168: no bridge or IPC change), `windowConfig.ts`,
+`linkPolicy.ts`, `helpWindow.ts`, `whatsNewWindow.ts`, `electron-builder.yml`,
+`tests/test-content/test-fixture.md`, every existing spec file under
+`tests/e2e/` (#160(a) requires them unmodified), `tests/e2e/support/**`,
+`help.md`, `README.md` and `CHANGELOG.md` (release-time satellite).
+
+### Expected output format
+
+New files: full content. Existing files: diff (targeted edits).
+
+### Spec section this closes
+
+`functional_domain.md` Task 45, guardrails #156-#168.
+
+---
+
+### Task 45: User approval conditions (binding on implementation and review)
+
+The blueprint above was approved on 2026-09-26 subject to these conditions.
+Where a condition and the blueprint disagree, the condition wins.
+
+1. **D1 approved:** the bundle loads on demand. The loader resolves
+   `mermaid.min.js` from the renderer's existing `initialBaseURI` (captured
+   before any `<base href>` retarget, the theme `<link>` pattern). The decoy
+   test and F5 stay.
+2. **D2 approved:** `theme` and `darkMode` join the locked `secure` keys
+   (#158 amended). Tests cover both `%%{init}%%` and frontmatter `config:`.
+3. **`img-src` allows `http:` and `https:`** (#160 amended). The exact CSP
+   string is
+   `default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' file: data: http: https:; connect-src 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'self' file:`.
+4. **#162 amended:** oversized diagrams (app check, D4) and a bundle-load
+   failure both produce the per-diagram notice. The app check and Mermaid's
+   `maxTextSize` read one shared constant. `maxEdges` was probed: it throws,
+   so it takes the ordinary failure path.
+5. **#163 amended:** the on-demand load respects generations.
+6. **Orphan-free body test** plus fault injection F9 (see the test plan).
+7. **ADR-010 stays Proposed until close-out.**
+8. D3 (scheme-wide `'self'` under `file:`) and D4 (app-side size check) are
+   accepted as written.
+
+---

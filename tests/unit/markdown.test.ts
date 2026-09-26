@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { markdownToHtml, highlightMarkdownSource } from '../../src/main/markdown';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { markdownToHtml, highlightMarkdownSource, isMermaidFence } from '../../src/main/markdown';
 
 describe('markdownToHtml (pure conversion)', () => {
   it('converts basic markdown to HTML', () => {
@@ -111,5 +113,75 @@ describe('highlightMarkdownSource (Task 32: raw-source Code tab, independent of 
   it('never wraps its own output in a <pre> (the container already is one)', () => {
     const html = highlightMarkdownSource('# Heading\n\nSome text.');
     expect(html).not.toContain('<pre');
+  });
+});
+
+// Task 45 #156 characterization: every non-mermaid fence must keep today's
+// highlight.js output byte for byte. The golden file was generated from the
+// UNMODIFIED markdown.ts (main @ 8e80fa0) before the fence decorator existed.
+// Only the golden's own line endings are normalized: with core.autocrlf=true a
+// fresh checkout rewrites it to CRLF, while markdown-it output is always LF.
+describe('Task 45 #156: non-mermaid fences are byte-identical to pre-Task-45 output', () => {
+  it('with-code fixture renders exactly the golden HTML', () => {
+    const repoRoot = path.resolve(__dirname, '../..');
+    const source = fs.readFileSync(path.join(repoRoot, 'tests/e2e/fixtures/with-code/doc.md'), 'utf8');
+    const golden = fs.readFileSync(path.join(__dirname, 'golden/with-code.html'), 'utf8').replace(/\r\n/g, '\n');
+    expect(markdownToHtml(source)).toBe(golden);
+  });
+});
+
+describe('Task 45 #156: isMermaidFence (exact, case-sensitive first word)', () => {
+  it.each(['mermaid', 'mermaid title', '  mermaid  ', 'mermaid\t{.class}'])('%j is a mermaid fence', (info) => {
+    expect(isMermaidFence(info)).toBe(true);
+  });
+
+  it.each(['Mermaid', 'MERMAID', 'mermaid-js', 'mermaidx', 'js mermaid', ''])('%j is NOT a mermaid fence', (info) => {
+    expect(isMermaidFence(info)).toBe(false);
+  });
+
+  it('a mermaid fence becomes the diagram placeholder, with no language class echoed', () => {
+    const html = markdownToHtml('```mermaid\ngraph TD\n  A-->B\n```');
+    expect(html).toBe(
+      '<div class="md-view-diagram" data-diagram="mermaid"><pre class="md-view-diagram-source"><code>graph TD\n  A--&gt;B\n</code></pre></div>'
+    );
+  });
+
+  it('a capitalised Mermaid fence stays an ordinary code block', () => {
+    const html = markdownToHtml('```Mermaid\ngraph TD\n```');
+    expect(html).not.toContain('md-view-diagram');
+    expect(html).toContain('<pre><code class="language-Mermaid">');
+  });
+
+  it('an indented code block with mermaid source is not a diagram', () => {
+    const html = markdownToHtml('Para.\n\n    mermaid\n    graph TD\n      A-->B\n');
+    expect(html).not.toContain('md-view-diagram');
+    expect(html).toContain('<pre><code>');
+  });
+
+  it('inline `mermaid` code is not a diagram', () => {
+    const html = markdownToHtml('Use `mermaid` here.');
+    expect(html).not.toContain('md-view-diagram');
+    expect(html).toContain('<code>mermaid</code>');
+  });
+});
+
+describe('Task 45 #157: the placeholder carries the fence body as escaped text only', () => {
+  it('a hostile body yields no <script, no <img and no onerror (security regression)', () => {
+    const html = markdownToHtml('```mermaid\n</pre><script>alert(1)</script><img src=x onerror=alert(1)>\n```');
+    expect(html).not.toContain('<script');
+    expect(html).not.toContain('<img');
+    expect(html).not.toMatch(/<[^>]*onerror/);
+    expect(html).toContain('&lt;/pre&gt;&lt;script&gt;alert(1)&lt;/script&gt;&lt;img src=x onerror=alert(1)&gt;');
+  });
+
+  it('escapes " and & in the body', () => {
+    const html = markdownToHtml('```mermaid\nA["x & y"]\n```');
+    expect(html).toContain('<code>A[&quot;x &amp; y&quot;]\n</code>');
+  });
+
+  it('never echoes the info string into an attribute', () => {
+    const html = markdownToHtml('```mermaid "><script>x</script>\ngraph TD\n```');
+    expect(html).not.toContain('<script');
+    expect(html).not.toContain('language-');
   });
 });

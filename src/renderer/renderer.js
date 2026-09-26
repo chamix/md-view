@@ -83,6 +83,20 @@ if (typeof document !== 'undefined') {
   const codeContentEl = document.getElementById('code-content');
   const copyRawSourceEl = document.getElementById('copy-raw-source');
 
+  // Task 45: diagram pass (diagrams.js, loaded before this file). The Mermaid
+  // bundle URL is resolved against initialBaseURI, NEVER document.baseURI:
+  // after the <base href> retarget a relative URL would point into the user's
+  // document folder, and under file: script-src 'self' matches every local
+  // file, so a decoy mermaid.min.js there would execute (Step 1 D3).
+  const diagramController = createDiagramController({
+    engine: createMermaidEngine({
+      scriptUrl: new URL('./mermaid.min.js', initialBaseURI).href,
+      appendScript: createScriptAppender(document),
+      getGlobal: () => globalThis.mermaid,
+    }),
+    view: createDiagramDomView(container, document),
+  });
+
   const markdownLightLink = document.getElementById('theme-markdown-light');
   const markdownDarkLink = document.getElementById('theme-markdown-dark');
   const hljsLightLink = document.getElementById('theme-hljs-light');
@@ -242,8 +256,10 @@ if (typeof document !== 'undefined') {
       // above: message.codeHtml is main-process-generated, hljs-escaped
       // content, never renderer-side string concatenation.
       if (codeContentEl) codeContentEl.innerHTML = message.codeHtml;
+      void diagramController.documentRendered();
     } else {
       renderError(message.error);
+      diagramController.documentCleared();
     }
 
     activeFilePath = message.ok ? message.filePath : null;
@@ -277,6 +293,8 @@ if (typeof document !== 'undefined') {
     if (container) container.textContent = '';
     if (codeContentEl) codeContentEl.textContent = '';
     if (baseElement) baseElement.setAttribute('href', '');
+    // Task 45 #163: any in-flight diagram pass writes nothing after this.
+    diagramController.documentCleared();
     // Clears the active-row highlight and bumps revealToken, so an in-flight
     // reveal walk aborts without extra code.
     activeFilePath = null;
@@ -286,6 +304,8 @@ if (typeof document !== 'undefined') {
   window.mdview.onViewSettings((settings) => {
     lastViewSettings = settings;
     applyDarkMode(settings.darkMode);
+    // Task 45 #164: no-op unless darkMode actually changed.
+    void diagramController.darkModeChanged(settings.darkMode);
     updateFrontmatterVisibility();
     // Task 28: display:none only -- never removes/resets tree DOM state
     // (expanded folders, fetched children, active highlight all survive a
