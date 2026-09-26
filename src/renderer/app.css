@@ -662,3 +662,31 @@ body.dark-mode .tree-error {
 body.dark-mode .tree-row-up {
   color: #8b949e;
 }
+
+/* Task 45: Mermaid diagrams. Centered, never wider than the preview. No
+   per-diagram theming (#158 limitation); the theme comes from dark mode. */
+.md-view-diagram {
+  margin: 0 0 16px;
+  text-align: center;
+  overflow-x: auto;
+}
+
+.md-view-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.md-view-diagram .md-view-diagram-source {
+  text-align: left;
+}
+
+/* Per-diagram failure notice (#162); same error colours as .tree-error. */
+.md-view-diagram-error {
+  margin: 0 0 8px;
+  text-align: left;
+  color: #cf222e;
+}
+
+body.dark-mode .md-view-diagram-error {
+  color: #ff7b72;
+}

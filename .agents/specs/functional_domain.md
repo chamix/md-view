@@ -3285,3 +3285,174 @@ or a small stateful object) is the engineer's choice; its semantics are not:
   precedent).
 
 ---
+
+## Task 45: Mermaid diagram support, with a Content Security Policy for the main window (Step 0)
+
+Depends on Task 44 (merged to `main` as #12, `8e80fa0`). Touches the render path
+(Task 1/6 `markdownToHtml`, `html: false`), the renderer's `FILE_RENDERED` /
+`VIEW_SETTINGS` / `DOCUMENT_CLOSED` handlers, dark mode (Task 8), live reload,
+and Task 44's pristine-state contract.
+
+Decisions taken with the user before drafting:
+- Mermaid is pinned **exactly** to `11.17.2` (no caret). 12.0.0 (2026-09-10) was
+  considered and deferred: new major, ELK default layout, new default look,
+  5.4 MB vs 3.5 MB.
+- `securityLevel: 'strict'` (inline SVG sanitized by DOMPurify, click handlers
+  disabled). `sandbox` (one iframe per diagram) was considered and rejected
+  over the cost to sizing, theming and text selection.
+- A Content Security Policy for the **main window** is added **in this task**,
+  not as a separate prerequisite task. That was the user's choice over the
+  Lead's recommendation to split it, and it is disclosed as such.
+
+Why the CSP matters here: the renderer bridge exposes `listDirectory` and
+`openFileByPath`, and today there is no CSP, so any script that runs in the
+renderer can `fetch()` anywhere. A script injected through a diagram could
+read folder listings and send them out. The isolation settings
+(`contextIsolation`, `sandbox`) prevent escalation to code execution, not this
+data leak.
+
+### Abstract contracts
+
+- **Mermaid block** (input): a fenced code block whose info string's first
+  word is exactly `mermaid` (lowercase, as GitHub does). Anything else
+  (`Mermaid`, `mermaid-js`, indented code blocks, inline code) is ordinary code
+  and keeps today's behavior.
+- **Diagram placeholder** (main -> renderer, inside `FileRenderedOk.html`): an
+  element that marks the block as a diagram and carries its source as
+  **escaped text**. `main` never renders diagrams: Mermaid needs a DOM, and
+  `main` has none. The `FileRenderedMessage` shape does not change.
+- **Diagram pass** (renderer): after each successful render, and after each
+  dark-mode change, every placeholder in the preview is turned into an SVG,
+  or into a per-diagram error.
+- **Diagram failure** (per diagram): an inline error notice plus the original
+  source as plain text. It is local to that diagram and never an error for the
+  whole document.
+- **Pass generation** (renderer, pure): a monotonic token. A pass captures it
+  when it starts, and its results may be written only if the token is still
+  current. A new `FILE_RENDERED`, `DOCUMENT_CLOSED` or dark-mode change starts
+  a new generation. Same class of guard as `revealToken` and Task 44's epoch.
+- **Main-window CSP**: a document policy on the main window's page.
+
+### Invariants / guardrails
+
+156. **Exact detection.** Only a fence whose info string's first word is exactly
+     `mermaid` becomes a placeholder. Every other code block goes through the
+     existing highlight.js path, byte-identical to today (proof: an existing
+     code-highlighting fixture's HTML is unchanged).
+157. **Escaped at the boundary.** The placeholder carries the fence body as
+     escaped text only, so `html: false` still holds end to end. A security
+     regression unit test is required: a mermaid fence containing
+     `</pre><script>alert(1)</script><img src=x onerror=alert(1)>` yields HTML
+     with no `<script`, no `<img` and no `onerror`.
+158. **Mermaid configuration is locked.** `securityLevel: 'strict'` and
+     `startOnLoad: false`. Mermaid's `secure` list keeps its defaults and adds
+     `themeCSS`, `themeVariables`, `fontFamily` and `altFontFamily` (the
+     CVE-2026-41159 vectors; both 11.17.2 and 12.0.0 leave them overridable),
+     plus `theme` and `darkMode`, so diagrams always follow the app's dark
+     mode (#164; Step 1 D2, amended after Step 1 review: without them a
+     `%%{init: {"theme": ...}}%%` directive was shown to override the theme).
+     No in-document `%%{init: ...}%%` directive or diagram frontmatter
+     `config:` can change any locked key. Proof by e2e, each case exercised
+     through **both** a `%%{init: ...}%%` directive **and** diagram
+     frontmatter `config:`: a diagram that tries `securityLevel: 'loose'`
+     plus a `click` callback gets no handler, a diagram that tries
+     `themeCSS` adds no attacker-controlled style, and a diagram that tries
+     `theme` keeps the app's theme. The `darkMode` lock is proven at the
+     **configuration level**, not visually: a time-boxed probe across 13
+     diagram types found no visible `darkMode` effect under the app's
+     `default`/`dark` themes, so the e2e test asserts that the configuration
+     Mermaid actually used for a diagram carrying `darkMode: true` (via both
+     `%%{init}%%` and frontmatter `config:`) keeps the app's value
+     (`mermaid.mermaidAPI.getConfig().darkMode === false` after render), and
+     it goes red when only `darkMode` is unlocked (amended at Task 45
+     review: S1). Known accepted limitation: per-diagram theme customization
+     is not supported.
+159. **Diagram XSS regression suite** (required by the project's render-path
+     rule). After rendering diagrams whose labels, links and `click`
+     directives carry `<script>`, `<img onerror>`, `javascript:` URLs and HTML
+     entities: the preview contains no `<script>` element, no `on*`
+     attribute and no `javascript:` URL, and a canary global stays undefined.
+160. **Main-window CSP properties.** The exact policy string belongs to Step 1;
+     these properties are the guardrail:
+     - `script-src` allows only the app's own files: no `'unsafe-inline'`,
+       no `'unsafe-eval'`. If Mermaid turns out to need either, stop and
+       escalate; do not relax it silently. (Lead's reading: the only
+       `Function(` calls in 11.17.2 are lodash's global-object check,
+       short-circuited by `self` in a browser. This is unverified at runtime,
+       and the tests must prove it.)
+     - `object-src`, `frame-src`, `connect-src` and `form-action` are `'none'`.
+     - `style-src` may include `'unsafe-inline'` because Mermaid emits a
+       `<style>` element inside each SVG. This is a disclosed exception.
+     - `img-src` preserves today's behavior: local files through the dynamic
+       `<base href>` (Task 4), `data:`, and remote `http:` and `https:`
+       images (the test fixture uses an `https:` one at line 359). The
+       guardrail is "preserves today's behavior"; `https:` was an example,
+       not a narrowing (amended after Step 1 review). This is a disclosed
+       trade-off: remote images remain a possible outbound channel for
+       CSS-only tricks.
+     - The dynamic `<base href>` retargeting (Task 4) keeps working.
+     Proof: (a) the full existing e2e suite passes unmodified; (b) rendering
+     the full `test-fixture.md` raises zero `securitypolicyviolation` events;
+     (c) a test injects an inline `<script>` into the page and the canary stays
+     undefined. Fault injection: remove the CSP, and (c) goes red.
+161. **No network, packaged reachability.** Rendering diagrams makes zero
+     network requests (no CDN, fonts or icon packs). The Mermaid bundle ships
+     inside `dist/` and is proven from the built output, not the source tree
+     (same posture as #143).
+162. **Failure isolation.** An invalid diagram, or one over Mermaid's
+     `maxTextSize`, shows the diagram-failure notice (message set via
+     `textContent`) with its source. Other diagrams and the rest of the
+     document render normally, and there is no uncaught exception. Mermaid's
+     own error graphic is suppressed (`suppressErrorRendering` in the locked
+     keys) in favor of the app's notice. A diagram over the size limit
+     (checked by the app itself, Step 1 D4, because Mermaid silently renders
+     a substitute diagram instead of failing) and a failure to load the
+     Mermaid bundle both produce the per-diagram notice. The app's size
+     check and Mermaid's `maxTextSize` read **one** shared constant. The
+     same rule applies to `maxEdges` if exceeding it renders silently; the
+     Step 1 review probe showed that 11.17.2 **throws** ("Edge limit
+     exceeded"), so it takes the ordinary failure path with no pre-check.
+163. **No stale writes.** A diagram pass whose generation is no longer current
+     writes nothing: not into a newer document, not after Close, and not with
+     the old theme after a dark-mode change. The on-demand bundle load
+     (Step 1 D1) respects generations: a Close or a newer `FILE_RENDERED`
+     that arrives while the bundle is loading means the old pass writes
+     nothing once the load settles. After Close, the Task 44 pristine
+     state (#146) still holds exactly (proof: the shared pristine helper
+     passes after closing a document that had diagrams mid-render).
+164. **Theme follows dark mode.** Diagrams use Mermaid's `dark` theme in dark
+     mode and `default` otherwise. Toggling dark mode re-renders the diagrams
+     from their stored source without re-reading the file. The frontmatter
+     toggle, the tree toggle and tab switches do not re-render diagrams.
+165. **Live reload** re-runs the diagram pass on every `FILE_RENDERED`.
+     Multiple diagrams in one document render independently, with unique IDs.
+166. **Preview-only.** The Code tab, copy-raw-source (#98-#101), the status bar,
+     the frontmatter view and Close behave exactly as before. The Help and
+     What's New windows (data: URLs, no scripts) show a placeholder's source
+     as text; this is accepted and not styled further.
+167. **Dependencies.** Exactly one new dependency, `mermaid` pinned
+     exactly to `11.17.2`, declared in **`devDependencies`**: it is a
+     build-time asset source whose `dist/mermaid.min.js` is copied into
+     `dist/renderer/`, not a runtime `node_modules` dependency. The
+     production `dependencies` stay identical to `main`, so electron-builder
+     does not pack Mermaid's `node_modules` tree into `app.asar` (measured:
+     142.8 MB with it as a runtime dependency, 15.7 MB as a devDependency)
+     (amended at Task 45 review: B3). Alternatives are disclosed in Step 1 (at least
+     `@mermaid-js/tiny`, pre-rendering in `main` via mermaid-cli/puppeteer, and a
+     remote renderer such as Kroki).
+168. **Existing security invariants untouched:** `contextIsolation: true`,
+     `nodeIntegration: false`, `sandbox: true`, `html: false`, and the
+     unconditional `will-navigate` / `setWindowOpenHandler` interception.
+     No new bridge method or IPC channel.
+
+### Explicitly out of scope (not built without asking)
+
+- A CSP for the Help and What's New windows (static data: URLs, no scripts).
+  Backlog candidate.
+- Upgrading to Mermaid 12 (backlog candidate once it matures).
+- Per-diagram theme customization, zoom/pan, and SVG/PNG export.
+- Lazy-loading the Mermaid bundle. Step 1 measures startup cost with and without
+  the bundle; only a measured regression justifies adding it.
+- Help / README / CHANGELOG updates (release-time satellite).
+
+---

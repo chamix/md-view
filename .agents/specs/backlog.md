@@ -748,3 +748,47 @@ packaging — not assumed fine just because Windows was.
   while nothing is open is a product decision for the user. If changed,
   `expectPristineDocumentView`'s `#document-container` visibility assertion
   changes with it.
+
+- [Pending] Task 45 (reviewer backlog candidate): `github-markdown-css` is
+  in `dependencies`, but it is only a build-time copy source. The `build`
+  script copies its two CSS files into `dist/renderer/`, and nothing
+  `require`s it at runtime. Because electron-builder packs production
+  `dependencies` into `app.asar`, it ships as `node_modules/github-markdown-css`
+  (visible in Task 45's packaged `asar list`). Same fix as Task 45 B3 for
+  `mermaid`: move it to `devDependencies` and assert in an integration
+  test that it is absent from `dependencies`. The user asked for this to be
+  reported, not changed, in Task 45. Non-blocking.
+
+- [Pending] Task 45 re-review Nit 1: the config-level `darkMode` lock tests
+  (`tests/e2e/mermaid.spec.ts`, "darkMode stays locked at the config
+  level") read `mermaid.mermaidAPI.getConfig().darkMode` after render. They
+  rely on Mermaid 11.17.2 keeping the directive-merged config after
+  rendering. If a future Mermaid resets its config after render, both tests
+  would pass vacuously. Add an in-test positive control: an unlocked key set
+  by the same directive (e.g. `flowchart.curve`) must be observed as
+  changed through the same `getConfig()` channel. Revisit on any Mermaid
+  upgrade. Non-blocking.
+
+- [Pending] Task 45 review Nit 2: `tests/unit/golden/with-code.html` is
+  compared after normalizing its CRLF to LF in the test, because
+  `core.autocrlf=true` rewrites the golden to CRLF on checkout while
+  markdown-it always emits LF. Cleaner: a `.gitattributes` entry
+  (`tests/unit/golden/* -text` or `eol=lf`) and a raw byte comparison.
+  Optionally also widen the golden (Nit 1 of the first review) to
+  `test-fixture.md` with its mermaid fence removed. Non-blocking.
+
+- [Pending] Task 45 (Step 0 out of scope): a Content Security Policy for
+  the Help and What's New windows. They load static `data:` URLs with no
+  scripts, so the risk is low, but they have no document CSP. A mermaid
+  fence there shows as plain source text (#166, accepted). Candidate:
+  `default-src 'none'; style-src 'unsafe-inline'; img-src data: https:`
+  (to be designed and probed in its own task).
+
+- [Pending] Task 45 (Step 0 out of scope; ADR-010): upgrade Mermaid 11.17.2
+  to 12.x once it matures. 12.0.0 (2026-09-10) was deferred: a new major,
+  ELK as the default layout and a new default look (visual churn), 5.4 MB vs
+  3.5 MB, and the same CVE-2026-41159 keys remain overridable (keep them in
+  the locked `secure` list). On upgrade, re-run the Step 1 probes: the
+  `Function(`/eval scan under `script-src 'self'`, the default `secure`
+  list, `maxTextSize`/`maxEdges` behavior, orphaned `#d<id>` nodes, and the
+  `getConfig()` observation behind the darkMode tests (see Nit 1 above).

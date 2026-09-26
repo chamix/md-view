@@ -2,6 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' file: data: http: https:; connect-src 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'self' file:" />
     <title>md-view</title>
     <base id="content-base" href="" />
     <link id="theme-markdown-light" rel="stylesheet" href="./github-markdown-light.css" />
@@ -52,6 +53,7 @@
       </div>
     </div>
     <div id="status-bar">No file open</div>
+    <script src="./diagrams.js"></script>
     <script src="./renderer.js"></script>
   </body>
 </html>

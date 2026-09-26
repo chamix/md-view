@@ -14,6 +14,34 @@ function highlightCode(code: string, lang: string): string {
 
 const md = new MarkdownIt({ html: false, highlight: highlightCode }); // explicit: never allow raw HTML passthrough from source
 
+// Task 45 #156: a fence is a Mermaid diagram iff its info string's first word
+// is exactly `mermaid` (case-sensitive, as GitHub does). Same language-name
+// derivation markdown-it's own fence rule uses.
+export function isMermaidFence(info: string): boolean {
+  return md.utils.unescapeAll(info).trim().split(/\s+/)[0] === 'mermaid';
+}
+
+// Task 45 #157: the diagram source crosses the main -> renderer boundary as
+// escaped TEXT only (html: false holds end to end). The info string is never
+// echoed, so no author-controlled text lands in an attribute. The renderer
+// reads it back via code.textContent and renders it (main has no DOM).
+function mermaidPlaceholder(source: string): string {
+  return (
+    '<div class="md-view-diagram" data-diagram="mermaid"><pre class="md-view-diagram-source"><code>' +
+    md.utils.escapeHtml(source) +
+    '</code></pre></div>'
+  );
+}
+
+// Decorator over markdown-it's own fence rule: every non-mermaid fence is
+// delegated to the captured original, with the same arguments, unchanged.
+const defaultFence = md.renderer.rules.fence!;
+md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+  const token = tokens[idx];
+  if (isMermaidFence(token.info)) return mermaidPlaceholder(token.content);
+  return defaultFence(tokens, idx, options, env, self);
+};
+
 // Strips author-written HTML comments from rendered content. This is a core
 // rule (runs after block + inline parsing, before rendering) rather than a
 // renderer.rules.text override: mutating only the text token's content still
