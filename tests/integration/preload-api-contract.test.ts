@@ -233,3 +233,43 @@ describe('Task 34: COPY_RAW_SOURCE channel / copyRawSource method', () => {
     expect(received).toBe('# Hello\n');
   });
 });
+
+describe('Task 44: DOCUMENT_CLOSED channel / onDocumentClosed method', () => {
+  it('exposes a non-empty string channel name for DOCUMENT_CLOSED, distinct from every other IPC_CHANNELS value', () => {
+    expect(typeof IPC_CHANNELS.DOCUMENT_CLOSED).toBe('string');
+    expect(IPC_CHANNELS.DOCUMENT_CLOSED.length).toBeGreaterThan(0);
+
+    // Checked against Object.values (not a hand-maintained list), so a
+    // future channel can never silently collide with it.
+    const others = Object.entries(IPC_CHANNELS)
+      .filter(([key]) => key !== 'DOCUMENT_CLOSED')
+      .map(([, value]) => value);
+    expect(others.length).toBe(Object.values(IPC_CHANNELS).length - 1);
+    expect(others).not.toContain(IPC_CHANNELS.DOCUMENT_CLOSED);
+  });
+
+  // Honest limitation: same as above -- BridgeApi is a TypeScript interface,
+  // erased at compile time. What this proves is that an onDocumentClosed
+  // method taking a zero-argument callback is usable as claimed at runtime;
+  // `tsc --strict` proves the interface shape itself.
+  it('BridgeApi is constructible with an onDocumentClosed method whose callback takes no arguments', () => {
+    let calls = 0;
+    let receivedArgs: unknown[] | null = null;
+    const sample: BridgeApi = {
+      version: '0.0.0-test',
+      onFileRendered: () => {},
+      onViewSettings: () => {},
+      openDroppedFile: () => {},
+      onDocumentClosed: (callback) => {
+        callback();
+      },
+    };
+
+    sample.onDocumentClosed((...args: unknown[]) => {
+      calls += 1;
+      receivedArgs = args;
+    });
+    expect(calls).toBe(1);
+    expect(receivedArgs).toEqual([]);
+  });
+});

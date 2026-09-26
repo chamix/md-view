@@ -693,3 +693,58 @@ packaging — not assumed fine just because Windows was.
   which incidentally proves guardrail #140 at the wiring level). Add a
   `getVersion` stub to that mock the next time the file is touched.
   Non-blocking.
+
+- [Pending] Task 44 finding (engineer, confirmed plausible by the reviewer,
+  `review_report_task44.md` "Info"): a file opened through a Windows 8.3
+  short path (e.g. under `%TEMP%` = `C:\Users\ADMINI~1\...` on this machine)
+  never gets its tree-row highlight. `establishTreeRoot` canonicalizes the
+  tree root with `fs.realpath`, but the renderer's `activeFilePath` is the raw
+  `FILE_RENDERED` `filePath`, and `isPathUnder` compares raw strings, so the
+  file is never "under" the root. Pre-existing, neither caused nor worsened by
+  Task 44. `close-document.spec.ts` works around it test-side with
+  `fs.realpathSync.native` on its temp root. Fix candidates: canonicalize the
+  delivered `filePath` in main, or compare canonical forms. Non-blocking.
+
+- [Pending] Task 44 N6 (reviewer, `review_report_task44.md` Addendum 1).
+  Extends the Task 27 entry above on `preload-api-contract.test.ts` rather
+  than duplicating it. New facts:
+  - The file's own comments claim the "`: BridgeApi` annotation … would fail
+    to compile" under `tsc --strict` via `npm run build`. That is false:
+    `tsconfig.json:16` includes only `src/**`, there is no tests tsconfig or
+    vitest `typecheck`, and esbuild strips types unchecked.
+  - `npx tsc --noEmit --strict` on the file now reports **6** errors (lines
+    43, 67, 107, 177, 220, and Task 44's own literal at 258).
+  Prerequisite: fixing those 6 errors comes first. Then either correct the
+  comments or add a test type-check step (`tsconfig.test.json` +
+  `tsc --noEmit` in CI). A type-check step may surface more latent test-type
+  errors; `menu.test.ts`'s `handlers()` had one on `main` (missing
+  `onOpenSettings`), which Task 44 fixed. Non-blocking.
+
+- [Pending] Task 44 finding, pre-existing: a failed open leaves the previous
+  file's watcher running. `documentSession.open` (formerly `renderAndWatch`)
+  starts or replaces the watch only when `message.ok`, and never stops it on
+  an error result. So after "open A (ok) -> open B (fails)", saving A still
+  re-renders A over B's error. The Lead read the code this way (Step 0 #148),
+  the reviewer confirmed it line by line, and it is pinned deliberately by the
+  unit test "PRESERVED pre-existing behavior…" and e2e "(f) pinned
+  pre-existing behavior". Close is not defeated by it: `close()` always
+  stops the watch (#147/#148). Fixing it means updating both pins.
+  Explicitly out of Task 44's scope. Non-blocking.
+
+- [Pending] Task 44 N5 (reviewer): `documentSession` is a module-level
+  `const` in `src/main/index.ts` (~:332), declared *below* functions that
+  reference it (`menuHandlers` ~:113, `applyMenu` ~:154). This is safe today,
+  because those run only inside `app.whenReady()`, after module evaluation.
+  Any future top-level call of `applyMenu()` / `menuHandlers()` placed above
+  the declaration would throw a TDZ `ReferenceError` at startup. Fix: move
+  the session construction above its first referencing function (or into a
+  factory called before `applyMenu`). Non-blocking.
+
+- [Pending] Task 44 (Step 0 out of scope; a UX decision, not a defect): the
+  pristine screen, both at launch and after Close, shows `#empty-state` *and*
+  an empty `#document-container` card (tab buttons, a disabled copy button, an
+  empty body) at the same time. Task 44 deliberately restores that exact look
+  (#146) rather than changing it. Whether the empty card should be hidden
+  while nothing is open is a product decision for the user. If changed,
+  `expectPristineDocumentView`'s `#document-container` visibility assertion
+  changes with it.

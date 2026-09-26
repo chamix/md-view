@@ -14,6 +14,9 @@ export const IPC_CHANNELS = {
   WINDOW_MAXIMIZED_STATE: 'md-view:window-maximized-state',
   SELECT_TAB: 'md-view:select-tab',
   COPY_RAW_SOURCE: 'md-view:copy-raw-source',
+  // Task 44: main -> renderer push, zero payload. Its arrival is the whole
+  // fact ("the document slot is now empty"); not a FileRenderedMessage variant.
+  DOCUMENT_CLOSED: 'md-view:document-closed',
 } as const;
 
 export type DocumentTab = 'preview' | 'code';
@@ -92,4 +95,5 @@ export interface BridgeApi {
   onWindowMaximizedState(callback: (isMaximized: boolean) => void): void;
   selectTab(tab: DocumentTab): void;
   copyRawSource(text: string): Promise<boolean>;
+  onDocumentClosed(callback: () => void): void;
 }

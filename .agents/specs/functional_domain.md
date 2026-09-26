@@ -3145,3 +3145,143 @@ CHANGELOG heading and `package.json` version `1.1.0` exist to build against.
 - Making `writeSettingsFile` atomic (tracked in backlog.md).
 
 ---
+
+## Task 44: Close document (Step 0)
+
+Depends on Task 43 (released as v1.1.0; `main` is at tag `v1.1.0`). Touches the
+same seams as Task 7 (empty-state / status bar), Task 34 (copy-raw-source, #100),
+Task 29 / ADR-005 (title-bar popup reuses `buildMenuTemplate`, #67) and the
+live-reload watcher (one watcher at a time).
+
+Decision taken with the user before drafting: File > Close is **disabled while
+nothing is open** (main tracks whether the document slot is occupied and
+rebuilds the menu when that changes). An always-enabled, no-op-when-empty item
+was considered and rejected.
+
+### Abstract contracts
+
+- **Document slot** (session state, owned by `main`, never persisted): `empty`
+  or `occupied`. `empty` at launch. It becomes `occupied` when the first
+  `FILE_RENDERED` message of either variant (ok or error) is *delivered* to the
+  renderer -- the same event the renderer already treats as "a file was
+  attempted" (Task 7). It returns to `empty` only through Close. Same tier as
+  `currentTreeRoot` and `currentTab`: session-scoped.
+- **Close** (domain action): "dismiss whatever the slot holds and return to the
+  pristine condition." Zero-argument trigger. The native menu, the title-bar
+  File popup and the accelerator are three entry points into one handler,
+  never three implementations (#67 posture).
+- **Document-closed notification** (main -> renderer, push): zero payload. Its
+  arrival is the entire fact ("the slot is now empty"). It is *not* a variant
+  of `FileRenderedMessage`.
+- **Render epoch** (pure): a monotonic counter. Every render request (an open,
+  or a watcher-triggered re-render) captures the epoch when it *starts*; its
+  result may be delivered only if the epoch is unchanged when it resolves.
+  Close, when it acts, advances the epoch.
+
+### Pure transformation logic
+
+A framework-free module (no Electron/Node imports). Its shape (immutable values
+or a small stateful object) is the engineer's choice; its semantics are not:
+
+- `beginRender() -> token`: captures the current epoch.
+- `tryDeliver(token) -> { deliver, occupancyChanged }`: `deliver` iff `token`
+  equals the current epoch. On `deliver` the slot becomes `occupied`;
+  `occupancyChanged` is true iff it was `empty` before.
+- `close() -> { acted }`: if `occupied`: becomes `empty`, epoch advances,
+  `acted = true`. If `empty`: nothing changes (epoch included), `acted = false`.
+- `isOccupied() -> boolean`.
+
+### Invariants / guardrails
+
+145. **Close is a third condition, not a reversal of Task 7 guardrail 5's
+     meaning.** The empty-state message is visible iff the slot is `empty`
+     (pristine at launch, or after Close). A failed open still occupies the
+     slot: the error is shown and the empty-state stays hidden -- "a file was
+     attempted and failed" remains distinct from "nothing is open". Task 7
+     guardrail 5's clause "never shown again for the rest of that window's
+     lifetime" is **superseded by this task, for the Close path only** -- a
+     disclosed, intentional lifting (same posture as Task 37 over Task 8's
+     "never persisted" boundary), not silent drift. `renderer.js`'s
+     "one-way transition" comment must be updated to say so.
+146. **Round-trip equivalence.** After Close, the renderer's observable state
+     equals the pristine-launch state: `#empty-state` visible with its original
+     text; `#status-bar` reads "No file open"; `#copy-raw-source` is disabled
+     (#100); `#content` and `#code-content` hold no rendered or error content;
+     `#frontmatter` is hidden; no tree row carries the active highlight.
+     `#document-container` is **not** hidden or removed -- the pristine screen
+     already shows it (empty card), and Close restores that, not a new look.
+     Proof compares against the same locators/assertions as the pristine-launch
+     test in `ui-shell.spec.ts`, not against a re-derived expectation.
+147. **`main` owns Close.** Closing stops the active watcher in `main`; after
+     Close, zero watchers are active (extends the existing one-watcher-at-a-time
+     invariant). A renderer-only close is explicitly rejected: the next save
+     would resurrect the document.
+148. **No resurrection.** After Close, a save to the previously open file
+     produces no `FILE_RENDERED` and no visible change. This includes closing
+     from an *error* state: reading `renderAndWatch` (`startWatching` runs only
+     when `message.ok`), a failed open does not stop the previous file's
+     watcher, so Close from that state must still leave zero watchers. (Lead's
+     reading of the code, to be confirmed by the test itself; the guardrail
+     holds either way.)
+149. **Close invalidates every render that started before it.** A render (open
+     or watcher-triggered) that started before an acting Close and resolves
+     after it must not reach the renderer, must not mark the slot `occupied`,
+     must not start a watcher, and must not establish a tree root (an
+     invalidated open is discarded entirely). A render that starts after Close
+     is unaffected. Every `FILE_RENDERED` delivery goes through one guarded
+     choke point so this is structural, not a per-call-site convention. Same
+     class of defect the renderer already guards with `revealToken`.
+150. **Close is inert when nothing is open.** No notification, no menu rebuild,
+     no epoch change -- in particular it never cancels a first open still in
+     flight (the slot is `empty` until that open's delivery).
+151. **Menu contract.** `File > Close`: id `menu-close`, label `Close`,
+     accelerator `CmdOrCtrl+W`, placed directly after `Open Folder...` (File
+     becomes `menu-open`, `menu-open-folder`, `menu-close`, separator,
+     `menu-settings`, separator, `menu-exit`). `enabled` mirrors slot occupancy
+     in both the native application menu and the title-bar File popup (both
+     built from the shared `buildMenuTemplate`, #67). The menu is rebuilt only
+     when occupancy actually changes -- a watcher re-render of the same document
+     must not rebuild it (check-then-act, same shape as `setCurrentTab`).
+     Occupancy is **not** a `ViewSettings` field (it is not a view preference
+     and `ViewSettings` is broadcast and partly persisted); `buildMenuTemplate`
+     receives it as a separate input, and both production call sites pass it.
+     Known accepted limitation: `Cmd+W` conventionally closes the *window* on
+     macOS; macOS is not a shipped target (`electron-builder.yml` builds Windows
+     only).
+152. **Nothing persisted, nothing else reset.** Close writes neither
+     `settings.json` nor `state.json`, and does not touch dark mode, the
+     frontmatter toggle, tree-panel visibility or `currentTab`.
+153. **The tree survives.** Close keeps the tree root and the expanded/fetched
+     tree DOM; only the active-file highlight clears. Conversely, Open Folder,
+     dropped/opened directories and "Up one level" never change slot occupancy
+     (no render happens), consistent with Task 17's "establishing a root must
+     not alter render state".
+154. **The bridge stays narrow.** The only contract additions are one
+     `IPC_CHANNELS` entry (main -> renderer push) and one `BridgeApi` method,
+     `onDocumentClosed(callback)`. No renderer -> main close channel (the
+     trigger originates in `main`'s menu), no raw IPC passthrough, and the
+     `FileRenderedMessage` shape is unchanged.
+155. **Render path and security invariants untouched.** Close only *clears*
+     rendered output (empty assignments); it never interprets markup. Markdown
+     conversion (`html: false`), link interception, `contextIsolation`,
+     `nodeIntegration: false` and `sandbox: true` are unchanged, so no new
+     security regression test is required -- and none of the existing ones may
+     be weakened.
+
+### Explicitly out of scope (not built without asking)
+
+- A close button in the document header, and any confirmation dialog (a
+  read-only viewer has no unsaved state).
+- "Close Folder" / clearing the tree (a separate concept, not requested).
+- Reopen-last-file or persisting anything about what was open.
+- Fixing the pre-existing behavior in #148 (a failed open leaving the previous
+  watcher running). Close only has to not be defeated by it.
+- Making a new Open invalidate a previous in-flight Open (out-of-order opens);
+  only Close advances the epoch.
+- Removing the empty document card from the pristine screen (existing look).
+- macOS `activate` re-creating the window while `main` state (watcher, tree
+  root, slot) persists -- pre-existing carry-over, not addressed.
+- Help / README / CHANGELOG updates (release-time satellite, per the v1.1.0
+  precedent).
+
+---

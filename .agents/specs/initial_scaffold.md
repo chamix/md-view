@@ -5762,3 +5762,330 @@ the full CHANGELOG diff and resulting file and scans for leaked internal
 process text.
 
 ---
+
+## Task 44: Close document (Step 1)
+
+### Code facts this plan rests on (verified by reading, not assumed)
+
+- `index.ts` today has three `FILE_RENDERED` send paths, all through
+  `sendToRenderer`: `renderAndWatch` (argv / dialog / drop / tree click) and
+  the watcher callback in `startWatching`. None is guarded.
+- `renderAndWatch` calls `startWatching` only when `message.ok`, and it never
+  calls `stopWatching` on an error result. So #148's reading is correct: a
+  failed open leaves the previous file's watcher running.
+- chokidar 4 `FSWatcher.close()` calls `removeAllListeners()` synchronously
+  (`node_modules/chokidar/index.js` `close()`). A closed watcher therefore
+  cannot *start* a new render. Only a render already in flight (awaiting
+  `renderFile`) can arrive late, and that is exactly what the epoch covers.
+  No extra "stale watcher" guard is needed.
+- The renderer's null-input behavior is already pinned by unit tests:
+  `statusBarText(null)` -> "No file open", `canCopyRawSource(null)` -> false,
+  `shouldShowFrontmatter(null, …)` -> false. Close reuses these (see below).
+- Two existing tests enumerate File-menu positions and must change:
+  `tests/unit/menu.test.ts` (length 6, indexes 3/4/5) and
+  `tests/e2e/window-chrome.spec.ts` (two File popup id lists, lines ~231 and
+  ~522).
+- Accelerators are driven in e2e with `webContents.sendInputEvent`
+  (window-chrome.spec.ts (e)), not `page.keyboard`. The title-bar popup is
+  inspected by capturing `Menu.buildFromTemplate` (window-chrome.spec.ts (d)).
+
+### The Inward Dependency Rule
+
+```
+[ Domain: pure, zero imports ]       documentSlot.ts   (epoch + occupancy)
+                ^
+[ Use case: Electron-free, ports ]   documentSession.ts (open / close / shutdown;
+                                      the single guarded FILE_RENDERED choke point)
+                ^
+[ Adapters ]                         watcher.ts (chokidar, unchanged)
+                                     menu.ts (pure template, gains `documentOpen` input)
+                ^
+[ Composition root / Electron ]      index.ts (binds ports: renderFile, webContents.send,
+                                      watchFile, establishTreeRoot, applyMenu)
+[ Bridge ]                           preload/api.ts + preload/index.ts (+1 channel, +1 method)
+[ Renderer ]                         renderer.js (onDocumentClosed -> pristine)
+```
+
+`documentSession.ts` imports only `documentSlot.ts` and *types* from
+`preload/api.ts` (same allowance `menu.ts` already has). No `electron`, no
+`fs`, no `path`.
+
+### SOLID Boundary Scan
+
+- **SRP:** the slot answers "may this result be delivered, and did occupancy
+  change?"; the session coordinates render / deliver / watch / tree-root / close;
+  `index.ts` only binds concrete I/O; `menu.ts` only describes the menu.
+- **OCP:** `MenuHandlers` gains `onClose`. `buildMenuTemplate` gains a
+  **required** third parameter `documentOpen: boolean`. It is required, not
+  optional, on purpose: `tsc` then refuses any production call site that
+  forgets it, so #151's "both production call sites pass it" is enforced by
+  the compiler rather than by review.
+- **DIP:** the session receives a `DocumentSessionPorts` object instead of
+  importing Electron, chokidar or `fs`. That is what makes #147-#150
+  unit-testable with fake ports and controllable promises.
+- **ISP:** narrow, single-purpose ports (below), not a "window" or "app"
+  interface. Renderer bridge: one method, `onDocumentClosed(cb)`.
+- **LSP:** n/a (no inheritance introduced).
+
+### Pattern Application
+
+- **Command** (existing, extended): `MenuHandlers.onClose` is one receiver
+  (`session.close`) behind three invokers: the native menu item, the title-bar
+  popup (same `buildMenuTemplate`, #67) and the `CmdOrCtrl+W` accelerator.
+- **Protection Proxy:** the session's private `deliver(token, message)` stands
+  in front of the `sendFileRendered` port and forwards only when
+  `slot.tryDeliver(token).deliver`. It is the only caller of that port, which is
+  what makes #149 structural rather than a per-call-site convention.
+- **Facade:** `open(filePath)` / `close()` / `shutdown()` hide the slot, the
+  watcher handle and tree-root coordination from `index.ts`.
+- **Ports & Adapters** (same shape as Task 43's `whatsNew.ts`).
+- **Considered and rejected: GoF State.** The slot has two states and four
+  operations. State classes would add ceremony without removing any
+  conditionals. A boolean plus a counter is the honest shape.
+
+### Concrete Plan
+
+**Pure domain**
+1. `src/main/documentSlot.ts` (new): `createDocumentSlot()` returns a small
+   stateful object with `beginRender(): number`,
+   `tryDeliver(token): { deliver: boolean; occupancyChanged: boolean }`,
+   `close(): { acted: boolean }` and `isOccupied(): boolean`, with exactly the
+   Step 0 semantics. No imports.
+
+**Use case**
+2. `src/main/documentSession.ts` (new): `createDocumentSession(ports)` returns
+   `{ open, close, shutdown, isOpen }`.
+   ```ts
+   interface WatchHandle { close(): void }
+   interface DocumentSessionPorts {
+     renderFile(filePath: string): Promise<FileRenderedMessage>;
+     sendFileRendered(message: FileRenderedMessage): void;
+     sendDocumentClosed(): void;
+     watch(filePath: string, onChange: () => void): WatchHandle;
+     establishTreeRootFor(filePath: string): Promise<void>; // index.ts does path.dirname
+     onOccupancyChanged(): void;                             // index.ts: applyMenu()
+   }
+   ```
+   - `open(filePath)`: `token = slot.beginRender()`, `await renderFile`, then
+     `deliver(token, message)`. If it was **not** delivered: return, with no
+     watcher and no tree root (#149, "discarded entirely"). If delivered and
+     `ok`: stop the old watch and start a new one. If delivered and not `ok`:
+     leave the old watch alone (the pre-existing behavior is kept on purpose;
+     fixing it is out of scope). Then `await establishTreeRootFor(filePath)`.
+   - Watch callback: `token = slot.beginRender()`,
+     `renderFile(path).then(m => deliver(token, m))`. It goes through the same
+     choke point, so re-renders never rebuild the menu (`occupancyChanged` is
+     false while occupied, #151).
+   - `deliver(token, message)` (private, the only caller of `sendFileRendered`):
+     `tryDeliver`; on deliver, send, and call `onOccupancyChanged()` iff
+     `occupancyChanged`.
+   - `close()`: `if (!slot.close().acted) return;` (#150). Then stop the watch
+     (#147/#148; zero watchers), `sendDocumentClosed()` and `onOccupancyChanged()`.
+     All synchronous: no interleaving window inside Close.
+   - `shutdown()`: stop the watch only. No notification and no menu rebuild.
+     It replaces today's `app.on('before-quit', stopWatching)`.
+
+**Composition root**
+3. `src/main/index.ts`: remove `activeWatcher`, `stopWatching`,
+   `startWatching`, `renderAndWatch` and `sendToRenderer`. `renderFile`,
+   `establishTreeRoot`, `listDirectoryEntries` and everything else stay. Build
+   one module-level `documentSession` with ports bound to `renderFile`,
+   `mainWindow?.webContents.send(IPC_CHANNELS.FILE_RENDERED | DOCUMENT_CLOSED, …)`,
+   `watchFile` (the chokidar handle satisfies `WatchHandle`),
+   `(f) => establishTreeRoot(path.dirname(f))` and `applyMenu`. The argv
+   `did-finish-load` listener, `openFileViaDialog` and `REQUEST_OPEN_FILE` all
+   call `documentSession.open(...)`; the synchronous-registration invariant is
+   unchanged. `menuHandlers()` gains `onClose: () => documentSession.close()`.
+   `applyMenu()` and the `POPUP_MENU` handler both pass
+   `documentSession.isOpen()` as the third argument. `before-quit` ->
+   `documentSession.shutdown()`. Afterwards `IPC_CHANNELS.FILE_RENDERED`
+   appears in `src/main` **exactly once**, inside the port binding. The
+   reviewer checks this with grep.
+
+**Menu**
+4. `src/main/menu.ts`: `onClose` handler; `buildMenuTemplate(handlers,
+   initialViewSettings, documentOpen)`; the new item
+   `{ id: 'menu-close', label: 'Close', accelerator: 'CmdOrCtrl+W',
+   enabled: documentOpen, click: handlers.onClose }` placed directly after
+   `menu-open-folder` (#151).
+
+**Bridge** (#154)
+5. `src/preload/api.ts`: `DOCUMENT_CLOSED: 'md-view:document-closed'`;
+   `BridgeApi.onDocumentClosed(callback: () => void): void`.
+   `FileRenderedMessage` unchanged.
+6. `src/preload/index.ts`: `ipcRenderer.on(DOCUMENT_CLOSED, () => callback())`.
+   The event object is **not** forwarded (zero payload, narrow bridge).
+
+**Renderer** (#145, #146, #153)
+7. `src/renderer/renderer.js`:
+   - Replace `hideEmptyState` with `setEmptyStateVisible(visible)`. Rewrite the
+     "one-way transition" comment: hidden on the first `FILE_RENDERED` of
+     either variant, and shown again **only** by Close (Task 44 #145 lifts Task
+     7 guardrail 5's "never shown again" for the Close path only, a disclosed
+     supersession).
+   - `onDocumentClosed` handler: re-run the **same** pure functions with the
+     pristine input `null`, rather than hand-writing pristine values:
+     `lastMessage = null`; `setEmptyStateVisible(true)`; `updateStatusBar(null)`;
+     `copyRawSourceEl.disabled = !canCopyRawSource(null)` plus remove the
+     `copied` class; `updateFrontmatterVisibility()`;
+     `container.textContent = ''`; `codeContentEl.textContent = ''`; restore
+     `<base id="content-base">` to its pristine `href=""`;
+     `activeFilePath = null; revealAndHighlight()`. That call clears the
+     highlight and bumps `revealToken`, so an in-flight reveal walk aborts
+     without new code. The handler never touches the tree DOM, the tab, dark
+     mode or `#document-container`.
+   - No renderer-side epoch. `main` never sends a stale `FILE_RENDERED`, and
+     `webContents.send` messages to one renderer arrive in send order, so any
+     `FILE_RENDERED` sent before Close arrives before `DOCUMENT_CLOSED`. The
+     e2e round-trip tests exercise this ordering.
+
+**Docs**
+8. No ADR. The choice is local (one use case plus one pure module, following
+   the ADR-009 / Task 43 ports precedent) and fully recorded here. Help /
+   README / CHANGELOG are deferred to release time (Step 0 out-of-scope list).
+
+### Test Plan mapping (TDD Red-Green-Refactor, 3-cycle stop)
+
+Unit (`tests/unit/`)
+- `documentSlot.test.ts` (new): starts empty; deliver on a current token ->
+  `{deliver:true, occupancyChanged:true}`, then `false` on the next delivery;
+  a token taken before an acting close -> `{deliver:false}` and the slot stays
+  empty; a token taken after close delivers; close while empty ->
+  `{acted:false}` and the epoch is unchanged (a pre-close token still
+  delivers, #150); close while occupied -> `{acted:true}`; repeated close is
+  inert.
+- `documentSession.test.ts` (new; fake ports, deferred promises for
+  `renderFile`):
+  - #147/#148: open ok -> 1 active watch; close -> watch closed, 0 active.
+    Open ok A, then open B that fails -> A's watch still active (pre-existing,
+    pinned so the test documents it); close -> 0 active.
+  - #149: open in flight, close (slot occupied by an earlier file), then
+    resolve -> no `sendFileRendered`, no `watch`, no `establishTreeRootFor`,
+    `isOpen()` false. Watch-triggered render in flight, close, then resolve ->
+    no send. Open that starts after close -> delivered normally.
+  - #150: close while empty -> no `sendDocumentClosed`, no
+    `onOccupancyChanged`; a first open in flight across an inert close still
+    delivers.
+  - #151: `onOccupancyChanged` fires once on the first delivery, 0 times on a
+    watch re-render or on a second open, and once on an acting close. Error
+    delivery also occupies (#145).
+  - `shutdown()` closes the watch with no notification and no occupancy call.
+- `menu.test.ts` (update): File has 7 entries in the #151 order; `menu-close`
+  has its label, accelerator and `click === onClose`; `enabled` is `false`
+  for `documentOpen=false` and `true` for `true`; existing index-based
+  assertions shift.
+
+Integration (`tests/integration/`)
+- `preload-api-contract.test.ts`: `DOCUMENT_CLOSED` is a non-empty string,
+  distinct from every other `IPC_CHANNELS` value (checked against
+  `Object.values`, not a hand list); the `BridgeApi` sample literals gain
+  `onDocumentClosed`.
+
+E2E (`tests/e2e/`; manual pre-merge gate per ADR-007)
+- `support/pristine.ts` (new): `expectPristineDocumentView(window)`, the
+  assertions currently inline in `ui-shell.spec.ts`'s no-argv test
+  (`#empty-state` visible, status bar "No file open", `#copy-raw-source`
+  disabled), extended with `#content` / `#code-content` empty, `#frontmatter`
+  hidden, zero `.tree-row-active` and `#document-container` visible.
+  `ui-shell.spec.ts`'s no-argv test is refactored to call it, so launch and
+  close are proven against one definition (#146).
+- `close-document.spec.ts` (new):
+  (a) `menu-close` is disabled at launch, enabled after open, disabled after
+  Close (native menu, `getMenuItemById(...).enabled`).
+  (b) Round-trip: open a frontmatter fixture from a temp tree (tree root plus
+  highlight present), Close -> `expectPristineDocumentView`; the tree still
+  has its rows and expanded folders (#153); dark mode and the Code tab are
+  unchanged across Close (#152).
+  (c) `CmdOrCtrl+W` via `sendInputEvent` closes an open document. With nothing
+  open, it produces zero `DOCUMENT_CLOSED` sends and zero
+  `Menu.setApplicationMenu` calls (both counted by main-side monkey-patching,
+  #150).
+  (d) Title-bar File popup: ids include `menu-close` at index 2, and its
+  `enabled` mirrors occupancy (capture technique from window-chrome (d)).
+  (e) No resurrection (#148): open temp A, Close, edit A, wait 1500ms ->
+  still pristine **and** zero `FILE_RENDERED` sends counted in main.
+  (f) Error-state Close: open ok A, then open a missing `.md` -> error shown,
+  `#empty-state` hidden (#145); Close -> pristine; edit A -> zero
+  `FILE_RENDERED`.
+  (g) A watcher re-render of the open file causes zero `setApplicationMenu`
+  calls (#151).
+  (h) Open Folder leaves `menu-close` disabled (#153). Close writes neither
+  `settings.json` nor `state.json` (content and mtime unchanged, #152).
+- `window-chrome.spec.ts`: both File popup id lists gain `'menu-close'` after
+  `'menu-open-folder'`. No other change.
+- Race (#149) is proven at unit level (deterministic). An e2e race test is
+  **not** required. If the engineer adds one, it must be stable under
+  `--repeat-each=10`, or it is dropped: no flaky test to police a race.
+- Security suites (#155): not modified. The reviewer confirms that the
+  external-links / html-comments / window-config tests are byte-unchanged.
+
+### In-scope files
+
+- `src/main/documentSlot.ts` (new), `src/main/documentSession.ts` (new)
+- `src/main/index.ts`, `src/main/menu.ts`
+- `src/preload/api.ts`, `src/preload/index.ts`
+- `src/renderer/renderer.js`
+- `tests/unit/documentSlot.test.ts` (new), `tests/unit/documentSession.test.ts` (new),
+  `tests/unit/menu.test.ts`
+- `tests/integration/preload-api-contract.test.ts`
+- `tests/e2e/close-document.spec.ts` (new), `tests/e2e/support/pristine.ts` (new),
+  `tests/e2e/ui-shell.spec.ts`, `tests/e2e/window-chrome.spec.ts`
+
+Explicitly NOT touched: `watcher.ts`, `index.html`, `app.css`, `settings*.ts`,
+`appState*.ts`, `whatsNew*.ts`, `help.md`, `CHANGELOG.md`, `README.md`,
+`electron-builder.yml`, `package.json`, `.github/**`, and every existing
+security-regression test.
+
+### Expected output format
+
+New files: full content. Existing files: diff (targeted edits).
+
+### Spec section this closes
+
+`functional_domain.md` Task 44 section, guardrails #145-155.
+
+### Known pre-existing behaviors deliberately left alone (not regressions)
+
+- A failed open keeps the previous watcher (#148; pinned by a unit test, not
+  fixed).
+- Out-of-order opens and a stale watcher render from a *switched-away* file
+  are not epoch-guarded. Only Close advances the epoch (Step 0 out of scope).
+
+---
+
+### Task 44: User approval conditions (binding on implementation and review)
+
+The blueprint above was approved subject to these conditions. Where a
+condition and the blueprint disagree, the condition wins.
+
+1. **Behavior-preservation proof.** `live-reload.spec.ts`,
+   `open-file-argv.spec.ts`, `drag-drop.spec.ts` and `tree-panel.spec.ts` stay
+   **out of scope** and must pass **unmodified**. Passing them is the proof
+   that the `documentSession` extraction preserves behavior.
+2. **Preserve, don't fix.** A failed open still leaves the previous watcher
+   running (pre-existing, Step 0 out of scope). The refactor hides no behavior
+   change. The error-state Close test (e2e (f)) and the session unit test cover
+   it.
+3. **#149 wiring proof.** After the change, `IPC_CHANNELS.FILE_RENDERED` is
+   referenced in `src/main/` only at the single port binding; the reviewer
+   greps for it and cites the raw result. An invalidated open skips the watch
+   start **and** the tree-root establishment, with **one unit test for each**.
+4. **Folder paths stay in `index.ts`.** The directory branch of
+   `REQUEST_OPEN_FILE`, Open Folder and "Up one level" remain in `index.ts` and
+   never touch the slot or the session (#153).
+5. **Pristine helper fidelity.** `expectPristineDocumentView` keeps every
+   assertion the current pristine-launch test makes. The legacy `h1` /
+   `#open-file-btn` checks may stay local to `ui-shell.spec.ts`. One fault
+   injection is required: temporarily hide `#empty-state` at launch, and the
+   helper-based launch test must go RED. Revert it afterwards, and report the
+   raw RED output.
+6. **Ordering assumption stated in code.** The renderer relies on
+   `DOCUMENT_CLOSED` and `FILE_RENDERED` (two channels, same `webContents`)
+   arriving in send order. A code comment states this assumption, and the
+   reviewer confirms nothing else depends on it.
+7. The `in_scope` list is shown to the user before `current_scope.json` is
+   written.
+8. **Stop-before-`/log-run` gate.** The Lead stops and reports to the user
+   before running `/log-run`.
+
+---

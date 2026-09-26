@@ -102,12 +102,16 @@ if (typeof document !== 'undefined') {
     if (link) link.href = new URL(link.getAttribute('href'), initialBaseURI).href;
   });
 
-  // The empty-state message is a one-way transition: hidden permanently on
-  // the first FILE_RENDERED message of either variant (ok or error), and
-  // never shown again for the rest of the window's lifetime.
-  const hideEmptyState = () => {
+  // The empty-state message is visible iff the document slot is empty: hidden
+  // on the first FILE_RENDERED message of either variant (ok or error), and
+  // shown again ONLY by Close (DOCUMENT_CLOSED). Task 44 #145 lifts Task 7
+  // guardrail 5's "never shown again for the rest of the window's lifetime"
+  // for the Close path only -- a disclosed, intentional supersession, not
+  // silent drift. A failed open still hides it ("attempted and failed" stays
+  // distinct from "nothing is open").
+  const setEmptyStateVisible = (visible) => {
     if (emptyStateEl) {
-      emptyStateEl.hidden = true;
+      emptyStateEl.hidden = !visible;
     }
   };
 
@@ -226,7 +230,7 @@ if (typeof document !== 'undefined') {
   };
 
   window.mdview.onFileRendered((message) => {
-    hideEmptyState();
+    setEmptyStateVisible(false);
     updateStatusBar(message);
     lastMessage = message;
     if (copyRawSourceEl) copyRawSourceEl.disabled = !canCopyRawSource(message);
@@ -243,6 +247,39 @@ if (typeof document !== 'undefined') {
     }
 
     activeFilePath = message.ok ? message.filePath : null;
+    revealAndHighlight();
+  });
+
+  // Task 44 (#146): Close returns the document view to the pristine-launch
+  // state by re-running the SAME pure functions with the pristine input
+  // (null), never by hand-writing pristine values. Only clears (empty
+  // assignments); never interprets markup (#155). Deliberately leaves the
+  // tree DOM, the current tab, dark mode and #document-container alone
+  // (#152/#153).
+  //
+  // Ordering assumption (Task 44 approval condition 6): this relies on
+  // DOCUMENT_CLOSED and FILE_RENDERED -- two channels, same webContents --
+  // arriving here in the order main sent them, and on main never sending a
+  // stale FILE_RENDERED (its render epoch discards any render that started
+  // before an acting Close, see src/main/documentSession.ts). So no
+  // renderer-side epoch is needed: any FILE_RENDERED sent before Close is
+  // processed before this handler, and none from before Close follows it.
+  window.mdview.onDocumentClosed(() => {
+    lastMessage = null;
+    setEmptyStateVisible(true);
+    updateStatusBar(null);
+    if (copyRawSourceEl) {
+      copyRawSourceEl.disabled = !canCopyRawSource(null);
+      copyRawSourceEl.classList.remove('copied');
+    }
+    updateFrontmatterVisibility();
+    if (frontmatterEl) frontmatterEl.textContent = '';
+    if (container) container.textContent = '';
+    if (codeContentEl) codeContentEl.textContent = '';
+    if (baseElement) baseElement.setAttribute('href', '');
+    // Clears the active-row highlight and bumps revealToken, so an in-flight
+    // reveal walk aborts without extra code.
+    activeFilePath = null;
     revealAndHighlight();
   });
 

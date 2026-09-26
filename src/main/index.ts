@@ -17,7 +17,7 @@ import { shouldCreateWhatsNewWindow, buildWhatsNewMarkdown } from './whatsNewWin
 import { prepareWhatsNew, recordVersionSeen } from './whatsNew';
 import type { WhatsNewPorts } from './whatsNew';
 import { loadAppState, writeAppStateFile } from './appStateStore';
-import type { FSWatcher } from 'chokidar';
+import { createDocumentSession } from './documentSession';
 import { filterAndSortEntries } from './fileTree';
 import { IPC_CHANNELS } from '../preload/api';
 import type { FileRenderedMessage, DirectoryListResult, FolderTreeRootMessage, DocumentTab, ViewSettings } from '../preload/api';
@@ -25,7 +25,6 @@ import { loadSettingsAtStartup, rereadSettingsOnFocus, ensureSettingsFileExists,
 import { toPersistedViewSettings, fromViewSettings } from './settings';
 
 let mainWindow: BrowserWindow | null = null;
-let activeWatcher: FSWatcher | null = null;
 let helpWindow: BrowserWindow | null = null;
 let whatsNewWindow: BrowserWindow | null = null;
 // In-flight "seen version" write started by the What's New window's 'closed'
@@ -109,6 +108,9 @@ function menuHandlers(): MenuHandlers {
     onSelectTab: setCurrentTab,
     onOpenHelp,
     onOpenSettings,
+    // Task 44: one receiver behind three invokers (native menu, title-bar
+    // popup, CmdOrCtrl+W), never three implementations.
+    onClose: () => documentSession.close(),
   };
 }
 
@@ -148,7 +150,9 @@ async function onWindowFocus(): Promise<void> {
 }
 
 function applyMenu(): void {
-  Menu.setApplicationMenu(Menu.buildFromTemplate(buildMenuTemplate(menuHandlers(), viewSettings)));
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate(buildMenuTemplate(menuHandlers(), viewSettings, documentSession.isOpen()))
+  );
 }
 
 // Task 29: which buildMenuTemplate() index a title-bar label section maps
@@ -160,7 +164,7 @@ export function menuSectionIndex(section: 'file' | 'view' | 'help'): number {
 
 // Called by the two "browse a folder" actions (openFolderViaDialog and the
 // dropped/opened-directory branch of REQUEST_OPEN_FILE) -- never by
-// renderAndWatch (single-file open must never touch showTreePanel in either
+// documentSession.open (single-file open must never touch showTreePanel in either
 // direction). Check-then-act: only forces the value and rebuilds the menu
 // when it was previously false, never an unconditional rebuild.
 function forceShowTreePanelAndRebuildMenu(): void {
@@ -271,10 +275,6 @@ async function renderFile(filePath: string): Promise<FileRenderedMessage> {
   }
 }
 
-function sendToRenderer(message: FileRenderedMessage): void {
-  mainWindow?.webContents.send(IPC_CHANNELS.FILE_RENDERED, message);
-}
-
 export async function listDirectoryEntries(dirPath: string): Promise<DirectoryListResult> {
   try {
     const raw = await fs.readdir(dirPath, { withFileTypes: true });
@@ -322,26 +322,21 @@ async function establishTreeRoot(rawRootPath: string): Promise<void> {
   mainWindow?.webContents.send(IPC_CHANNELS.FOLDER_TREE_ROOT, message);
 }
 
-function stopWatching(): void {
-  activeWatcher?.close();
-  activeWatcher = null;
-}
-
-function startWatching(filePath: string): void {
-  stopWatching(); // exactly one watcher active at a time — always close the old one first
-  activeWatcher = watchFile(filePath, () => {
-    renderFile(filePath).then(sendToRenderer);
-  });
-}
-
-async function renderAndWatch(filePath: string): Promise<void> {
-  const message = await renderFile(filePath);
-  sendToRenderer(message);
-  if (message.ok) {
-    startWatching(filePath);
-  }
-  await establishTreeRoot(path.dirname(filePath));
-}
+// Task 44: the single document session (slot occupancy + render epoch +
+// the one active watcher). This is the composition root binding its ports to
+// concrete I/O; the open/close/race rules live in documentSession.ts. The
+// sendFileRendered binding below is the ONLY place src/main references the
+// file-rendered channel (#149: every delivery goes through the session's
+// guarded choke point). Folder paths (Open Folder, dropped directories, "Up one level")
+// deliberately never touch this session (#153).
+const documentSession = createDocumentSession({
+  renderFile,
+  sendFileRendered: (message) => mainWindow?.webContents.send(IPC_CHANNELS.FILE_RENDERED, message),
+  sendDocumentClosed: () => mainWindow?.webContents.send(IPC_CHANNELS.DOCUMENT_CLOSED),
+  watch: (filePath, onChange) => watchFile(filePath, onChange),
+  establishTreeRootFor: (filePath) => establishTreeRoot(path.dirname(filePath)),
+  onOccupancyChanged: applyMenu,
+});
 
 async function openFileViaDialog(): Promise<void> {
   const result = await dialog.showOpenDialog({
@@ -349,7 +344,7 @@ async function openFileViaDialog(): Promise<void> {
     properties: ['openFile'],
   });
   if (result.canceled || result.filePaths.length === 0) return;
-  await renderAndWatch(result.filePaths[0]);
+  await documentSession.open(result.filePaths[0]);
 }
 
 async function openFolderViaDialog(): Promise<void> {
@@ -509,7 +504,7 @@ app.whenReady().then(async () => {
     // miss a did-finish-load that fires while renderFile() is still reading
     // the file from disk.
     mainWindow?.webContents.once('did-finish-load', () => {
-      renderAndWatch(filePath);
+      documentSession.open(filePath);
     });
   }
 
@@ -517,7 +512,7 @@ app.whenReady().then(async () => {
   // File's real filesystem path (via webUtils.getPathForFile, which must run
   // in preload — see src/preload/index.ts) and sends it here, fire-and-
   // forget. All validation (extension check, existence, read errors) is
-  // owned exclusively by renderFile() via renderAndWatch() — never
+  // owned exclusively by renderFile() via documentSession.open() — never
   // duplicated here. The only new logic is the empty-string guard below,
   // covering a documented possible return from getPathForFile() on some
   // platforms; that case is a silent no-op, not a user-facing error.
@@ -530,7 +525,7 @@ app.whenReady().then(async () => {
       isDirectory = stats.isDirectory();
     } catch {
       // Stat failed (nonexistent path, permission error, etc.) -- fall
-      // through to the existing renderAndWatch/renderFile error path
+      // through to the existing documentSession.open/renderFile error path
       // below, unchanged from today's behavior. Do not add a second,
       // parallel error-handling branch here.
     }
@@ -541,7 +536,7 @@ app.whenReady().then(async () => {
       return;
     }
 
-    renderAndWatch(filePath);
+    documentSession.open(filePath);
   });
 
   // Task 17: first request-response IPC pair in the app (ipcMain.handle /
@@ -599,7 +594,7 @@ app.whenReady().then(async () => {
   // a second, hand-duplicated menu description.
   ipcMain.on(IPC_CHANNELS.POPUP_MENU, (_e, section: 'file' | 'view' | 'help', x: number, y: number) => {
     const index = menuSectionIndex(section);
-    const template = buildMenuTemplate(menuHandlers(), viewSettings);
+    const template = buildMenuTemplate(menuHandlers(), viewSettings, documentSession.isOpen());
     Menu.buildFromTemplate(template[index].submenu as MenuItemConstructorOptions[]).popup({
       window: mainWindow ?? undefined,
       x,
@@ -622,7 +617,7 @@ app.on('window-all-closed', () => {
   }
 });
 
-app.on('before-quit', stopWatching);
+app.on('before-quit', () => documentSession.shutdown());
 
 // Guardrail #139 on the exit paths. The seen-version write is async, and the
 // What's New window can be the last one closed (window-all-closed ->

@@ -10,11 +10,17 @@ export interface MenuHandlers {
   onSelectTab: (tab: DocumentTab) => void;
   onOpenHelp: () => void;
   onOpenSettings: () => void;
+  onClose: () => void;
 }
 
+// Task 44 #151: `documentOpen` is deliberately a separate, REQUIRED input,
+// not a ViewSettings field (occupancy is not a view preference, and
+// ViewSettings is broadcast and partly persisted). Required so that tsc
+// rejects any production call site that forgets to pass it.
 export function buildMenuTemplate(
   handlers: MenuHandlers,
-  initialViewSettings: ViewSettings
+  initialViewSettings: ViewSettings,
+  documentOpen: boolean
 ): MenuItemConstructorOptions[] {
   return [
     {
@@ -26,6 +32,13 @@ export function buildMenuTemplate(
           label: 'Open Folder…',
           accelerator: 'CmdOrCtrl+Shift+O',
           click: handlers.onOpenFolder,
+        },
+        {
+          id: 'menu-close',
+          label: 'Close',
+          accelerator: 'CmdOrCtrl+W',
+          enabled: documentOpen,
+          click: handlers.onClose,
         },
         { type: 'separator' },
         { id: 'menu-settings', label: 'Settings', click: handlers.onOpenSettings },
