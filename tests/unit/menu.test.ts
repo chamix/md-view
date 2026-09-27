@@ -12,6 +12,7 @@ function handlers(overrides: Partial<MenuHandlers> = {}): MenuHandlers {
     onToggleShowTreePanel: () => {},
     onSelectTab: () => {},
     onOpenHelp: () => {},
+    onOpenAbout: () => {},
     onOpenSettings: () => {},
     onClose: () => {},
     ...overrides,
@@ -226,12 +227,25 @@ describe('buildMenuTemplate (pure menu structure)', () => {
     expect(onSelectTab).toHaveBeenCalledWith('code');
   });
 
-  it("Help's submenu has exactly 1 entry: menu-help", () => {
+  it("Help's submenu has exactly 3 entries in the Task 46 #172 order: menu-help, a separator, menu-about", () => {
     const template = buildMenuTemplate(handlers(), viewSettings(), false);
     const helpSubmenu = template[2].submenu as Array<Record<string, unknown>>;
 
-    expect(helpSubmenu).toHaveLength(1);
+    expect(helpSubmenu).toHaveLength(3);
     expect(helpSubmenu[0].id).toBe('menu-help');
+    expect(helpSubmenu[1].type).toBe('separator');
+    expect(helpSubmenu[2].id).toBe('menu-about');
+  });
+
+  it('menu-about has label About md-view, no accelerator, and click reference-equal to the onOpenAbout handler (#172)', () => {
+    const onOpenAbout = () => {};
+    const template = buildMenuTemplate(handlers({ onOpenAbout }), viewSettings(), false);
+    const helpSubmenu = template[2].submenu as Array<Record<string, unknown>>;
+    const aboutItem = helpSubmenu[2];
+
+    expect(aboutItem.label).toBe('About md-view');
+    expect(aboutItem.accelerator).toBeUndefined();
+    expect(aboutItem.click).toBe(onOpenAbout);
   });
 
   it('menu-help has label, F1 accelerator, and click reference-equal to the onOpenHelp handler', () => {

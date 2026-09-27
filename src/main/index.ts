@@ -2,17 +2,18 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell } from 'ele
 import type { MenuItemConstructorOptions } from 'electron';
 import * as path from 'path';
 import * as fs from 'node:fs/promises';
-import { pathToFileURL } from 'node:url';
-import { defaultWindowOptions } from './windowConfig';
+import { defaultWindowOptions, staticWindowOptions } from './windowConfig';
+import type { StaticWindowSize } from './windowConfig';
 import { markdownToHtml, highlightMarkdownSource } from './markdown';
-import { baseUrlForFile, changelogPathFor } from './paths';
+import { baseUrlForFile, changelogPathFor, packageJsonPathFor, licensePathFor, thirdPartyNoticesPathFor } from './paths';
 import { watchFile } from './watcher';
 import { isExternalHttpUrl } from './linkPolicy';
 import { buildMenuTemplate } from './menu';
 import type { MenuHandlers } from './menu';
 import { extractFrontmatter } from './frontmatter';
 import { shouldSetDockIcon } from './dockIcon';
-import { shouldCreateHelpWindow, buildHelpHtml } from './helpWindow';
+import { shouldCreateHelpWindow, buildHelpHtml, staticHtmlDataUrl } from './helpWindow';
+import { shouldCreateAboutWindow, buildAboutDocument } from './aboutWindow';
 import { shouldCreateWhatsNewWindow, buildWhatsNewMarkdown } from './whatsNewWindow';
 import { prepareWhatsNew, recordVersionSeen } from './whatsNew';
 import type { WhatsNewPorts } from './whatsNew';
@@ -27,6 +28,7 @@ import { toPersistedViewSettings, fromViewSettings } from './settings';
 let mainWindow: BrowserWindow | null = null;
 let helpWindow: BrowserWindow | null = null;
 let whatsNewWindow: BrowserWindow | null = null;
+let aboutWindow: BrowserWindow | null = null;
 // In-flight "seen version" write started by the What's New window's 'closed'
 // handler; the 'will-quit' handler (bottom of file) holds the process until it
 // settles. recordVersionSeen never rejects, so this promise always settles.
@@ -122,6 +124,7 @@ function menuHandlers(): MenuHandlers {
     onToggleShowTreePanel: setShowTreePanel,
     onSelectTab: setCurrentTab,
     onOpenHelp,
+    onOpenAbout,
     onOpenSettings,
     // Task 44: one receiver behind three invokers (native menu, title-bar
     // popup, CmdOrCtrl+W), never three implementations.
@@ -374,29 +377,26 @@ async function openFolderViaDialog(): Promise<void> {
   await establishTreeRoot(result.filePaths[0]);
 }
 
-// Stylesheets shared by the static (Help / What's New) windows.
-function staticWindowCssHrefs(): string[] {
-  return [
-    pathToFileURL(path.join(__dirname, '../renderer/app.css')).href,
-    pathToFileURL(path.join(__dirname, '../renderer/github-markdown-light.css')).href,
-    pathToFileURL(path.join(__dirname, '../renderer/github.css')).href,
-  ];
+// Stylesheets shared by the static (Help / What's New / About) windows, read
+// as text and embedded by buildHelpHtml under a hash-pinned CSP (Task 46,
+// ADR-011): a data: document cannot load file: stylesheets, so the former
+// <link>s never applied.
+async function readStaticWindowCss(): Promise<string> {
+  const files = ['app.css', 'github-markdown-light.css', 'github.css'];
+  const texts = await Promise.all(files.map((f) => fs.readFile(path.join(__dirname, '../renderer', f), 'utf8')));
+  return texts.join('\n');
 }
 
 // Single, shared construction + lockdown of the static, read-only,
-// app-authored windows (Help and What's New) -- security-sensitive, so it
-// lives in exactly one place rather than being copy-pasted per window
+// app-authored windows (Help, What's New and About) -- security-sensitive, so
+// it lives in exactly one place rather than being copy-pasted per window
 // (functional_domain.md guardrail #142). Callers own their own window
 // variable, single-instance guard, and 'closed' handling; the window is
 // returned before its content finishes loading so they can attach handlers
-// without racing the load.
-function createStaticWindow(): BrowserWindow {
-  const win = new BrowserWindow({
-    ...defaultWindowOptions,
-    webPreferences: {
-      ...defaultWindowOptions.webPreferences,
-    },
-  });
+// without racing the load. `size` only picks width/height (staticWindowOptions);
+// everything below is unconditional and never reads it (#169).
+function createStaticWindow(size?: StaticWindowSize): BrowserWindow {
+  const win = new BrowserWindow(staticWindowOptions(size));
 
   // Static windows are read-only, app-authored content. On
   // Windows/Linux, Menu.setApplicationMenu() becomes the default menu for
@@ -428,7 +428,7 @@ function createStaticWindow(): BrowserWindow {
 
 async function loadStaticHtml(win: BrowserWindow, html: string): Promise<void> {
   try {
-    await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+    await win.loadURL(staticHtmlDataUrl(html));
   } catch {
     // Navigation can be aborted (ERR_FAILED) if the window is closed while
     // the data: URL is still loading — not a real failure to surface, just
@@ -444,7 +444,7 @@ async function onOpenHelp(): Promise<void> {
 
   const source = await fs.readFile(path.join(__dirname, 'help', 'help.md'), 'utf8');
   const contentHtml = markdownToHtml(source);
-  const html = buildHelpHtml(contentHtml, staticWindowCssHrefs());
+  const html = buildHelpHtml(contentHtml, await readStaticWindowCss());
 
   const win = createStaticWindow();
   helpWindow = win;
@@ -454,6 +454,60 @@ async function onOpenHelp(): Promise<void> {
 
   await loadStaticHtml(win, html);
 }
+
+// md-view:about-window:begin (tests/integration/dist-about.test.ts proves this
+// region of the built output holds no version or year literal, #170)
+const ABOUT_WINDOW_SIZE: StaticWindowSize = { width: 640, height: 720 };
+
+// Task 46: Help > About md-view. Every shown value comes from the shipped
+// package.json / LICENSE / third-party-notices.json, app.getVersion() and
+// process.versions. Any failure is contained: logged, and NO window is opened
+// (same containment as What's New, #140) -- half-populated legal text is worse
+// than none.
+async function onOpenAbout(): Promise<void> {
+  if (!shouldCreateAboutWindow(aboutWindow)) {
+    aboutWindow?.focus();
+    return;
+  }
+
+  try {
+    const [packageJsonText, licenseText, noticesText, cssText] = await Promise.all([
+      fs.readFile(packageJsonPathFor(__dirname), 'utf8'),
+      fs.readFile(licensePathFor(__dirname), 'utf8'),
+      fs.readFile(thirdPartyNoticesPathFor(__dirname), 'utf8'),
+      readStaticWindowCss(),
+    ]);
+    const html = buildAboutDocument({
+      packageJsonText,
+      licenseText,
+      noticesText,
+      cssText,
+      version: app.getVersion(),
+      runtime: {
+        electron: process.versions.electron,
+        chrome: process.versions.chrome,
+        node: process.versions.node,
+      },
+    });
+
+    // A second click during the reads above must not open a second window.
+    if (!shouldCreateAboutWindow(aboutWindow)) {
+      aboutWindow?.focus();
+      return;
+    }
+
+    const win = createStaticWindow(ABOUT_WINDOW_SIZE);
+    aboutWindow = win;
+    win.on('closed', () => {
+      aboutWindow = null;
+    });
+
+    await loadStaticHtml(win, html);
+  } catch (error) {
+    console.warn('About: could not open the About window:', error);
+  }
+}
+// md-view:about-window:end
 
 // Task 43: shows the current version's release notes the first time the app
 // launches after an update. Persistence/decision logic lives in whatsNew.ts
@@ -472,7 +526,7 @@ async function showWhatsNewIfDue(): Promise<void> {
 
   const html = buildHelpHtml(
     markdownToHtml(buildWhatsNewMarkdown(content.version, content.body)),
-    staticWindowCssHrefs(),
+    await readStaticWindowCss(),
     `What's New in md-view ${content.version}`
   );
 

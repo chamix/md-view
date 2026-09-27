@@ -3457,6 +3457,157 @@ data leak.
 
 ---
 
+## Task 46: About window, third-party license notices, and a CSP for the static windows (Step 0)
+
+Depends on Task 45 (merged to `main` as #13, `38cb06b`). Touches the static-window
+factory (`createStaticWindow`, guardrail #142), the shared static HTML shell
+(`buildHelpHtml`), the Help menu (`buildMenuTemplate`, #67), and the build
+script.
+
+Decisions taken with the user before drafting:
+- A **custom static window** is the third caller of `createStaticWindow`.
+  Electron's `app.showAboutPanel()` was rejected: on Windows it supports only
+  name, version, copyright, `credits` and `iconPath`, with no clickable link
+  and no runtime versions.
+- **Third-party license notices are in scope.** No notice is reachable by
+  users today. The packaged app does contain the license files of the 12
+  runtime-tree packages, inside `app.asar`'s `node_modules`, where no user can
+  reach them. The 113 packages bundled into `mermaid.min.js` ship with no
+  notice at all. (Amended at Step 1 review: the original "ships none today"
+  was a Lead wording error, corrected by Step 1 evidence E4.)
+  `highlight.js` (BSD-3-Clause, which requires reproducing its notice in binary
+  distributions) has had no user-reachable notice since v1.0, and since Task 45
+  `mermaid.min.js` bundles Mermaid's whole dependency tree with its license
+  headers stripped by minification. Electron's own licenses are already shipped
+  by electron-builder and are not this task's concern.
+- **The shared static-window shell gets a CSP** (closes the Task 45 backlog
+  item for the Help, What's New and About windows).
+
+Lead's baseline reading of `package-lock.json` (to be re-verified in Step 1, not
+trusted): the closure of the runtime dependencies plus the build-time assets
+shipped in `dist/` is **124 packages**: MIT 78, ISC 33, BSD-3-Clause 7,
+BSD-2-Clause 1, Apache-2.0 1, `(MPL-2.0 OR Apache-2.0)` 1, Python-2.0 1,
+Unlicense 1, and 1 with no `license` field in the lockfile (`khroma`).
+
+### Abstract contracts
+
+- **About data** (input, main-owned): the app's name, version, description,
+  copyright line, license id, repository URL, and runtime versions (Electron,
+  Chromium, Node). One source of truth: the version comes from
+  `app.getVersion()`, and the rest from the shipped `package.json` and
+  `LICENSE`. Nothing is hardcoded in the window's code.
+- **About document** (pure): About data -> HTML body. Every value is escaped.
+- **Notice set** (build-time): one entry per shipped third-party package:
+  name, version, license expression, license text, and the contents of its
+  `NOTICE` file when the package has one.
+- **Shipped package closure** (pure, over the lockfile): every package
+  reachable through `dependencies` from (a) the app's runtime dependencies
+  and (b) every package whose files the build copies into `dist/`
+  (`github-markdown-css`, `highlight.js` styles, `mermaid`, including all of
+  Mermaid's production dependencies, because they are bundled into
+  `mermaid.min.js`).
+- **License policy** (pure): an explicit allowlist of license expressions.
+  Anything outside it fails the build.
+- **Static-window CSP**: a document policy in the shared static HTML shell.
+
+### Invariants / guardrails
+
+169. **About is a static window.** It is created by `createStaticWindow` only,
+     so it inherits every #142 property (no menu, `will-navigate` always
+     prevented, `setWindowOpenHandler` always denies, external http(s) links go
+     to the OS browser, sandboxed default `webPreferences`, no preload). At
+     most one instance: reopening focuses the existing one. Any size or
+     resizability option is added to the factory without weakening its
+     lockdown for the other two callers (proof: the existing Help and What's
+     New e2e tests pass unmodified).
+170. **Single source of truth.** The version shown equals `app.getVersion()`.
+     The copyright line equals the `LICENSE` file's copyright line, and the
+     license id and repository URL equal the shipped `package.json`'s. No
+     version or year literal appears in About code (proof from the built
+     `dist/` output and the packaged app, not the source tree, same posture
+     as #143).
+171. **Escaped content.** Every About value is inserted as escaped text, as
+     `buildHelpHtml` already does for its title. Unit proof: About data
+     containing `<script>` or `"` renders inert.
+172. **Menu contract.** Help gets `About md-view` (id `menu-about`, no
+     accelerator) after a separator following `md-view Help`. Both the native
+     menu and the title-bar popup show it (#67). Existing Help-menu tests are
+     updated only for the new entries.
+173. **Complete closure, fail closed.** The notice set covers the entire
+     shipped package closure. Over-inclusion is acceptable (for example,
+     packages esbuild tree-shook out of Mermaid); omission never is. The
+     closure is computed from the lockfile by a pure function, and a unit
+     test proves it includes a transitive dependency of `mermaid` (for example
+     `dompurify` or `d3-*`) and excludes a pure devDependency (for example
+     `vitest`).
+174. **License policy.** The build fails if any package in the closure has a
+     license expression outside an explicit allowlist, a missing license, or a
+     license it cannot parse. The allowlist starts from the licenses actually
+     found (baseline above) and contains no copyleft license (GPL, LGPL, AGPL,
+     SSPL). An OR expression passes if at least one alternative is allowed,
+     and the notice records which one was chosen.
+175. **Real text, never invented.** Each entry reproduces the package's own
+     license file from `node_modules` (and its `NOTICE` file for Apache-2.0
+     packages). When a package ships no license file or no `license` field,
+     the build fails unless a checked-in override entry supplies the license
+     id and text **with a source citation** (the upstream repository file URL
+     and commit or tag). No license text is ever generated from an SPDX
+     template. Three overrides are required (amended at Step 1 review):
+     - `khroma@2.1.0`: no `license` field. Its shipped `license` file is
+       byte-identical to upstream tag `v2.1.0`
+       (`4968165afb0d3d09be66497e7985a34f7bfe6d42`, also npm's `gitHead`).
+     - `fastdom@1.0.12`: `license: "MIT"` but no license file in the package
+       or upstream. The text is the README's `## License` section. npm's
+       `gitHead` (`a7b9044d58952b970c8b918dcf0e7c8824ba0ff5`) does **not**
+       exist on GitHub. The citation therefore pins merge commit
+       `01524d7b90785fcac5a75bb9f149e14b9e5246c3` (2024-02-20T08:00:06Z).
+       1.0.12 was published 3 minutes later (08:03:43Z), and the README at
+       that commit is byte-identical to the installed one.
+     - `strictdom@1.0.1`: `license: "MIT"` but no license file. The text is
+       the README's `## License` section at tag `v1.0.1`
+       (`a3bbf19013ecc9c9d165dd4ed89e94757161443e`, npm's `gitHead`),
+       byte-identical to the installed README.
+176. **Reproducible.** The notices are generated during `npm run build`, have a
+     deterministic order (sorted by package name, then version), and are
+     identical across two builds from the same lockfile. They ship inside
+     `dist/` and are proven from the built output (#143 posture). The
+     packaged app contains them (proof by listing `app.asar`, as in the
+     Task 45 B3 check).
+177. **Reachable from About without new link surface.** The notices can be
+     read from the About window with no custom protocol, no preload, no
+     script, and no change to the static-window link policy. Step 1 chooses
+     and justifies the mechanism (for example a `<details>` section, or a
+     dedicated Help menu entry opening a fourth static window). Whatever it
+     chooses must load in the packaged build: Step 1 measures the notices'
+     size against any data: URL limit, or loads them another way.
+178. **Static-window CSP.** The shared shell carries a policy with no
+     `script-src` at all (static windows never run script): `default-src
+     'none'`, plus only what the three windows need for styles and images.
+     Rendering Help, What's New and About each raises zero
+     `securitypolicyviolation` events. An injected inline `<script>` leaves a
+     canary unset. Fault injection: remove the policy, and that test goes red.
+     The inline `style` attribute in the current shell either moves into
+     CSS, or `'unsafe-inline'` for styles is disclosed (Step 1 decides).
+179. **Nothing else changes.** No new bridge method or IPC channel. The main
+     window, its CSP (#160), the render path and Close behave exactly as
+     before. The only new dependency allowed is a build-time license
+     collector, and only if Step 1 justifies it against a small script over
+     the lockfile (the alternative the Lead prefers).
+
+### Explicitly out of scope (not built without asking)
+
+- Dark mode in the static windows (an existing limitation for Help and What's New).
+- A "copy version info" button (needs script or a bridge in a static window).
+- Esc-to-close or any keyboard handling in static windows.
+- Electron and Chromium license files (electron-builder already ships them).
+- Help / README / CHANGELOG updates (release-time satellite).
+
+Note: the Lead is not a lawyer. Guardrails #173-#175 encode common open-source
+compliance practice (reproduce license and notice texts, fail closed on
+unknown licenses). They are not a legal opinion.
+
+---
+
 ## Task 47: Live-reload truncate race and e2e renderer-readiness race (Step 0)
 
 Branch `feature/047-e2e-races` off `main` @ `38cb06b`. Task 46

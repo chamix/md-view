@@ -9,6 +9,7 @@ export interface MenuHandlers {
   onToggleShowTreePanel: (checked: boolean) => void;
   onSelectTab: (tab: DocumentTab) => void;
   onOpenHelp: () => void;
+  onOpenAbout: () => void;
   onOpenSettings: () => void;
   onClose: () => void;
 }
@@ -89,7 +90,12 @@ export function buildMenuTemplate(
     },
     {
       label: 'Help',
-      submenu: [{ id: 'menu-help', label: 'md-view Help', accelerator: 'F1', click: handlers.onOpenHelp }],
+      submenu: [
+        { id: 'menu-help', label: 'md-view Help', accelerator: 'F1', click: handlers.onOpenHelp },
+        { type: 'separator' },
+        // Task 46 #172: no accelerator.
+        { id: 'menu-about', label: 'About md-view', click: handlers.onOpenAbout },
+      ],
     },
   ];
 }

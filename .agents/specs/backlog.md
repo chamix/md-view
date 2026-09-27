@@ -777,8 +777,8 @@ packaging — not assumed fine just because Windows was.
   Optionally also widen the golden (Nit 1 of the first review) to
   `test-fixture.md` with its mermaid fence removed. Non-blocking.
 
-- [Pending] Task 45 (Step 0 out of scope): a Content Security Policy for
-  the Help and What's New windows. They load static `data:` URLs with no
+- [Resolved 2026-09-27, Task 46; see ADR-011] Task 45 (Step 0 out of
+  scope): a Content Security Policy for the Help and What's New windows. They load static `data:` URLs with no
   scripts, so the risk is low, but they have no document CSP. A mermaid
   fence there shows as plain source text (#166, accepted). Candidate:
   `default-src 'none'; style-src 'unsafe-inline'; img-src data: https:`
@@ -792,6 +792,62 @@ packaging — not assumed fine just because Windows was.
   `Function(`/eval scan under `script-src 'self'`, the default `secure`
   list, `maxTextSize`/`maxEdges` behavior, orphaned `#d<id>` nodes, and the
   `getConfig()` observation behind the darkMode tests (see Nit 1 above).
+
+- [Pending] Task 46 review N1: when `scripts/third-party-notices.mjs`
+  fails, it writes nothing but leaves the previous
+  `dist/third-party-notices.json` in place. The build exits 1, so CI and
+  release are blocked. A manual `npx electron-builder` run after a failed
+  local build would package the stale file. Fix: unlink the output path
+  before validating (or on failure), and add an integration case that a
+  failed run leaves no output file. Non-blocking.
+
+- [Pending] Task 46 review N5 (pre-existing, not a regression): Help has a
+  same-tick double-open race. Two `menu-help` clicks in one main-process
+  turn open two Help windows (probe: `["md-view Help","md-view Help","md-view"]`),
+  because `onOpenHelp` awaits `help.md` before creating the window, and
+  `shouldCreateHelpWindow` is checked only before the await. What's New is
+  not user-triggered. Fix: re-check after the await, as `onOpenAbout` does
+  (Task 46 B1), with the same two-clicks-in-one-`evaluate` e2e test.
+  Consider doing it together with the one-liner consolidation below.
+
+- [Pending] Task 46 review N7: fixture-teardown `EPERM` deleting the e2e
+  temp user-data directory
+  (`EPERM, Permission denied: \\?\C:\Users\…\Temp\md-view-e2e-…`). Seen
+  once by the engineer at `view-menu.spec.ts:141` (d); the reviewer did not
+  reproduce it, and 3 of 3 targeted re-runs passed. It is distinct from the
+  existing `rename` EPERM notes in the stores: it is the fixture's
+  `rmSync` racing a not-yet-exited Electron process. It belongs with the
+  parallel-contention flakiness tracked above. During Task 46 review the
+  known flakes `view-menu.spec.ts:189` (settings.json partial read) and
+  `close-document.spec.ts:221` (Electron closed mid-test) also each failed
+  once in a full run and passed on targeted re-runs. Candidate fix: retry
+  `rmSync` with backoff after `electronApp.close()` resolves. Non-blocking.
+
+- [Pending] Task 46 Step 1 (backlog candidate): `loadStaticHtml` in
+  `src/main/index.ts` swallows **every** load failure, not only the
+  close-abort race its comment describes. A document over the ~2 MiB `data:`
+  URL ceiling fails with `ERR_INVALID_URL (-300)` (measured at Task 46 Step
+  1) and shows as a blank window with no log. Task 46 guards the largest
+  document (About) with a < 1 MiB budget test, but the loader itself should
+  distinguish an abort caused by the window closing (`win.isDestroyed()`)
+  from a real failure, and `console.warn` the latter.
+
+- [Pending] Task 46 Step 1 (Rule of Three): consolidate
+  `shouldCreateHelpWindow`, `shouldCreateWhatsNewWindow` and
+  `shouldCreateAboutWindow`, three identical one-liners
+  (`existing === null || existing.isDestroyed()`), into one
+  `shouldCreateStaticWindow`, or a small single-instance helper that also
+  owns the post-await re-check (see N5 above). `whatsNewWindow.ts`'s comment
+  ("only two exist") is now out of date.
+
+- [Pending] Task 46 review nits:
+  - **N3:** `tests/e2e/about.spec.ts` asserts `License` = `'MIT'` and the
+    repository `href` as literals. Derive both from `package.json` in the
+    test, consistent with the file's "never typed" header.
+  - **N4:** npm normalizes an object `license: {type}` to a string in the
+    lockfile, so a legacy object license fails closed in the notices
+    generator with "installed license … disagrees with the lockfile" rather
+    than the named "legacy object/array" error. Only the message is affected.
 
 - [Pending — candidate for its own task] Task 47 review: native Electron
   crash reproduced at `close-document.spec.ts:221` (d), "the title-bar File
