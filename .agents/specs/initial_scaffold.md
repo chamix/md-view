@@ -7996,3 +7996,101 @@ Where a condition and the blueprint disagree, the condition wins.
 - `tests/e2e/support/failureCapture.ts` (new, D4).
 
 ---
+
+## Task 48: v1.2.0 release documentation (Step 1)
+
+No architectural impact: no runtime code, no layer boundary, no interface,
+no GoF pattern applicable (Task 42 precedent). The inward-dependency rule is
+unaffected; the only `src/` file touched is the `help.md` data file (#195).
+Guardrails are #189-#195 (Task 47 already used #188).
+
+### Changes
+
+1. `CHANGELOG.md`: insert `## [1.2.0] - 2026-09-28` (amended at Task 48
+   review: release date), the planned tag date, above `## [1.1.0]`, with `### Added`,
+   `### Changed`, `### Fixed`, `### Security` in Keep a Changelog style,
+   matching the 1.1.0 entries' voice. No other section touched (#189, #191).
+2. `src/main/help/help.md`: a Close subsection (or an addition to "Opening a
+   file"), a Mermaid diagrams section (prose only, no mermaid fence), an
+   About/notices line, a `Ctrl/Cmd+W | Close the open file` row in the
+   existing unaligned shortcut table (`|---|---|`), and one sentence in
+   "Live reload" if its wording contradicts the save-finished wait (#192).
+3. `README.md`: status line → v1.2.0; feature list (Close, Mermaid, About +
+   notices); stack (Mermaid 11.17.2, copied into `dist/` at build time);
+   security invariants (main-window CSP + locked Mermaid config; no-script
+   CSP for Help/What's New/About); license section (third-party notices
+   ship in-app) (#194).
+4. `package.json` `version` and `package-lock.json` lines 3 and 9 →
+   `1.2.0`, by hand. The other `"version": "1.1.0"` hits in the lockfile
+   (console-control-strings etc.) are dependencies and stay (#193).
+
+### Who writes
+
+`technical-writer` subagent, all five files, targeted diffs (not
+rewrites). It receives this section, the Task 48 Step 0 text and the trace
+table below; it cites a trace for every line it writes. It does not run
+tests or git. The Lead runs the gate (#195); the `code-reviewer` verifies.
+
+### Verification plan for #190 (claim → code / test)
+
+| Claim | Code | Test |
+|---|---|---|
+| File → Close, `Ctrl/Cmd+W` | `src/main/menu.ts:37-43` | `tests/unit/menu.test.ts:51`; `tests/e2e/close-document.spec.ts:191` |
+| Close disabled when nothing is open | `menu.ts:41` (`enabled: documentOpen`) | `menu.test.ts:55`; `close-document.spec.ts:131`, `:343` |
+| Close returns to the no-file view, keeps the tree (and dark mode, Code tab) | `src/main/index.ts` onClose, `documentSlot.ts` | `close-document.spec.ts:148` |
+| Mermaid fences render as diagrams | `src/renderer/diagrams.js` | `tests/e2e/mermaid.spec.ts:200`, `:211` |
+| Diagrams follow Dark Mode | `diagrams.js` theme select | `tests/unit/diagrams.test.ts:142`; `mermaid.spec.ts:505` |
+| Invalid/oversized diagram: notice + source, rest unaffected | `diagrams.js` (maxTextSize, showFailure) | `diagrams.test.ts:194`, `:225`; `mermaid.spec.ts:381`, `:397`, `:412` |
+| Theme/security settings inside a diagram ignored | `diagrams.js` locked config | `diagrams.test.ts:100`, `:115`; `mermaid.spec.ts:286`, `:315`, `:332`, `:362` |
+| Code tab and copy-raw-source unchanged | — | `mermaid.spec.ts:802` |
+| About: version, runtimes, copyright, license, repo link | `src/main/aboutWindow.ts:79-90` | `tests/e2e/about.spec.ts:91`, `:228` |
+| About: third-party license notices | `scripts/third-party-notices.mjs`, `thirdPartyNotices.ts` | `about.spec.ts:273`; `tests/integration/dist-about.test.ts:96-132` |
+| Live reload waits for the save to finish (~100-200 ms) | `src/main/watcher.ts:24` (`stabilityThreshold: 100, pollInterval: 20`) | `tests/integration/watcher.test.ts:93` |
+| Fixed: blank preview after a truncating save | `watcher.ts:16-30` | `watcher.test.ts:93` |
+| Fixed: `settings.json` written atomically | `src/main/atomicWriteFile.ts`, `settingsStore.ts:5-7` | `tests/integration/settingsStore.test.ts`; `tests/e2e/settings-locked.spec.ts` |
+| Fixed: Help/What's New now styled | `src/main/helpWindow.ts:40-52` | `tests/e2e/static-window-csp.spec.ts:169`, `:197` ("styled") |
+| Main-window CSP: no inline/eval script, no network | `src/renderer/index.html:5` | `tests/e2e/csp.spec.ts:43`, `:77`, `:109`; `mermaid.spec.ts:434` |
+| No-script CSP for Help/What's New/About | `helpWindow.ts:50` (`buildStaticWindowCsp`) | `static-window-csp.spec.ts:169`, `:182`, `:197` |
+| Notices ship with the app | `package.json` build → `third-party-notices.mjs` | `dist-about.test.ts:100` |
+| README: Mermaid 11.17.2 | `package.json:56` | — (reviewer reads it) |
+
+The reviewer re-opens each cited line, not this table's paraphrase; a row
+that does not hold removes or corrects the claim (#190). A claim the writer
+adds that is not in the table needs its own trace in the review report.
+
+### Gate (#191, #192, #195)
+
+- `git diff --stat` shows exactly the five in-scope files; `git diff --
+  src/` touches only `help.md`; the lockfile diff is two lines.
+- Reviewer reads the full CHANGELOG and help.md diffs **and** the resulting
+  files; greps both for `Task`, `#[0-9]`, `ADR`, `guardrail`, `reviewer`,
+  `agent`, `spec`, `.agents`, `src/`, `tests/` (#189); confirms no line
+  in the 1.2.0 section starts with `## [` and the heading regex matches
+  (#191); confirms no `:--`/`--:` alignment, no raw HTML, no mermaid fence
+  in help.md (#192).
+- `npm run build`, `npm run test:unit`, `npm run test:integration`
+  (`dist-changelog.test.ts:28` proves the 1.2.0 section is found;
+  `dist-about.test.ts:207` is the D3 help.md check), then one full
+  `test:e2e` from a clean `dist/` (`whats-new.spec.ts:104`,
+  `help-menu.spec.ts`, `static-window-csp.spec.ts`). A failure only on
+  `close-document:221` with the native-abort signature follows the Task 46
+  gate rule.
+- No TDD loop: no testable logic (docs-task exemption, Task 42).
+
+### In-scope files
+
+- `CHANGELOG.md`
+- `src/main/help/help.md`
+- `README.md`
+- `package.json`
+- `package-lock.json`
+
+### Expected output format
+
+Diff (targeted edits), not full rewrites.
+
+### Spec section this closes
+
+`functional_domain.md` Task 48 section, guardrails #189-#195.
+
+---
