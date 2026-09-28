@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-09-28
+
+### Added
+
+- File → Close (`Ctrl/Cmd+W`) closes the open file and returns to the "No file open" view. The folder tree stays open. Close is disabled when no file is open.
+- Mermaid diagrams: fenced code blocks tagged `mermaid` render as diagrams in the Preview and follow Dark Mode. An invalid or oversized diagram shows a notice and its source without affecting the rest of the document. Theme and security settings written inside a diagram are ignored. The Code tab and the copy button still show the raw Markdown.
+- Help → About md-view shows the app version, the Electron, Chromium, and Node.js versions, the copyright, the license, a repository link, and the license notices of the open-source libraries bundled with md-view.
+
+### Changed
+
+- Live reload now waits until a save has finished before refreshing the preview.
+
+### Fixed
+
+- The preview could go blank after a save that empties the file before writing it, and stayed blank until the next save.
+- `settings.json` is now written atomically, so it is never seen half-written.
+- The Help and What's New windows were unstyled; they now use the app's styles.
+
+### Security
+
+- The main window now has a Content Security Policy: no inline or eval'd scripts, and no network requests other than the images a document links to. Mermaid diagrams render with a locked configuration.
+- The Help, What's New, and About windows now have a Content Security Policy that blocks all scripts.
+- Third-party license notices now ship with the app, under Help → About md-view.
+
 ## [1.1.0] - 2026-09-19
 
 ### Added

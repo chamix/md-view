@@ -3708,3 +3708,111 @@ existed.
 - Any change to Task 46's code.
 
 ---
+
+## Task 48: v1.2.0 release documentation (Step 0)
+
+Docs-and-version task, following the Task 42 pattern (v1.1.0). Depends on Tasks
+44-47, all merged to `main` (head `8c07773`, #15). The CHANGELOG has no
+`[Unreleased]` section: Tasks 44-47 each deferred Help / README / CHANGELOG to
+release time, so this task writes them from the shipped behavior.
+
+Version: **1.2.0** (minor). Decided at tag time from the accumulated diff since
+`v1.1.0`, per the release-cadence rule: new user-facing features, no breaking
+change, no removed behavior.
+
+Guardrail numbers: start at #188 (the Lead's assumption). If Task 47 used #188
+or later, renumber from the next free number and say so.
+
+### Abstract contracts
+
+- **Release section** (user-facing): the CHANGELOG's `## [1.2.0] - <date>`
+  section. It is shown to users verbatim by the What's New window on the first
+  launch after the update (Task 43), so it is product copy, not a dev log.
+- **Help document** (user-facing): `src/main/help/help.md`, rendered in the
+  static Help window (static-window CSP, no scripts: Task 46).
+- **README** (developer/visitor-facing): feature list, status line, stack,
+  security invariants, license section.
+- **Version**: `package.json` `version` plus the two matching
+  `package-lock.json` fields.
+
+### Content inventory (facts to document; the wording is the writer's)
+
+Every item must be re-verified against the shipped code and tests before it is
+written (#190). This list is the Lead's reading, not a source of truth.
+
+Added
+- **Close (Task 44):** File → Close (`Ctrl/Cmd+W`). It returns to the
+  no-file-open view, keeps the folder tree, and is disabled when nothing is open.
+- **Mermaid diagrams (Task 45):** ```` ```mermaid ```` fenced blocks render as
+  diagrams in the Preview; they follow Dark Mode; an invalid or oversized
+  diagram shows a notice and its source without affecting the rest of the
+  document; theme and security settings inside a diagram are ignored. The Code
+  tab and copy-raw-source are unchanged.
+- **About window (Task 46):** Help → About md-view shows the version,
+  runtime versions, copyright, license, repository link and the open-source
+  license notices of the bundled third-party packages.
+
+Changed
+- **Live reload (Task 47):** it waits until a save has finished before
+  re-rendering (roughly 100-200 ms later than before).
+
+Fixed
+- **Live reload (Task 47):** the preview could go blank after a save that
+  truncates the file before writing it, and stayed blank until the next save.
+- **Settings (Task 47):** `settings.json` is now written atomically, so a
+  reader, or a crash mid-write, never sees a partially written file.
+- **Static windows (Task 46):** the Help and What's New windows were never
+  styled (since they were introduced); they now render with the app's styles.
+
+Security
+- **Main window (Task 45):** a Content Security Policy (no inline or eval'd
+  scripts, no network connections from the page), and a locked Mermaid
+  configuration.
+- **Help / What's New / About (Task 46):** a no-script Content Security Policy.
+- **Compliance (Task 46):** third-party license notices now ship with the app.
+
+### Invariants / guardrails
+
+189. **User-facing language only.** The CHANGELOG section and `help.md` contain
+     no internal process text: no task numbers, guardrail numbers, ADR
+     references, reviewer or agent vocabulary, or file paths that exist only in
+     the repo. (Task 42 reviewer rule: the reviewer reads the full CHANGELOG
+     diff and the resulting file and scans for leaks.)
+190. **Every claim is true of the shipped build.** Each CHANGELOG line and each
+     new or changed Help statement is traced by the reviewer to code or a test
+     (for example the `Ctrl/Cmd+W` accelerator, "disabled when nothing is open",
+     "follows Dark Mode"). A claim with no trace is removed or corrected, never
+     kept on the writer's authority.
+191. **What's New compatibility.** The heading is exactly `## [1.2.0] - YYYY-MM-DD`,
+     and the section contains no line starting with `## [` (including inside
+     code fences: known limitation #134). `extractSection` returns it, and the
+     What's New window shows only the 1.2.0 section (#138). The date is the
+     planned tag date; if tagging slips, the date is corrected before the tag.
+192. **Help renders under the static-window CSP.** No aligned tables (inline
+     `style` attributes are blocked: Task 46 D3; the existing CI check must
+     pass), no raw HTML (`html: false`), and no Mermaid fences in `help.md`
+     (the Help window has no script, so they would show as source text). The
+     keyboard-shortcut table gains `Ctrl/Cmd+W`.
+193. **Version bump, minimal.** `package.json` `version` and the two
+     `package-lock.json` fields become `1.2.0`, edited by hand. No `npm install`,
+     no dependency change, no other `package.json` edit.
+194. **README reflects v1.2.0:** the status line, feature list (Close, Mermaid,
+     About/notices), stack (Mermaid 11.17.2 as a build-time asset), security
+     invariants (both CSPs), and license section (third-party notices ship
+     in-app).
+195. **No behavior change.** No file under `src/` changes except `help.md`. The
+     full test gate passes: build, unit, integration, and one full e2e run from
+     a clean `dist/` (for What's New, Help and the D3 check). A failure only on
+     `close-document:221` with the captured native-abort signature follows the
+     Task 46 gate rule.
+
+### Explicitly out of scope (not built without asking)
+
+- Creating the tag or the GitHub Release (done by the user after merge).
+- Any backlog item, including a Help → What's New menu entry (the open question
+  from Task 43).
+- Documenting internal changes with no user-visible effect (test fixtures,
+  readiness helper, failure capture).
+- Changes to the release workflow.
+
+---

@@ -18,6 +18,9 @@ A minimal Electron + TypeScript desktop app for previewing Markdown files.
 - **Preview and Code tabs** — View → Preview and View → Code switch the main pane between the rendered Markdown and a raw-source view with syntax highlighting. The raw view always includes frontmatter, regardless of the Show Frontmatter toggle, which only affects the rendered Preview
 - **Copy raw source** — a copy button in the document header copies the file's raw source, frontmatter included, to the clipboard regardless of which tab is active, with a brief visual confirmation on click
 - **What's New on update** — the first time you launch md-view after an update, a small window shows that version's release notes. Shown once per version, then not again until the next update
+- **Close** — File → Close (`Ctrl/Cmd+W`) closes the open file and returns to the "No file open" view. The folder tree stays open. The item is disabled when no file is open
+- **Mermaid diagrams** — fenced code blocks tagged `mermaid` render as diagrams in the Preview and follow Dark Mode. An invalid or oversized diagram shows a notice and its source without affecting the rest of the document. Theme and security settings inside a diagram are ignored. The Code tab and the copy button still show the raw Markdown
+- **About window and third-party notices** — Help → About md-view shows the app version, the Electron/Chromium/Node.js versions, copyright, license, a repository link, and the license notices of the open-source packages bundled into md-view (Electron's and Chromium's own license files ship alongside the app)
 
 ## Stack
 
@@ -26,6 +29,7 @@ A minimal Electron + TypeScript desktop app for previewing Markdown files.
 - **markdown-it** — Markdown → HTML conversion, with raw HTML passthrough explicitly disabled
 - **highlight.js** — syntax highlighting for fenced code blocks with an explicit, recognized language (no auto-detection)
 - **chokidar** — file watching for live-reload
+- **Mermaid** (11.17.2, pinned) — diagram rendering in the Preview. Shipped as a build-time asset: `npm run build` copies `mermaid.min.js` into `dist/renderer/`, and the renderer loads it only when a document contains a diagram
 - **zod** — schema validation for the hand-editable `settings.json` file
 - **esbuild** — bundles the preload script into a single file (required to run under Electron's sandboxed preload context)
 - **Vitest** — unit and integration tests
@@ -38,6 +42,8 @@ A minimal Electron + TypeScript desktop app for previewing Markdown files.
 - The preload script exposes only an explicit, versioned bridge object (`window.mdview`) via `contextBridge.exposeInMainWorld` — never raw IPC or Node APIs
 - Markdown is converted with `html: false` — raw HTML embedded in a source file is never rendered as live markup
 - Links clicked inside rendered content are intercepted and opened externally via `shell.openExternal`; the app window itself never navigates away from its own content
+- The main window enforces a Content Security Policy (`src/renderer/index.html`): scripts load only from the app itself (no inline or `eval`'d scripts) and `connect-src 'none'` blocks script-initiated network requests (fetch/XHR/WebSocket). Remote images in a document still load. Mermaid runs with a locked configuration (`securityLevel: 'strict'`, with theme and security keys that a diagram cannot override)
+- The Help, What's New, and About windows render under a no-script Content Security Policy: no `script-src` at all, and only the one embedded stylesheet, pinned by its SHA-256 hash
 
 ## Usage
 
@@ -67,7 +73,7 @@ File → Open Folder… (`Ctrl/Cmd+Shift+O`) is a second way to start: it opens 
 
 ## About this project
 
-**Status: v1.1.0.** `md-view` is a small, working tool — and also a live testbed.
+**Status: v1.2.0.** `md-view` is a small, working tool — and also a live testbed.
 
 This app was built end-to-end under a governed, multi-agent development
 process: every feature went through explicit scope contracts, independent
@@ -90,3 +96,5 @@ used partly to stress-test the governance itself.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+The license notices of the open-source packages bundled into md-view ship with the app: `npm run build` generates them into `dist/`, and they are shown in-app under Help → About md-view.
