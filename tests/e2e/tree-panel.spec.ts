@@ -4,6 +4,7 @@ import * as path from 'path';
 import type { Page, ElectronApplication } from '@playwright/test';
 import { _electron as electron } from '@playwright/test';
 import { test, expect } from './support/fixtures';
+import { waitForRendererReady } from './support/rendererReady';
 import { IPC_CHANNELS } from '../../src/preload/api';
 
 const ENTRY_POINT = path.join(process.cwd(), 'dist/main/index.js');
@@ -335,6 +336,7 @@ test.describe('Task 23: tree panel drag-to-resize', () => {
     try {
       const app = await electron.launch({ args: [ENTRY_POINT, fixtureNotesFile], env: childEnv, userDataDir });
       const window = await app.firstWindow();
+      await waitForRendererReady(window);
       await expect(window.locator('#tree-root')).toBeVisible();
 
       await dragHandleTo(window, 400);
@@ -345,6 +347,7 @@ test.describe('Task 23: tree panel drag-to-resize', () => {
 
       const secondApp = await electron.launch({ args: [ENTRY_POINT, fixtureNotesFile], env: childEnv, userDataDir });
       const secondWindow = await secondApp.firstWindow();
+      await waitForRendererReady(secondWindow);
       await expect(secondWindow.locator('#tree-root')).toBeVisible();
 
       const widthAfterRelaunch = await elementWidth(secondWindow, '#tree-panel');

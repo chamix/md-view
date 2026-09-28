@@ -6691,3 +6691,439 @@ Where a condition and the blueprint disagree, the condition wins.
    accepted as written.
 
 ---
+
+## Task 47: Live-reload truncate race + e2e renderer-readiness race (Step 1)
+
+Closes `functional_domain.md` Task 47, guardrails #180-#188. Branch
+`feature/047-e2e-races` off `main` @ `38cb06b`. No stale `current_scope.json`
+existed.
+
+### Evidence this plan rests on (measured by the Lead; scratch probes only, repo unmodified)
+
+**E1. H1 is confirmed in the code, chokidar 4.0.3.**
+- `FSWatcher._emit` sends every `change` through
+  `this._throttle('change', path, 50)` (`node_modules/chokidar/index.js:506`).
+- `_throttle` (`:550-575`) is **leading-edge only**. A second call inside
+  the 50 ms window only increments `count` and returns `false`. `clear()`
+  then deletes the entry **without emitting** (no trailing edge).
+- The raw fs listener adds its own 5 ms throttle (`handler.js:355`).
+- `watcher.ts` uses `{ ignoreInitial: true }` with no `awaitWriteFinish`.
+- `documentSession` re-reads the file with `fs.readFile` on every notified
+  change.
+
+**E2. H1 reproduces deterministically** (repo's chokidar, a scratch Node
+harness mirroring `watcher.ts` + read-on-change):
+
+| Writer behaviour | Current config: events / final render | `awaitWriteFinish {100, 20}`: events / final render |
+|---|---|---|
+| Truncate; after the truncate's `change` is delivered and read, write within 5-15 ms | 1 / **empty** (3/3) | 2 / correct (3/3); the first read comes after 107-135 ms and is empty because the file was stable-empty that long |
+| Truncate + write 20 ms later | 1 / **empty** | 1 / correct (read at 134 ms) |
+| Truncate + write 80 ms later | 2 / correct | 1 / correct (201 ms) |
+| Truncate + write 150 / 300 ms later | n/a | 2 / correct |
+| Plain `fsp.writeFile` (what `live-reload.spec.ts:28` does), 40 runs, idle machine | 1 event each; **0/40** empty | n/a |
+
+The race needs the truncate to be delivered as its own notification
+before the write lands. That essentially never happens on an idle machine,
+but it is plausible under a loaded 2-worker e2e run. The observed failure
+(`#content` EMPTY after an `fs.writeFile`) is exactly the E2 end state.
+
+**E3. H2 reproduces deterministically** (3 of 3, real app, `main` build).
+1. From main, `webContents.debugger` attaches and runs
+   `Page.addScriptToEvaluateOnNewDocument({ source: 'debugger;' })`, then
+   reloads. The renderer pauses **before any page script** runs.
+2. While it is held, main clicks `menu-open` (stubbed dialog). A spy on
+   `webContents.send` confirms that `md-view:file-rendered` (and
+   `folder-tree-root`) were sent.
+3. After resume, `#content` is `""` and the status bar reads "No file
+   open", **while main believes a document is open** (`menu-close` is
+   enabled).
+4. The control run without the hold renders normally.
+
+`ipcRenderer` messages with no registered listener are dropped.
+`renderer.js` registers all receivers at the top level of a classic,
+parser-inserted script at the end of `<body>`, so a document whose
+`readyState` is `complete` has run it.
+
+Two hold mechanisms did **not** work:
+- A `Debugger.setBreakpointByUrl` on the sandboxed preload never resolved
+  (0 locations, no pause).
+- Pausing inside `renderer.js` cannot reproduce the race: IPC tasks cannot
+  interleave within a running script.
+
+The `debugger;` injection is the working hold.
+
+**E4. `view-menu.spec.ts:189` is reproduced, not guessed.**
+- In the running app, main's `fs/promises.writeFile` was patched to open the
+  file, truncate it, wait 300 ms, then write. That widens the truncate gap
+  of the production writer `settingsStore.writeSettingsFile`, a plain
+  non-atomic `fs.writeFile`.
+- The test's exact observation (poll until non-null, then re-read and
+  `JSON.parse`) saw `""` as its first non-null value. It then threw exactly
+  **`Unexpected end of JSON input`**. The file settled to the correct JSON
+  afterwards.
+- **Classification (evidence-based):** a same-class truncate-then-write
+  race. The production writer is not atomic, and the test's "non-null"
+  predicate accepts an empty file. The Task 41 backlog entry describes it
+  correctly.
+- `appStateStore.ts` already implements an atomic write (temp file plus
+  `renameWithRetry`, ADR-009), which settings never adopted.
+
+**E5. `close-document.spec.ts:221`: unconfirmed; no evidence exists yet.**
+- The only observation is `electronApplication.evaluate: Target page,
+  context or browser has been closed`: the Electron process ended
+  mid-test. A different test failed in the reviewer's other run.
+- Nothing in the test's code path explains a process exit. It stubs
+  `Menu.buildFromTemplate`, pops the native File menu, and calls
+  `closePopup()`.
+- `playwright.config.ts` documents a **known** hard-crash class from
+  Task 19: Windows fast-fail, exit code `3221226505`. It happened 2/12 at 4
+  workers and 0/12 at 2. That is a *candidate* only: no exit code was
+  captured.
+- **Evidence is currently destroyed.** The fixture deletes the per-test
+  `userDataDir`, which is where Crashpad would write dumps, and it discards
+  the child's exit code and stderr.
+
+This plan adds capture (D4). It does not propose a fix.
+
+### Decisions for you
+
+**D1 (H1 fix, #182): `awaitWriteFinish` (recommended) vs a trailing
+re-read.**
+
+| | `awaitWriteFinish: { stabilityThreshold: 100, pollInterval: 20 }` | Trailing re-read in `watcher.ts` (re-emit `render` ~75 ms after each change) |
+|---|---|---|
+| #180 holds | Yes, in every E2 scenario | Yes (a re-read after the 50 ms window catches a swallowed write) |
+| Latency to the first render after a save | **+~105-200 ms** (measured 107-201 ms vs ~2 ms) | none (leading render kept) |
+| Transient wrong renders | Only if the file is *stably* empty or partial for ≥ 100 ms | **Yes:** a truncate-first writer flashes an empty preview until the trailing read |
+| Work per save | 1 read and render typically; stat polling every 20 ms while settling | **2 reads and renders per save**, including a **full Mermaid diagram pass twice** (Task 45) |
+| Code | One option on an existing library feature | New timer state in `watcher.ts` (arm, re-arm, clear on close) plus its own races |
+
+Recommendation: `awaitWriteFinish`. The cost is about 0.1-0.2 s of extra
+live-reload latency. In exchange, no blank flash and no duplicate Mermaid
+passes. The unlink path is unaffected (`unlink` is not delayed, so the
+error state still shows).
+
+**D2 (H2 application, #183/#185): apply the helper in the shared fixture
+(recommended) vs per test.**
+
+`waitForRendererReady(page)` lives in the new file
+`tests/e2e/support/rendererReady.ts`. It polls, with `.catch(() => false)`
+for context teardown, until:
+
+```js
+location.pathname.endsWith('/renderer/index.html') && document.readyState === 'complete'
+```
+
+- The initial `about:blank` cannot satisfy it (URL clause).
+- A held or not-yet-scripted document cannot satisfy it: `readyState`
+  cannot reach `complete` before the parser-inserted `renderer.js` has run.
+- `page.evaluate` blocks while the renderer is paused, so it cannot race the
+  hold.
+
+It is applied in two places:
+- **once, in `support/fixtures.ts`**, before `use(app)`. That covers every
+  test using the `electronApp` fixture, which is the large majority. My
+  heuristic scan found 17 fixture tests (in `file-tree`, `help-menu` and
+  `window-chrome`) that trigger main-side actions before any readiness
+  wait. The fixture placement makes the list irrelevant.
+- **explicitly, after `firstWindow()`,** at the 7 direct `electron.launch`
+  sites: `tree-panel` ×2, `view-menu` ×3, `whats-new` ×1 and
+  `window-chrome` ×1, plus any the engineer finds.
+
+A structural check test (#185) scans `tests/e2e/*.spec.ts`: every file that
+calls `electron.launch(` must call `waitForRendererReady` at least as many
+times.
+
+The alternative, per-test calls in about 110 tests, relies on a
+hand-maintained list, which is the Task 46 lesson.
+
+**D3 (`view-menu.spec.ts:189`): make `writeSettingsFile` atomic
+(recommended) vs report-only.**
+- Recommended: extract `appStateStore`'s existing temp-plus-`renameWithRetry`
+  writer into a shared `src/main/atomicWriteFile.ts`, and use it in both
+  stores. `appStateStore`'s behaviour and tests stay unchanged.
+- The test's existing assertion is then valid as written: the file is never
+  observable partially. It is the same bug class as H1, and a partial
+  `settings.json` is also reachable in production (a focus-reread during a
+  write, or an external reader).
+- The deterministic RED uses a delayed `writeFile` (the E4 technique), in
+  an integration test on `settingsStore`.
+- Alternative: report only, leave `:189` flaky, and keep the backlog entry.
+  The test itself is **not** loosened in either option (#186).
+
+**D4 (`close-document.spec.ts:221`): capture evidence only (recommended).**
+This is test-side diagnostics in `support/fixtures.ts`:
+- record the child's `exit` code/signal (`app.process()`);
+- tee its stderr;
+- **on test failure only**, attach the code, signal, stderr tail, and a
+  listing of `userDataDir/Crashpad` to the Playwright test info, before the
+  directory is deleted.
+
+No fix is attempted. If one of the done-criterion runs hits it, the report
+states the captured code (for example `3221226505`, which is Task 19's
+class). Otherwise it states "not reproduced in N runs; capture in place."
+
+### Design
+
+- **`src/main/watcher.ts` (D1):**
+  `chokidar.watch(filePath, { ignoreInitial: true, awaitWriteFinish: WATCH_WRITE_FINISH })`
+  with an exported constant `{ stabilityThreshold: 100, pollInterval: 20 }`
+  and a comment citing E1/E2. `classifyWatchEvent` is unchanged.
+- **`tests/e2e/support/rendererReady.ts`** (new, D2), the helper above.
+  **`support/fixtures.ts`** calls it before `use(app)` and adds the D4
+  capture.
+- **D3:**
+  - `src/main/atomicWriteFile.ts` (new): `writeFileAtomic(path, data)`,
+    moved verbatim from `appStateStore.ts` (the same temp naming and
+    `renameWithRetry`).
+  - `appStateStore.ts` imports it.
+  - `settingsStore.writeSettingsFile` uses it after its existing `mkdir`.
+
+**SOLID/Clean:**
+- H1 stays inside the infrastructure adapter (`watcher.ts`). The
+  `documentSession` use case and its ports are unchanged, and its race rules
+  are untouched.
+- D3 is an extract-function refactor: one atomic-write policy, two adapters
+  using it (DRY/SRP).
+- The test helper is a single policy object for "renderer ready", reused
+  by the fixture and the direct launches (SRP, no duplication).
+
+GoF: none is forced. `awaitWriteFinish` is a library option, not a pattern.
+
+### Test plan (TDD: RED is observed before any fix, 3-cycle cap)
+
+**H1 (#180/#181).** `tests/integration/watcher.test.ts`, new case; existing
+cases unmodified:
+1. Truncate the watched file.
+2. Wait, event-driven, for `watchFile`'s callback to fire.
+3. **Immediately** write the final content, and record the delay since the
+   callback. **Assert that the delay is under 40 ms** ("precondition not
+   met" otherwise).
+4. Poll up to 3 s for a callback **after** the write completed.
+
+RED on today's code (E2: none arrives); GREEN with D1. A second case checks
+that `unlink` still reports `error` promptly.
+
+`live-reload.spec.ts:28` is unchanged, and serves as the e2e witness.
+
+**H2 (#183/#184).** `tests/e2e/renderer-ready.spec.ts` (new):
+- **(a) Hazard, the positive control for the hold:** hold the renderer
+  (E3 technique); while it is held, trigger `menu-open` from main; resume.
+  Assert `#content` stays empty and the status bar says "No file open".
+  This proves the hold really is before the page scripts, so (b) means
+  something.
+- **(b) Gate:** hold, then start `waitForRendererReady`. Assert it has
+  **not** resolved after 1 s while held. Resume, await it, trigger
+  `menu-open`, and assert that the fixture heading renders.
+  - RED first with the helper stubbed as a no-op (`resolved while held` =
+    true).
+  - GREEN with the real helper.
+- **(c) Blank-document clause:** the helper does not resolve on
+  `about:blank`.
+- Structural check (#185): a unit test in `tests/unit/e2eReadiness.test.ts`
+  (new) scans `tests/e2e/*.spec.ts` for `electron.launch(` versus
+  `waitForRendererReady` call counts.
+
+**D3.** `tests/integration/settingsStore.test.ts`, new case:
+- With `node:fs/promises.writeFile` mocked to truncate, wait 200 ms, then
+  write, a concurrent reader polling `settings.json` never observes `''` or
+  unparsable content.
+- RED on today's writer; GREEN with atomic. `appStateStore.test.ts` passes
+  unmodified.
+
+**Done criterion (#188).** 3 consecutive full runs, each after
+`rm -rf dist && npm run build`: `npm run test:unit`,
+`npm run test:integration` and `npx playwright test` (config `workers: 2`,
+no retries). All must be green. Any failure resets the count, and is
+reported with the D4 capture.
+
+### Fault-injection plan
+
+The reviewer runs F1, F2, F4 and F6, plus its own, at least one new.
+Reverts use a captured patch and `git -c core.autocrlf=false apply -R`
+plus `cmp` (Task 46 N6). `npm run build` precedes every e2e observation.
+
+| # | Fault | Must go red |
+|---|---|---|
+| F1 | Remove `awaitWriteFinish` from `watcher.ts` | H1 integration case |
+| F2 | Make `waitForRendererReady` a no-op | `renderer-ready.spec.ts` (b) |
+| F3 | Drop the URL clause (readyState only) | (c) blank-document case |
+| F4 | Remove one direct-launch helper call (e.g. `view-menu` (d)) | structural check test |
+| F5 | Delay the H1 test's write by 200 ms | the H1 case fails with "precondition not met" (proves it cannot pass vacuously) |
+| F6 | `writeSettingsFile` back to plain `fs.writeFile` | D3 integration case |
+| F7 | Remove the hold from (a) | (a) goes red (the render arrives), proving (a) depends on the hold |
+
+### In-scope files (proposed `current_scope.json`)
+
+**Production:**
+- `src/main/watcher.ts`
+- `src/main/atomicWriteFile.ts` (new, D3)
+- `src/main/appStateStore.ts` (D3, import only)
+- `src/main/settingsStore.ts` (D3)
+
+**Test support:**
+- `tests/e2e/support/rendererReady.ts` (new)
+- `tests/e2e/support/fixtures.ts` (the helper call plus the D4 capture)
+
+**Tests:**
+- `tests/integration/watcher.test.ts` (new case only)
+- `tests/integration/settingsStore.test.ts` (new case only)
+- `tests/e2e/renderer-ready.spec.ts` (new)
+- `tests/unit/e2eReadiness.test.ts` (new)
+- Direct-launch specs, **limited to inserting
+  `await waitForRendererReady(window)` after `firstWindow()` plus its
+  import**, with no other change:
+  - `tests/e2e/tree-panel.spec.ts`
+  - `tests/e2e/view-menu.spec.ts`
+  - `tests/e2e/whats-new.spec.ts`
+  - `tests/e2e/window-chrome.spec.ts`
+
+  The list comes from `grep -rn "electron.launch(" tests/e2e`, per the
+  Task 46 menu-ID lesson. The engineer re-greps and reports any extra hit
+  as a scope amendment.
+
+**Reviewer output:** `.agents/specs/review_report_task47.md`.
+
+**Not touched:**
+- `src/renderer/**` and `src/preload/**`.
+- `documentSession.ts` and `index.ts`.
+- `playwright.config.ts` (no retries or workers change, #186).
+- `live-reload.spec.ts`, `file-tree.spec.ts` and `close-document.spec.ts`,
+  which stay byte-identical: the fixture covers them.
+- All other existing tests.
+
+### Merge sequencing and the Task 46 follow-up
+
+After this task merges:
+1. Rebase `feature/046` onto `main`. The `functional_domain.md`,
+   `initial_scaffold.md`, `backlog.md` and `RUN_LOG.md` appends will
+   conflict at file end: keep both sections, Task 46 before Task 47.
+2. Task 46's new e2e specs use the fixture, so they inherit readiness.
+   `about.spec.ts` and `static-window-csp.spec.ts` contain no direct
+   `electron.launch`.
+3. Re-run the #188 criterion on the rebased 046.
+4. Append the Task 46 RUN_LOG correction note (the row said "passed with
+   known flakes"; that was wrong). It is appended, not edited.
+
+### Spec section this closes
+
+`functional_domain.md` Task 47, guardrails #180-#188.
+
+---
+
+### Task 47: User approval conditions (binding on implementation and review)
+
+The blueprint above was approved on 2026-09-27 subject to these conditions.
+Where a condition and the blueprint disagree, the condition wins.
+
+1. **D1 approved:** `awaitWriteFinish: { stabilityThreshold: 100, pollInterval: 20 }`.
+
+   **Condition: Close during a pending write-finish check produces no
+   `FILE_RENDERED`; #147/#148 still hold.**
+
+   *Lead's evidence for why this is load-bearing:*
+   - chokidar 4.0.3's `close()` does **not** cancel pending
+     `awaitWriteFinish` polls (`_pendingWrites` and their `setTimeout`
+     survive; `index.js:394-421`, `:600-635`). It only
+     `removeAllListeners()`, so a later `awfEmit` finds no listener.
+   - `documentSlot.beginRender()` returns the **current** epoch. A watcher
+     callback that fired after Close would therefore start a render that
+     `tryDeliver` accepts, which re-occupies the slot (resurrection).
+   - The only barrier is "the watcher never calls back after `close()`".
+
+   *Required tests:*
+   - (a) `tests/integration/watcher.test.ts`: write, then `close()` the
+     `watchFile` handle **inside** the 100 ms window. Assert the precondition
+     (close happened < 60 ms after the write), then wait 500 ms: **zero**
+     callbacks.
+   - (b) `tests/e2e/close-pending-reload.spec.ts` (new):
+     1. Open a file and wait until it renders.
+     2. Count `FILE_RENDERED` in main with a `webContents.send` spy.
+     3. Write new content, then Close via `menu-close` inside the window
+        (assert the precondition).
+     4. After 1 s: **no** `FILE_RENDERED` after the Close, the pristine view
+        (`expectPristineDocumentView`), and `menu-close` disabled.
+
+   *Fault injection **F8**:* make `watchFile`'s close deferred (e.g. the
+   returned handle's `close` runs `setTimeout(() => watcher.close(), 500)`).
+   Both (a) and (b) must go **red**; revert.
+
+   `live-reload.spec.ts` "shows a visible error state when the open file is
+   deleted" stays **unmodified and green**.
+2. **D2 approved.** `functional_domain.md` Task 47 records the production
+   analogue of H2 as an **accepted limitation**: argv waits for
+   `did-finish-load`, and there is no `second-instance`/`open-file` path.
+3. **D3 approved.** **Condition: rename failure while another program holds
+   `settings.json` open** (File > Settings opens it in the user's editor).
+   - *Lead's evidence (probe):* on Windows, **any** open handle on the target
+     makes `rename(temp, target)` fail with **`EPERM`**. That includes a plain
+     Node `fs.openSync(target, 'r')`, and .NET handles with `FileShare.Read`
+     and `FileShare.ReadWrite`. It succeeds after release.
+   - *Disclosed trade-off:* today's non-atomic `writeFile` usually succeeds
+     while the file is held; the atomic rename does not.
+   - *Defined behavior:*
+     - A **short retry**: the existing `renameWithRetry` (6 attempts,
+       backoff 10·attempt ms, about 150 ms of waits in total).
+     - Then **containment**: `console.warn` with the path and code, delete
+       the temp file, and **keep the in-memory settings** (the View state
+       and menu checkmarks stay as toggled).
+     - **Never crash**, and no unhandled rejection.
+     - The next successful write persists the full object (#106).
+     - A startup self-heal write (`loadSettingsAtStartup` on a corrupt
+       file) that fails is contained too: the app boots with defaults
+       (#108).
+     - `ensureSettingsFileExists` (File > Settings) is contained the same
+       way.
+   - *Placement:* `settingsStore` stays a throwing adapter for
+     `writeSettingsFile`. Containment happens at the callers:
+     `index.ts` `persistCurrentViewSettings`/`onOpenSettings`, and inside
+     `loadSettingsAtStartup` for its self-heal write. `index.ts` is added
+     to scope for exactly this.
+   - *Required tests:*
+     - (c) Integration (`settingsStore.test.ts`): holding `fs.openSync`
+       on the target makes `writeSettingsFile` reject with `EPERM` after the
+       retries, leaves the target content unchanged, and leaves no `*.tmp`.
+       Releasing the handle mid-retry (after about 30 ms) succeeds.
+     - (d) Integration: a corrupt `settings.json` held open makes
+       `loadSettingsAtStartup` resolve to defaults and not throw.
+     - (e) E2E (`tests/e2e/settings-locked.spec.ts`, new):
+       1. The test holds `settings.json` open.
+       2. Toggling Dark Mode leaves the app alive, the menu checked and the
+          renderer dark, with a warning captured from main.
+       3. No `pageerror` and no process exit occur.
+       4. After releasing the handle, toggling Show Frontmatter writes the
+          full object including `Dark Mode: true`.
+   - *Fault injection **F9**:* remove the containment `catch` in
+     `persistCurrentViewSettings`. (e) must go red: an unhandled rejection
+     is observed through a main-side `process.on('unhandledRejection')`
+     probe the test installs.
+4. **D4 approved: capture only, active only on failure, and it must never
+   change a test's pass/fail.**
+   - The capture code is wrapped so any error inside it is swallowed
+     (logged).
+   - It runs in fixture teardown only when `testInfo.status !== testInfo.expectedStatus`.
+   - It never throws, never waits more than 2 s, and never alters the
+     result.
+   - *Test:* a unit test of the pure formatter, plus reviewer
+     verification. *Fault injection **F10**:* make the capture throw, and
+     the suite result is unchanged.
+5. **Rules:**
+   - TDD, 3-cycle cap, RED before GREEN, with `npm run build` before every
+     e2e RED.
+   - Reverts use `git -c core.autocrlf=false apply -R` plus `cmp`.
+   - The reviewer adds its own injections, at least one new, and ends with
+     the `git status` backstop.
+   - Stop on any hook block.
+   - Temp files go **outside the repo and are removed afterwards**.
+   - **Done = 3 consecutive green full runs** (clean `dist/`, 2 workers, no
+     retries).
+   - The Lead stops before `/log-run`.
+
+**In-scope additions** from these conditions:
+- `src/main/index.ts` (containment only);
+- `tests/e2e/close-pending-reload.spec.ts` (new);
+- `tests/e2e/settings-locked.spec.ts` (new);
+- `tests/unit/failureCapture.test.ts` (new, D4 formatter);
+- `tests/e2e/support/failureCapture.ts` (new, D4).
+
+---

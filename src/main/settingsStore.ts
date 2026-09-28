@@ -2,10 +2,16 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { parseSettings, defaultSettingsFile } from './settings';
 import type { SettingsFile } from './settings';
+import { writeFileAtomic } from './atomicWriteFile';
 
+// Task 47 (D3): atomic replace, so no reader (the focus re-read, an external
+// editor, a test) can ever observe a truncated or partial settings.json.
+// Still a throwing adapter: on Windows a rename over a target that another
+// program holds open fails with EPERM once the short retry is exhausted, and
+// callers contain that (index.ts, and the self-heal write below).
 export async function writeSettingsFile(filePath: string, settings: SettingsFile): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, JSON.stringify(settings, null, 2), 'utf8');
+  await writeFileAtomic(filePath, JSON.stringify(settings, null, 2));
 }
 
 // Self-healing (functional_domain.md guardrail #103): a missing file is not
@@ -24,7 +30,14 @@ export async function loadSettingsAtStartup(filePath: string): Promise<SettingsF
   const parsed = parseSettings(raw);
   if (parsed !== null) return parsed;
 
-  await writeSettingsFile(filePath, defaultSettingsFile);
+  // Task 47 condition 3: a self-heal write that fails (e.g. EPERM because
+  // another program holds settings.json open) is contained -- the app still
+  // boots with defaults (#108); the corrupt file is simply left for now.
+  try {
+    await writeSettingsFile(filePath, defaultSettingsFile);
+  } catch (error) {
+    console.warn('md-view: could not rewrite corrupt settings file', filePath, (error as NodeJS.ErrnoException).code ?? error);
+  }
   return defaultSettingsFile;
 }
 

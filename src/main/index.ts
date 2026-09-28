@@ -58,8 +58,23 @@ function broadcastViewSettings(): void {
 // Toggling a View-menu item always persists the *entire* current settings
 // object (functional_domain.md guardrail #106) -- never a single-key patch,
 // since settings.json has no defined partial-update semantics.
+//
+// Task 47 condition 3: the atomic write can fail (on Windows, EPERM while
+// another program -- e.g. the editor File > Settings opened -- holds
+// settings.json). Contained here: warn, keep the in-memory settings (View
+// state and menu checkmarks stay as toggled; the next successful write
+// persists the full object), never crash, never an unhandled rejection. The
+// writer itself has already removed its temp file.
 async function persistCurrentViewSettings(): Promise<void> {
-  await writeSettingsFile(settingsFilePath, fromViewSettings(viewSettings));
+  try {
+    await writeSettingsFile(settingsFilePath, fromViewSettings(viewSettings));
+  } catch (error) {
+    warnSettingsWriteFailed(error);
+  }
+}
+
+function warnSettingsWriteFailed(error: unknown): void {
+  console.warn('md-view: could not save settings (kept in memory):', settingsFilePath, (error as NodeJS.ErrnoException)?.code ?? error);
 }
 
 async function setDarkMode(checked: boolean): Promise<void> {
@@ -120,7 +135,12 @@ function menuHandlers(): MenuHandlers {
 // the OS's own file-type handler. settingsFilePath never originates from,
 // or passes through, the renderer (functional_domain.md guardrail #105).
 async function onOpenSettings(): Promise<void> {
-  await ensureSettingsFileExists(settingsFilePath);
+  // Task 47 condition 3: a failed create is contained like any settings write.
+  try {
+    await ensureSettingsFileExists(settingsFilePath);
+  } catch (error) {
+    warnSettingsWriteFailed(error);
+  }
   await shell.openPath(settingsFilePath);
 }
 

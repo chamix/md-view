@@ -792,3 +792,92 @@ packaging — not assumed fine just because Windows was.
   `Function(`/eval scan under `script-src 'self'`, the default `secure`
   list, `maxTextSize`/`maxEdges` behavior, orphaned `#d<id>` nodes, and the
   `getConfig()` observation behind the darkMode tests (see Nit 1 above).
+
+- [Pending — candidate for its own task] Task 47 review: native Electron
+  crash reproduced at `close-document.spec.ts:221` (d), "the title-bar File
+  popup carries menu-close at index 2 …".
+  - **Evidence** (the reviewer's run 2 of 5, D4 failure capture):
+    - `electronApplication.evaluate: Target page, context or browser has been closed`
+      at the `stubOpenDialog` → `openViaMenu` call (`:255`).
+    - stderr tail: `length_error was thrown in -fno-exceptions mode with message "basic_string"`.
+    - This is a libc++ abort in the Electron main process, right after the
+      test showed the **native File popup** (`Menu.popup`, title-bar
+      label click) and called `closePopup()` from main.
+    - `Crashpad`: not present (`ENOENT`; the app never calls
+      `crashReporter.start()`).
+  - **Exit code not yet captured** (see the D4 entry below). Its link to
+    Task 19's fast-fail class (`3221226505`, `playwright.config.ts`) is
+    unproven.
+  - **Not caused by Task 47:** menus, the `index.ts` menu code, the renderer
+    and the spec all have 0 diff.
+  - **Frequency so far:**
+    - Task 46 review: 1 full run;
+    - Task 47 review: 1 of 5 runs;
+    - Task 47 engineer: 0 of 4 runs.
+  - **Next steps:** capture the exit code (after the D4 fix); try isolating
+    with `--repeat-each` on this test alone and with/without `closePopup()`;
+    check Electron 44 issues for `Menu.popup`/`closePopup` libc++
+    `length_error`.
+  - **Gate rule** (user decision, Task 47 close-out): during Task 46's rebase
+    gate, a full run that fails ONLY on this test WITH this captured
+    native-abort signature is logged but does not reset the 3-green count.
+
+- [Pending] Task 47 review S1: the D4 failure capture
+  (`tests/e2e/support/failureCapture.ts`) runs in fixture teardown AFTER
+  `app.close()`. So the child's `exit` event has often not fired yet, and
+  the capture reports `process: still running at capture time` with **no
+  exit code**. That is what happened for the one real crash (above). A
+  clean close and a mid-test death can also both show `exit code: 0`.
+  - Fix: before formatting, wait a bounded time for `exit` inside the
+    existing 2 s budget, and/or record whether the process had already
+    exited before `app.close()` was called.
+  - Deferred by the user at Task 47 close-out (not a fix round).
+
+- [Pending] Task 47 review S2 (pre-existing, not a Task 47 regression):
+  `window-chrome.spec.ts:124` "close button terminates the app" sometimes
+  fails with `locator.click: Target page, context or browser has been closed`.
+  - The click closes its own page, and Playwright rejects the click if the
+    target is gone before its completion acknowledgement.
+  - Measured at `--repeat-each=40 --workers=4`: 3/120 with the Task 47
+    readiness helper, 5/240 with it removed. The rate is the same, so this
+    is pre-existing.
+  - Candidate fix: `click({ noWaitAfter: true })`, or treat target-closed as
+    the expected outcome and assert the process exit instead.
+
+- [Pending] Task 47 review N5: the application form of
+  `waitForRendererReady(app)` iterates `app.windows()`. That loop is only
+  covered at random:
+  - A fault that checks only the first window (`windows().slice(0, 1)`)
+    turned nothing red in `renderer-ready.spec.ts`.
+  - It failed only 1-2 of 75 `whats-new` runs, when Playwright happened to
+    list the What's New `data:` window first (measured at 3/20 launches in
+    Task 47 run 1). It fails loudly (a 15 s timeout), never silently.
+
+  Candidate: a unit test of the window loop with fake `Page` objects in
+  `tests/unit`.
+
+- [Pending] Task 47 review N6 (pre-existing): when a test's Electron
+  process dies mid-test, the `userDataDir` fixture's teardown `rmSync`
+  (`tests/e2e/support/fixtures.ts:43`) throws `EPERM`, because the dying
+  process still holds files.
+  - This leaks `%TEMP%\md-view-e2e-*` (about 120 had accumulated) and adds
+    a second, misleading error to the failure.
+  - Candidate: retry `rmSync` with backoff after the process has exited,
+    and log instead of throwing. Related to Task 46 N7 (same EPERM on
+    teardown).
+
+- [Pending] Task 47 review: `tests/e2e/ui-shell.spec.ts:305` leaks one
+  `%TEMP%\md-view-copy-raw-source-*` directory per Playwright invocation.
+  - It calls `fs.mkdtempSync(…'md-view-copy-raw-source-')` at **module
+    (describe-collection) scope**. The runner's collection pass creates a
+    copy, and the `test.afterAll` cleanup only runs in the worker that
+    executes the tests. So every invocation that loads the file leaks one
+    directory, even `--list`.
+  - **Attribution measured by the reviewer:**
+    - count 105 before `npm run test:unit`, and still 105 after unit and
+      after integration;
+    - 106 after an e2e run of `ui-shell` only;
+    - 107 after `--list` only.
+  - **The engineer's attribution (one per unit-test run) was wrong** and is
+    recorded here as corrected.
+  - Fix: create the directory inside a fixture or `beforeAll`.

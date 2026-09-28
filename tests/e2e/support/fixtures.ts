@@ -2,6 +2,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { test as base, _electron as electron, type ElectronApplication } from '@playwright/test';
+import { waitForRendererReady } from './rendererReady';
+import { startFailureCapture } from './failureCapture';
 
 // The host shell may set ELECTRON_RUN_AS_NODE=1 (e.g. some CI/dev-tool
 // environments), which forces any Electron binary to run as plain Node
@@ -40,7 +42,7 @@ export const test = base.extend<{
     await use(dir);
     fs.rmSync(dir, { recursive: true, force: true });
   },
-  electronApp: async ({ electronArgs, userDataDir, initialUserDataFiles }, use) => {
+  electronApp: async ({ electronArgs, userDataDir, initialUserDataFiles }, use, testInfo) => {
     for (const [name, content] of Object.entries(initialUserDataFiles)) {
       fs.writeFileSync(path.join(userDataDir, name), content, 'utf8');
     }
@@ -63,8 +65,24 @@ export const test = base.extend<{
       env: childEnv,
       userDataDir,
     });
-    await use(app);
-    await app.close();
+    // Task 47 D4: record exit code/signal and stderr from launch on; attached
+    // to the report only for a failed test, before userDataDir is deleted.
+    const capture = startFailureCapture(app);
+    let setupFailed = true;
+    try {
+      // Task 47 H2 (#183/#185): no test gets the app before renderer.js has
+      // registered its IPC receivers; earlier main->renderer sends are lost.
+      // The app form: with What's New due, firstWindow() can be that window.
+      await waitForRendererReady(app);
+      setupFailed = false;
+      await use(app);
+    } finally {
+      try {
+        await app.close();
+      } finally {
+        await capture.attachIfFailed(testInfo, userDataDir, setupFailed);
+      }
+    }
   },
 });
 

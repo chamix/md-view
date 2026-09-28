@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { _electron as electron } from '@playwright/test';
 import { test, expect } from './support/fixtures';
+import { waitForRendererReady } from './support/rendererReady';
 
 const ENTRY_POINT = path.join(process.cwd(), 'dist/main/index.js');
 
@@ -128,6 +129,7 @@ test.describe('(b) window-control buttons drive real window state', () => {
     try {
       const app = await electron.launch({ args: [ENTRY_POINT], env: childEnv, userDataDir });
       const window = await app.firstWindow();
+      await waitForRendererReady(window);
       await expect(window.locator('#window-close')).toBeVisible();
 
       const closed = app.waitForEvent('close');

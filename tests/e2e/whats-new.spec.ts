@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
 import { test, expect } from './support/fixtures';
+import { waitForRendererReady } from './support/rendererReady';
 
 const repoRoot = path.join(__dirname, '../..');
 const currentVersion = (JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')) as { version: string })
@@ -217,6 +218,7 @@ test.describe('the seen-version write survives process exit', () => {
       app.on('close', () => {
         exited = true;
       });
+      await waitForRendererReady(app);
       await run(app, userDataDir);
     } finally {
       // Safety net if the test failed before the process exited on its own.

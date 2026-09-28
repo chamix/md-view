@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { _electron as electron } from '@playwright/test';
 import { test, expect } from './support/fixtures';
+import { waitForRendererReady } from './support/rendererReady';
 
 const fixturePath = path.join(process.cwd(), 'tests/e2e/fixtures/with-frontmatter/doc.md');
 const ENTRY_POINT = path.join(process.cwd(), 'dist/main/index.js');
@@ -151,6 +152,7 @@ test('(d) close-and-relaunch proves view settings now persist via settings.json'
     });
 
     const window = await app.firstWindow();
+    await waitForRendererReady(window);
     await expect(window.locator('#content')).toContainText('Frontmatter Fixture Heading', { timeout: 10000 });
 
     await app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-dark-mode')?.click());
@@ -169,6 +171,7 @@ test('(d) close-and-relaunch proves view settings now persist via settings.json'
     });
 
     const secondWindow = await secondApp.firstWindow();
+    await waitForRendererReady(secondWindow);
     await expect(secondWindow.locator('#content')).toContainText('Frontmatter Fixture Heading', { timeout: 10000 });
 
     const checkedAfterRelaunch = await secondApp.evaluate(
