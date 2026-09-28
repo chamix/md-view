@@ -1,0 +1,32 @@
+{
+  "fastdom@1.0.12": {
+    "license": "MIT",
+    "text": "fastdom@1.0.12.txt",
+    "reason": "no license file in the package or upstream; the text is the README License section",
+    "citation": {
+      "url": "https://github.com/wilsonpage/fastdom/blob/01524d7b90785fcac5a75bb9f149e14b9e5246c3/README.md#license",
+      "ref": "01524d7b90785fcac5a75bb9f149e14b9e5246c3 (merge commit 2024-02-20T08:00:06Z; npm gitHead a7b9044d58952b970c8b918dcf0e7c8824ba0ff5 is not on GitHub)"
+    },
+    "verify": { "file": "README.md", "mode": "contains" }
+  },
+  "khroma@2.1.0": {
+    "license": "MIT",
+    "text": "khroma@2.1.0.txt",
+    "reason": "no license field (lockfile, installed and upstream package.json)",
+    "citation": {
+      "url": "https://github.com/fabiospampinato/khroma/blob/4968165afb0d3d09be66497e7985a34f7bfe6d42/license",
+      "ref": "v2.1.0 (4968165afb0d3d09be66497e7985a34f7bfe6d42)"
+    },
+    "verify": { "file": "license", "mode": "equals" }
+  },
+  "strictdom@1.0.1": {
+    "license": "MIT",
+    "text": "strictdom@1.0.1.txt",
+    "reason": "no license file in the package or upstream; the text is the README License section",
+    "citation": {
+      "url": "https://github.com/wilsonpage/strictdom/blob/a3bbf19013ecc9c9d165dd4ed89e94757161443e/README.md#license",
+      "ref": "v1.0.1 (a3bbf19013ecc9c9d165dd4ed89e94757161443e)"
+    },
+    "verify": { "file": "README.md", "mode": "contains" }
+  }
+}

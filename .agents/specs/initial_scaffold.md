@@ -6692,6 +6692,875 @@ Where a condition and the blueprint disagree, the condition wins.
 
 ---
 
+## Task 46: About window + third-party license notices + static-window CSP (Step 1)
+
+Closes `functional_domain.md` Task 46, guardrails #169-#179. Branch:
+`feature/046-about-window` (off `main` @ `38cb06b`). No stale
+`current_scope.json` existed at branch creation.
+
+### Evidence this plan rests on (measured, not assumed)
+
+The probes ran against the repo's `package-lock.json` and `node_modules`, the
+registry and GitHub APIs, and Electron 44.3.0 (Chromium 152.0.7977.78). They
+used scratch copies and the gitignored `dist/` from `npm run build`. Apart from
+these spec files, nothing tracked was left modified. (One probe step,
+`asar extract-file`, wrote into the working directory and overwrote
+`package.json`. The file was restored from `HEAD`, and its blob hash was
+verified identical. The packaged-app check below therefore runs every asar
+command from a temp directory.)
+
+**E1. The static windows have never been styled (pre-existing defect since
+Task 14).** Chromium refuses to load a `file:` subresource into a `data:`
+document. The real built app's Help window logs three times
+`Not allowed to load local resource: file:///…/dist/renderer/{app,github-markdown-light,github}.css`.
+Its `.markdown-body` computes to `font-family: "Times New Roman"`, and
+`document.styleSheets[i].cssRules` throws for all three. Only the inline
+`style` attribute (max-width and margins) applies. What's New behaves the same.
+No existing test asserts styling, which is why this went unnoticed. This
+changes what #178 means by "what the windows need for styles". See D1.
+
+**E2. data: URL ceiling.** With `loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))`
+under the same `webPreferences` as `createStaticWindow`:
+- 1 993 153 URL characters: loads.
+- 2 150 439 and 2 622 299 URL characters: `ERR_INVALID_URL (-300)`.
+
+The ceiling is about 2 MiB (Chromium's `kMaxURLChars` = 2 097 152).
+`loadStaticHtml` swallows every load error, so an oversize document would show
+as a **blank window with no error**. A size budget is therefore a tested
+invariant (#177 below).
+
+**E3. Hash-pinned embedded stylesheet under the proposed CSP** (Help,
+What's New, and an About+notices prototype, rendered through markdown-it with
+`html: false`):
+
+| Probe | Result |
+|---|---|
+| Three CSS files embedded as one `<style>`, CSP `style-src 'sha256-<hash of raw bytes>'` | **Blocked.** `dist/renderer/app.css` is CRLF, and the HTML parser normalizes `\r\n` to `\n` before hashing, so the hash never matches. |
+| The same, hashing the **LF-normalized** CSS | **0** violations during load. `font-family: -apple-system…`, `max-width: 704px`. |
+| Wrong hash (control) | 1 violation, unstyled. The channel sees violations. |
+| No CSP (control) | An appended inline `<script>` sets the canary (`1`). |
+| Proposed CSP | The appended inline `<script>` is blocked, and the canary stays `undefined`. |
+| markdown-it table with `:-`/`-:` alignment | 4 violations (one per aligned cell's `style="text-align:…"`). See D3. |
+| About prototype with the full notices in nested `<details>`: 346 132 URL chars (16.5% of the ceiling) | 0 violations. `summary.click()` opens it with no script. |
+
+Violations are observable as `console-message` events on the window's
+`webContents`, registered in `main` at `browser-window-created`. That is
+before `loadURL`, so parse-time violations are caught; a listener added from
+the page after load would miss them. The real-app probe used exactly this.
+
+**E4. What the packaged v1.1.0 app ships today** (`release/win-unpacked/resources/app.asar`,
+listed with `@electron/asar`). Its `node_modules` holds the 12 runtime-tree
+packages **with their license files**, including `highlight.js/LICENSE`. They
+sit inside the archive, where no user can reach them. Step 0's "the app ships
+none today" is imprecise in that respect only. The 113 Mermaid-tree packages
+bundled in `mermaid.min.js` ship with no notice at all, so the task is
+unchanged. The packaged `package.json` keeps `name`, `version`, `description`,
+`license`, `author`, `repository`, `homepage`, `bugs` and `dependencies`, and
+drops `scripts`, `keywords` and `devDependencies`. `LICENSE` is **not**
+shipped today (`electron-builder.yml` packs only `dist/**/*` + `package.json`).
+
+### Shipped package closure (#173)
+
+**Roots.**
+- (a) Every key of `package.json` `dependencies`: `chokidar`,
+  `github-markdown-css`, `highlight.js`, `markdown-it`, `zod`.
+- (b) Every package the build copies from `node_modules` into `dist/`:
+  `mermaid`, `github-markdown-css`, `highlight.js`.
+
+Note that `mermaid` is a **`devDependency`** (Task 45 B3), so every package in
+its tree is `"dev": true` in the lockfile. Any "production dependencies only"
+filter silently drops all 113 of them. That is the exact omission #173
+forbids, and it drives the tooling decision below.
+
+Root list (b) is a constant `BUILD_COPIED_PACKAGES` in the generator. A unit
+test parses the `build` script in `package.json`, extracts every
+`node_modules/<pkg>/` source path, and asserts the extracted set **equals** the
+constant. A future copy step that forgets the constant fails CI.
+
+The preload bundle (esbuild) imports nothing from `node_modules` other than
+`electron`, which is external (grep-verified), so it adds no roots. This is
+recorded rather than tested, because it isn't a shipped-file copy.
+
+**Algorithm** (pure function `computeShippedClosure(lock, roots)`, over
+lockfile v3 `packages`):
+1. Start with the queue `node_modules/<root>` for each root.
+2. For each entry, follow `dependencies` ∪ `optionalDependencies` ∪
+   non-optional `peerDependencies`.
+3. Resolve each name the way Node does: try `<entry>/node_modules/<name>`,
+   then walk up one `node_modules` level at a time to the top-level
+   `node_modules/<name>`.
+4. An unresolvable required edge throws, so the build fails closed. An
+   unresolvable optional edge is skipped, because a package that isn't
+   installed cannot be shipped. A `link: true` entry throws, since there are
+   no workspaces.
+5. The result is deduplicated by `name@version`.
+
+Nested versions are distinct packages. Examples:
+`d3-sankey/node_modules/d3-array@2.12.1` next to top-level `d3-array@3.x`, and
+`katex/node_modules/commander@8.3.0`. The closure has 9 nested entries.
+
+**My count: 125 packages**, against the Lead's baseline of 124:
+
+| License | Mine | Lead | Δ |
+|---|---|---|---|
+| MIT | **79** | 78 | +1 |
+| ISC | 33 | 33 | |
+| BSD-3-Clause | 7 | 7 | |
+| BSD-2-Clause | 1 | 1 | |
+| Apache-2.0 | 1 | 1 | |
+| (MPL-2.0 OR Apache-2.0) | 1 | 1 | |
+| Python-2.0 | 1 | 1 | |
+| Unlicense | 1 | 1 | |
+| no `license` field (`khroma`) | 1 | 1 | |
+| **Total** | **125** | **124** | **+1** |
+
+**The difference is `@types/trusted-types` (MIT).** It is an
+`optionalDependency` of `dompurify` and is flagged `"optional": true` in the
+lockfile. The baseline evidently followed `dependencies` only. It is
+types-only, so esbuild cannot have bundled it into `mermaid.min.js`. Following
+optional edges is still correct under #173: over-inclusion is acceptable, and
+a rule that skipped optional edges would silently drop a *runtime* optional
+dependency in some future tree. Non-optional peers add nothing today: every
+declared peer (`cytoscape` for the two cytoscape layouts, `d3-selection` for
+`d3-transition`) is already in the closure through a regular edge.
+
+Other checks:
+- Lockfile/installed agreement: 0 version mismatches between the lockfile and
+  `node_modules/*/package.json`. The generator re-asserts this on every build
+  and fails on a stale install.
+- Lockfile `license` = installed `package.json` `license` for all 125.
+- Deliberate over-inclusion: `@types/trusted-types`, the 23 `@types/d3-*`
+  packages and `@chevrotain/types` are type-only and never bundled. They are
+  kept rather than filtered, because a filter would be a second, weaker rule.
+
+### License policy (#174)
+
+**Allowlist** (ordered: the order is the preference for OR choices):
+`MIT`, `ISC`, `BSD-2-Clause`, `BSD-3-Clause`, `Apache-2.0`, `Python-2.0`,
+`Unlicense`. That is exactly the set found, minus `MPL-2.0`. No copyleft
+licenses. `MPL-2.0` (file-level weak copyleft) is **deliberately left out**:
+the one package offering it also offers Apache-2.0.
+
+**Expression rule** (small pure parser, `evaluateLicense(expr, allowlist)`).
+Grammar: `id`, `( expr )`, `expr OR expr`, `expr AND expr`, with AND binding
+tighter than OR.
+- `OR` passes if at least one alternative passes. The **chosen** alternative
+  is the first passing one in allowlist order.
+- `AND` passes only if every operand passes.
+- These all fail with a named error: `WITH` exceptions, `+` suffixes,
+  `LicenseRef-*`, `SEE LICENSE IN …`, a legacy object or array `license`
+  field, and a missing or empty field without an override.
+- For `dompurify@3.4.16`, `(MPL-2.0 OR Apache-2.0)` gives **chosen
+  `Apache-2.0`**. The notice entry records both `license` (as declared) and
+  `chosenLicense`.
+
+`Python-2.0` (`argparse@2.0.1`, a port of CPython's argparse) is the PSF
+license. It is permissive and was already shipping in the runtime tree.
+`Unlicense` (`robust-predicates`) is a public-domain dedication.
+
+### License texts, NOTICE files and overrides (#175)
+
+**File selection** (per package root directory, sorted by file name):
+- License files match `/^(licen[cs]e|copying)(-[a-z0-9]+)?(\.(md|txt|markdown))?$/i`.
+  This matches all 124 license files in the closure, including `LICENSE-MIT.txt`,
+  `LICENSE.md`, `license` and dompurify's `LICENSE-MPL`. It excludes
+  `cytoscape/license-update.mjs` (a script, not a license).
+- NOTICE files match `/^notice(\.(md|txt))?$/i`.
+- **Every** matching file is reproduced verbatim. Nothing is generated from an
+  SPDX template.
+
+**NOTICE files found: exactly one, `es-toolkit/NOTICE`** (MIT package; 1 698
+bytes; Lodash's copyright and MIT permission notice for code derived from
+Lodash). The two Apache-2.0-bearing packages (`@chevrotain/types`, and
+`dompurify` under the chosen alternative) ship **no** NOTICE. Apache-2.0 §4(d)
+applies only to a NOTICE the work actually includes, so none is owed.
+
+**Packages that need a checked-in override: 3** (the baseline named one):
+
+| Package | Problem | Upstream source (citation) |
+|---|---|---|
+| `khroma@2.1.0` | No `license` field (in the lockfile, the installed `package.json` and the upstream `package.json`). It **does** ship a `license` file (MIT). | `https://github.com/fabiospampinato/khroma/blob/4968165afb0d3d09be66497e7985a34f7bfe6d42/license`: tag `v2.1.0`, which is also npm's `gitHead` for 2.1.0. The upstream file is **byte-identical** to `node_modules/khroma/license` (diff verified). |
+| `fastdom@1.0.12` | `license: "MIT"`, but **no license file** in the package or anywhere upstream. The only license text is the README's `## License` section (MIT, "Copyright (c) 2016 Wilson Page"). | `https://github.com/wilsonpage/fastdom/blob/01524d7b90785fcac5a75bb9f149e14b9e5246c3/README.md#license`, lines 211-221. npm's `gitHead` (`a7b9044…`) is **not** on GitHub (API returns 422). 1.0.12 was published 2024-02-20T08:03:43Z, 3 minutes after merge commit `01524d7b…` (2024-02-20T08:00:06Z), and the README at that commit is byte-identical to the installed one. The upstream has no tag for 1.0.12. |
+| `strictdom@1.0.1` | Same as fastdom: README-only MIT text, "Copyright (c) 2013 Wilson Page". | `https://github.com/wilsonpage/strictdom/blob/a3bbf19013ecc9c9d165dd4ed89e94757161443e/README.md#license`, lines 99-109, tag `v1.0.1`, npm `gitHead`. Byte-identical to the installed README. |
+
+**Override contract** (`build/third-party/overrides.json` plus one text file
+per entry, `build/third-party/<name>@<version>.txt`):
+
+```json
+{ "khroma@2.1.0": { "license": "MIT", "text": "khroma@2.1.0.txt",
+    "reason": "no license field",
+    "citation": { "url": "https://github.com/fabiospampinato/khroma/blob/4968165afb0d3d09be66497e7985a34f7bfe6d42/license",
+                  "ref": "v2.1.0 (4968165afb0d3d09be66497e7985a34f7bfe6d42)" },
+    "verify": { "file": "license", "mode": "equals" } },
+  "fastdom@1.0.12": { "license": "MIT", "text": "fastdom@1.0.12.txt",
+    "reason": "no license file; text is the README License section",
+    "citation": { "url": "https://github.com/wilsonpage/fastdom/blob/01524d7b90785fcac5a75bb9f149e14b9e5246c3/README.md#license",
+                  "ref": "01524d7b90785fcac5a75bb9f149e14b9e5246c3" },
+    "verify": { "file": "README.md", "mode": "contains" } },
+  "strictdom@1.0.1": { "…": "same shape, verify README.md contains" } }
+```
+
+Each `.txt` is a verbatim copy of the cited upstream text. It is never retyped
+and never produced from a template.
+
+Build rules, all fail-closed:
+1. A closure package with no `license` field **or** no license file must have
+   an override keyed by its exact `name@version`. Otherwise the build fails
+   and names the package.
+2. The override's text is **machine-verified against the installed package**
+   on every build, EOL-normalized:
+   - `equals` requires the package's own file to match the override text.
+   - `contains` requires the override text to be a substring of the named
+     file.
+   A version bump therefore invalidates the key, and a text drift fails the
+   comparison. Both force re-verification rather than silently reusing text.
+3. An override whose key is not in the closure (a **stale** override) fails
+   the build.
+4. A `citation.url` that is not `https://github.com/…/blob/<40-hex>/…` fails
+   the build: a pinned commit is required, and a branch URL is not accepted.
+5. The override's `license` id goes through the same allowlist.
+6. When the package ships a license file (`khroma`), the entry reproduces
+   **the package's own file**. The override supplies the id and the citation,
+   and its text is the verified twin. When the package has no file
+   (`fastdom`, `strictdom`), the override's text is the entry text. The entry
+   records `source: "package" | "override"` and the citation.
+
+### Generator: small script vs build-time dependency (#179)
+
+| | In-repo script `scripts/third-party-notices.mjs` (recommended) | `license-checker` 25.0.1 | `license-checker-rseidelsohn` 5.0.1 / `generate-license-file` 4.2.5 |
+|---|---|---|---|
+| Last release | n/a | **2019-01-10** (unmaintained) | 2026-05-27 / 2026-08-29 |
+| New dependency surface | **0 packages** | 10 direct deps, plus transitive ones | 12 / 10 direct deps, plus transitive ones |
+| Root model | Exactly our roots: runtime `dependencies` **plus copied-into-dist devDeps** | Installed tree, filtered by `--production`/`--development` | Same model (production/dev filters over the installed tree) |
+| Mermaid tree (all `dev: true`) | Included by construction | `--production` omits all 113, and the full tree includes vitest, electron-builder and every other devDep | Same trade-off: omit Mermaid, or over-include the whole devDep tree and then need our own filter anyway |
+| Overrides with **verified** text and pinned citations | Built in (rules 1-6) | Custom-format override files, with no verification against the installed package | Varies. None found that verifies the override text against the installed package or requires a pinned citation |
+| Fail-closed allowlist incl. OR choice recorded | Built in | `--onlyAllow` fails, but does not record the OR choice | Similar |
+| Deterministic output for #176 | Controlled by us (sort, no timestamps) | Tool-defined | Tool-defined |
+
+The rows about the tools rest on their documented option models and registry
+metadata. I did not trial them. The deciding fact holds whichever way that
+went: **none of them models "devDependency whose files are copied into the
+artifact" as a root.** Using one means either omitting Mermaid (a #173
+violation) or re-implementing the root and closure logic around it, and at
+that point the tool adds only a dependency. The script is about 200 lines of
+pure functions plus a thin IO shell, all unit-testable. **Recommendation: the
+script. No new dependency is added**, so #179's allowance goes unused.
+
+**Script shape** (ESM, Node 24, no dependencies; lives outside `src/` so
+`tsc` never compiles it into `dist/` and it never ships):
+- Pure core: `computeShippedClosure`, `evaluateLicense`,
+  `selectLicenseFiles`/`selectNoticeFiles`, `applyOverrides`,
+  `compareEntries`, `buildNoticeSet`, and `extractCopiedPackages(buildScript)`
+  (for the root-sync test).
+- IO shell (`main()`, guarded so importing the module has no side effects):
+  1. Read `package.json`, `package-lock.json`, `node_modules/<pkg>/{package.json, license files, NOTICE}`
+     and `build/third-party/*`.
+  2. Call the core.
+  3. Write `dist/third-party-notices.json`.
+  4. Exit non-zero with **every** violation listed (not just the first).
+
+**Output** `dist/third-party-notices.json`, LF with a trailing newline, fixed
+key order, **no timestamp**:
+```json
+{ "schemaVersion": 1,
+  "packages": [ { "name": "…", "version": "…", "license": "(MPL-2.0 OR Apache-2.0)",
+                  "chosenLicense": "Apache-2.0", "source": "package",
+                  "citation": null,
+                  "licenseFiles": [ { "file": "LICENSE", "text": "…" }, { "file": "LICENSE-MPL", "text": "…" } ],
+                  "noticeFiles": [] } ] }
+```
+- Sorted by `name` (code-unit order, not locale) and then `version` (numeric
+  major.minor.patch, with a string fallback for prereleases). This is
+  deterministic regardless of `readdir`/`Set` order or OS locale.
+- Texts are reproduced byte-for-byte as decoded UTF-8. Only a leading BOM is
+  stripped.
+- Measured: 125 entries, 124 license files + 1 NOTICE, about 190 KB of text.
+
+**Build script change** (`package.json` `build`):
+1. The existing `node -e` copy chain gains `copyFileSync('LICENSE','dist/LICENSE')`,
+   mirroring `CHANGELOG.md` → `dist/CHANGELOG.md`.
+2. It is then followed by `&& node scripts/third-party-notices.mjs`.
+
+`npm run dev`, CI (`npm ci` → `npm run build`) and `release.yml` (the same)
+all run the generator, so a policy violation fails CI and blocks a release.
+`electron-builder.yml` is unchanged, because `dist/**/*` already ships both
+new files.
+
+### How the notices are reached from About (#177)
+
+**Chosen: nested `<details>` inside the About window.** The outer
+`<details><summary>Third-party notices (125 packages)</summary>` contains one
+inner `<details>` per package. Its summary is
+`name version — chosenLicense`, and its body holds the declared expression
+(when it differs), the source or citation, and one
+`<pre>` per license or NOTICE file.
+
+- No new link surface: native disclosure widgets. E3 shows they open with no
+  script under `default-src 'none'`.
+- No new menu entry and no fourth window variable. #172 stays exactly as
+  specified.
+- **Measured size: 346 132 URL characters** for About plus all notices plus
+  the embedded CSS, which is **16.5% of the ~2 MiB ceiling** (E2).
+- **Budget:** an integration test builds the About document from the real
+  `dist/` inputs and asserts that its data: URL is **< 1 048 576 characters**
+  (half the ceiling). If the budget is exceeded, the build is still valid but
+  the test fails. That forces a re-plan (for example a notices file loaded
+  another way) instead of the blank window E2 would otherwise produce
+  silently.
+
+Loading in the packaged build uses the existing path. `main` reads
+`dist/third-party-notices.json` from `app.asar` with `fs.readFile`, just as
+`help.md` and `CHANGELOG.md` are read today. It validates the file with a zod
+schema (`zod` is already a runtime dependency) and renders an escaped HTML
+fragment. The result goes through the same `loadStaticHtml` data: URL.
+
+Rejected:
+- **A fourth static window from a Help menu entry.** It adds one menu entry,
+  one single-instance variable and more e2e surface, and it gains nothing:
+  both options share the data: URL budget, and both are well under it.
+- **`loadFile` of a pre-rendered notices HTML in `dist/`.** It adds a second
+  load path for static windows (a `file:` origin, so `'self'` becomes
+  scheme-wide as in ADR-010 D3), and it would still need the CSS fix.
+- **Shipping a text file next to the `.exe` via `extraResources`.** Unreachable
+  from About without a `file:` link, which would change the link policy.
+- **A pre-rendered HTML fragment emitted by the build.** It would move escaping
+  out of the one pure About renderer and weaken #171. JSON plus escaping at
+  render keeps one escaping site.
+
+### About data and document (#170, #171)
+
+**Sources** (in `main`; nothing is hardcoded):
+
+| Field | Source |
+|---|---|
+| name | shipped `package.json` `name` |
+| version | `app.getVersion()` |
+| description, license id | shipped `package.json` |
+| repository URL | shipped `package.json` `repository` (string or `{url}`), normalized by `repositoryWebUrl`: strip `git+`, strip `.git`. Anything that isn't `http:`/`https:` afterwards gets **no link**, and the text is shown escaped. |
+| copyright | the first line of `dist/LICENSE` matching `/^\s*Copyright\b/`, trimmed (`parseCopyrightLine`). None found: an error. |
+| runtime | `process.versions.electron`, `.chrome` and `.node` in `main` |
+
+The paths go into `paths.ts` beside `changelogPathFor`, as one formula shared
+by `index.ts` and the dist tests:
+- `packageJsonPathFor(mainDir)` = `mainDir/../../package.json`, which resolves
+  to `app.asar/package.json` when packaged and to the repo's `package.json` in
+  dev.
+- `licensePathFor(mainDir)` = `mainDir/../LICENSE`.
+- `thirdPartyNoticesPathFor(mainDir)` = `mainDir/../third-party-notices.json`.
+
+**Pure modules:**
+- `src/main/aboutWindow.ts`:
+  - `shouldCreateAboutWindow` follows the per-window one-liner precedent.
+    This is the third copy; see the backlog note.
+  - `parseCopyrightLine`, `repositoryWebUrl` and `AboutPackageSchema` (zod).
+  - `buildAboutContentHtml(about, notices)` builds the body fragment. **Every**
+    interpolated value goes through `escapeHtml`, moved from `helpWindow.ts`
+    and exported. Attribute values are double-quoted and escape `"`.
+- `src/main/thirdPartyNotices.ts`: the zod schema for the JSON (the reader
+  side of the generator's contract) and `renderNoticesHtml(noticeSet)`.
+
+**Composition** (`index.ts` `onOpenAbout`):
+1. If `!shouldCreateAboutWindow(aboutWindow)`, focus the existing window and
+   return.
+2. Read the three files (`Promise.all`).
+3. Parse and build.
+4. Call `createStaticWindow(ABOUT_WINDOW_SIZE)`, then `loadStaticHtml`.
+
+On any failure, the handler logs `console.warn` and opens **no window**, the
+same containment as What's New (#140). The files are build outputs proven by
+the dist tests, so a failure means a broken package, and showing
+half-populated legal text is worse than showing nothing. The window title is
+`About ${name}`.
+
+### Static-window CSP and styling (#178)
+
+**D1 (needs your decision): fix E1 by embedding the stylesheet, pinned by
+hash.**
+- `buildHelpHtml(contentHtml, cssText, title)` changes from `cssHrefs:
+  string[]` to one CSS string. `index.ts` reads the same three files it links
+  today (`dist/renderer/app.css`, `github-markdown-light.css`,
+  `github.css`) and concatenates them.
+- The shell **LF-normalizes** the CSS (E3: the parser normalizes, and
+  `app.css` is CRLF). It hashes the result with SHA-256 (`node:crypto`,
+  deterministic, so the function stays pure) and emits both the hash and the
+  `<style>` from that **one** normalized string. They cannot drift.
+- If the CSS contains `</style` (case-insensitive), the shell throws. Shipped
+  CSS never does, and a unit test pins the guard.
+- **Visible consequence:** Help and What's New become styled as Task 14
+  intended (GitHub markdown typography and code colours) instead of browser
+  defaults. This is a user-visible change to two existing windows, so I am
+  asking rather than assuming.
+- Alternative (D1-b): delete the three dead `<link>`s and keep the windows
+  unstyled. The CSP then has no `style-src` at all. About and the notices
+  would render in Times New Roman with un-wrapped `<pre>` blocks, and #178's
+  "move the inline style into CSS" would have nowhere to go.
+
+**The exact policy** (first element after `<meta charset>`, before `<title>`
+and `<style>`; `<H>` is computed per document from the embedded CSS):
+
+```html
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'sha256-<H>'; base-uri 'none'; form-action 'none'" />
+```
+
+| Directive | Why |
+|---|---|
+| `default-src 'none'` | Every fetch directive falls back to `'none'`. **That covers `script-src`, which is deliberately absent (#178: static windows never run script)**, and also `img-src`, `font-src`, `connect-src`, `object-src`, `frame-src`, `media-src`, `worker-src` and `manifest-src`. None of the three windows needs an image or a font: `help.md` and `CHANGELOG.md` contain no image syntax, and the only `url()` in the embedded CSS is a `data:` mask on `.markdown-body .anchor:hover`, which markdown-it never emits. Relative images could never resolve from a `data:` document anyway. |
+| `style-src 'sha256-<H>'` | Allows exactly the one embedded `<style>`. **No `'unsafe-inline'`.** `style-src-attr` falls back to it, and a hash never matches an attribute without `'unsafe-hashes'`, so every `style=` is refused. `<link>`s are gone (E1: a `data:` document cannot load `file:` CSS anyway). |
+| `base-uri 'none'` | Static documents have no `<base>`. The directive does not fall back to `default-src`, so it is set explicitly. |
+| `form-action 'none'` | No forms. Also does not fall back, so it is set explicitly. |
+
+Omitted: `frame-ancestors`, `sandbox` and `report-*` (all ignored in
+`<meta>`), and `upgrade-insecure-requests` (no subresources to upgrade).
+
+**Inline `style` attribute:** it moves into CSS as the class
+`.md-view-static { max-width: 44rem; margin: 2rem auto; padding: 0 1.5rem 3rem; }`.
+The shell appends this rule to the embedded CSS, and the wrapper becomes
+`<div class="markdown-body md-view-static">`. No `'unsafe-inline'` is needed,
+so none is disclosed.
+
+**D3 (disclosure plus a guard): aligned tables.** markdown-it emits
+`style="text-align:…"` for aligned table columns (E3). Under this policy the
+alignment is dropped and a violation is logged. No current `help.md` or
+`CHANGELOG.md` content uses aligned tables or images. A **content guard**
+(integration test) renders `dist/main/help/help.md` and **every section** of
+`dist/CHANGELOG.md` with `markdownToHtml` and asserts no ` style=` and no
+`<img`. A future release note that would violate #178 fails CI before it can
+ship. Rejected: `style-src-attr 'unsafe-inline'`, which reopens exactly what
+#178 closes, for content we control.
+
+The Electron "Insecure Content-Security-Policy" warning that the Help window
+logs today (seen in the real-app probe) disappears. The e2e asserts its
+absence as a side check.
+
+### `createStaticWindow` size change (#169)
+
+`windowConfig.ts` gains a pure function:
+
+```ts
+export interface StaticWindowSize { width: number; height: number }
+export function staticWindowOptions(size?: StaticWindowSize): BrowserWindowConstructorOptions {
+  return {
+    ...defaultWindowOptions,
+    ...(size ? { width: size.width, height: size.height } : {}),   // picked, never spread
+    webPreferences: { ...defaultWindowOptions.webPreferences },     // last: always the defaults
+  };
+}
+```
+
+`createStaticWindow(size?: StaticWindowSize)` calls
+`new BrowserWindow(staticWindowOptions(size))`. Everything after construction
+stays unchanged and unconditional: `removeMenu`, the `will-navigate` prevent,
+and the deny-all `setWindowOpenHandler`. Help and What's New call it with no
+argument. About uses `ABOUT_WINDOW_SIZE = { width: 640, height: 720 }`, while
+`minWidth`/`minHeight` stay 480×320 and the window stays resizable, since the
+notices are long.
+
+Why this cannot weaken #142:
+1. The parameter's type admits only two numbers, and the function **picks**
+   them by name. The caller's object is never spread, so even a type-cast
+   `{ webPreferences: { sandbox: false }, … }` is ignored. A unit test does
+   exactly that.
+2. `webPreferences` is written **after** the size and always from the
+   defaults (`sandbox`, `contextIsolation`, no `nodeIntegration`, **no
+   `preload`**).
+3. The lockdown calls don't read `size`.
+4. `staticWindowOptions()` deep-equals today's inline options (unit), and the
+   Help and What's New e2e files run **unmodified**.
+
+`resizable` is not exposed, because nothing needs it (YAGNI).
+
+### Menu (#172)
+
+`menu.ts`:
+- `MenuHandlers` gains `onOpenAbout`.
+- The Help submenu becomes
+  `[{ id:'menu-help', … F1 }, { type:'separator' }, { id:'menu-about', label:'About md-view', click: handlers.onOpenAbout }]`
+  with no accelerator.
+- `menuHandlers()` in `index.ts` wires `onOpenAbout`.
+- The title-bar popup reuses `buildMenuTemplate` (#67), so it shows the entry
+  by construction.
+
+### SOLID boundary scan and patterns
+
+- **Dependency direction:** the generator's pure core knows nothing about the
+  filesystem. The IO shell adapts the lockfile, `node_modules` and overrides
+  into plain values. In the app, `aboutWindow.ts` and `thirdPartyNotices.ts`
+  are pure (data in, escaped HTML out). Only `index.ts` (the composition root)
+  touches `app`, `process.versions`, `fs` and `BrowserWindow`.
+- **SRP:** the generator decides what ships and under which license. The
+  reader schema checks the contract. The About renderer escapes and lays out.
+  The shell owns the CSP and styling. `windowConfig` owns the options.
+- **OCP:** a fourth static window is a new caller of an unchanged factory. A
+  new license is a one-line allowlist edit, reviewed like any policy change.
+- **ISP/DIP:** the renderers take plain data, not `app` or `fs`, and
+  `staticWindowOptions` takes a two-field size, not the full options type.
+- **GoF:**
+  - **Factory** (simple factory): `createStaticWindow`, the one construction
+    site, parameterized by size only.
+  - **Adapter:** the generator's IO shell adapts npm's on-disk layout to the
+    core's value types.
+
+  No other pattern is forced in. The CSP shell is a shared template function,
+  not the Template Method pattern.
+
+### Test plan (TDD Red-Green-Refactor, 3-cycle stop)
+
+**Unit (`vitest`):**
+- `tests/unit/thirdPartyNotices.test.ts` (new; imports the script's pure core):
+  - **#173:**
+    - `computeShippedClosure(realLockfile, realRoots)` contains `dompurify`,
+      `d3-array@2.12.1` (nested) and `d3-array@3.x`, and excludes `vitest`,
+      `electron-builder` and `typescript`. Its size is **125**, and
+      `@types/trusted-types` is present (optional edge).
+    - Synthetic lockfiles cover:
+      - nested resolution shadowing the top-level version;
+      - a missing required dep throwing;
+      - a missing optional dep being skipped;
+      - a peer being followed;
+      - a `link: true` entry throwing;
+      - cycles terminating.
+  - **Root sync:** `extractCopiedPackages(pkg.scripts.build)` equals
+    `BUILD_COPIED_PACKAGES`.
+  - **#174:** `evaluateLicense` for each allowlisted id (pass); `GPL-3.0-only`,
+    `LGPL-2.1`, `AGPL-3.0`, `SSPL-1.0` and `MPL-2.0` (fail);
+    `(MPL-2.0 OR Apache-2.0)` gives chosen `Apache-2.0`; `(MIT OR Apache-2.0)`
+    gives chosen `MIT` (allowlist order); `MIT AND ISC` passes;
+    `MIT AND GPL-3.0` fails; and `WITH`, `+`, `LicenseRef-x`,
+    `SEE LICENSE IN x`, `''`, `undefined` and an object all fail with named
+    errors.
+  - **#175:**
+    - Selection includes `LICENSE-MIT.txt`, `license` and `LICENSE-MPL`, and
+      excludes `license-update.mjs`.
+    - Every override rule 1-6 has a failing case: missing override, `equals`
+      mismatch, `contains` miss, stale key, branch URL citation, disallowed
+      override id.
+    - An override entry records `source` and `citation`.
+  - **#176:** `buildNoticeSet` output is identical for shuffled inputs; the
+    order is `name` then numeric `version` (`d3-array@2.12.1` before
+    `d3-array@3.x`); and the serialized output has no timestamp.
+- `tests/unit/aboutWindow.test.ts` (new):
+  - `parseCopyrightLine` (repo `LICENSE` gives
+    `Copyright (c) 2026 Camilo Vera`, read from the file at test time and
+    never typed; no line throws).
+  - `repositoryWebUrl` (`git+https://…/x.git` becomes `https://…/x`; the
+    object form; `ssh:`/`javascript:` give `null`).
+  - **#171:** every field set to `<script>alert(1)</script>"x` renders with
+    no `<script`, no raw `"` inside an attribute and no unescaped `<`, and
+    the same holds for notice names, versions and texts.
+  - `shouldCreateAboutWindow`.
+- `tests/unit/buildHelpHtml.test.ts` (updated for the new contract; the three
+  title tests are unchanged):
+  - The CSP meta is the first element after charset, and its `content`
+    equals `buildStaticWindowCsp(hash)`.
+  - It has **no** `script-src` and **no** `unsafe-inline`.
+  - The hash equals SHA-256/base64 of the embedded `<style>` text.
+  - CRLF CSS is embedded LF and hashed LF.
+  - `</style` throws.
+  - There is no `style=` attribute and no `<link`.
+  - `.md-view-static` is present.
+- `tests/unit/staticWindowOptions.test.ts` (new):
+  - The no-arg call deep-equals today's options.
+  - A size changes only `width`/`height`.
+  - A cast-in `webPreferences`/`preload`/`sandbox:false` is ignored.
+  - `webPreferences` has no `preload`.
+- `tests/unit/menu.test.ts` (updated only for the new entries): the Help
+  submenu has exactly 3 entries in the #172 order, `menu-about` has no
+  accelerator, and its click calls `onOpenAbout`.
+- `tests/unit/staticPaths.test.ts` (new): the three path formulas.
+
+**Integration** (`tests/integration/dist-about.test.ts`, new; requires
+`npm run build`; same posture as `dist-changelog.test.ts`):
+- **#170:**
+  - `dist/LICENSE` is byte-equal to `LICENSE`.
+  - The copyright line parsed from `dist/LICENSE` equals the one parsed from
+    `LICENSE`.
+  - `dist/main/aboutWindow.js` and `dist/main/thirdPartyNotices.js` contain no
+    `/\b(19|20)\d{2}\b/` and no `package.json` `version` string.
+  - The `onOpenAbout` region of `dist/main/index.js` (between marker
+    comments) contains neither.
+
+  Not all of `dist/main`: `changelog.js` legitimately has `1.1.0` in a
+  comment, verified.
+- **#173/#176:**
+  - `dist/third-party-notices.json` parses under the app's zod schema, which
+    proves the writer/reader contract.
+  - Its `name@version` set **equals** `computeShippedClosure(lockfile, roots)`.
+  - Every entry has at least one non-empty license text.
+  - `dompurify` records `chosenLicense: "Apache-2.0"`.
+  - `es-toolkit` carries its NOTICE.
+  - The three overrides carry citations.
+  - Running the CLI twice into two temp directories gives byte-identical
+    files, and both equal `dist/`.
+- **#177 budget:** the About document built from the `dist/` inputs has a
+  data: URL shorter than 1 048 576 characters.
+- **D3 content guard:** rendered `help.md` and every `CHANGELOG.md` section
+  contain no ` style=` and no `<img`.
+- **CLI fail-closed:** the CLI run against a temp copy of the overrides with
+  `khroma` removed exits non-zero with `khroma@2.1.0` in its stderr, and
+  writes no output file.
+
+**E2E** (Playwright/Electron). Violation capture is a `browser-window-created`
+listener installed through `electronApp.evaluate` **before** the window is
+triggered, collecting `console-message` text into a global (E3). Windows are
+identified by `document.title`, not by "the data: window", because two data:
+windows can coexist.
+- `tests/e2e/static-window-csp.spec.ts` (new, #178), for each of Help (menu),
+  What's New (seeded `state.json`, as `whats-new.spec.ts` does) and About:
+  - **Zero** CSP messages.
+  - The meta `content` equals the spec shape.
+  - The inline-`<script>` canary stays `undefined`.
+  - `.markdown-body` computed `max-width` is `704px` and `font-family` is not
+    `"Times New Roman"` (the D1 regression guard for E1).
+  - **Positive control:** appending `<img src="data:,x">` produces a CSP
+    message in the same capture channel, so a zero is trusted only once the
+    channel is proven live.
+- `tests/e2e/about.spec.ts` (new):
+  - **#172:** `menu-about` exists, has no accelerator, and sits after a
+    separator following `menu-help`.
+  - **#169/#170:** clicking it opens one window titled `About md-view`. It
+    shows:
+    - the version equal to `app.getVersion()`;
+    - the Electron, Chromium and Node versions equal to `process.versions`
+      read in `main`;
+    - the copyright line equal to the one parsed from the `LICENSE` file;
+    - `MIT`;
+    - a link whose `href` is `https://github.com/chamix/md-view`.
+  - A second click gives no new window and focuses the existing one.
+  - Lockdown:
+    - The Ctrl+O accelerator probe from `help-menu.spec.ts` (e), with the
+      main-window positive control first, never reaches the handler.
+    - `window.open` is denied.
+    - Clicking the repo link calls the stubbed `shell.openExternal` with the
+      URL, and the About window's URL is unchanged.
+    - The About window's `webContents` has no preload.
+  - **#177:**
+    - The outer `<summary>` shows the package count equal to the JSON's
+      length.
+    - Opening it and the `highlight.js` entry shows that package's own
+      `LICENSE` first line.
+    - The `dompurify` entry shows `Apache-2.0` with the declared expression.
+    - The `fastdom` entry shows its citation URL.
+- **Unmodified:** `help-menu.spec.ts`, `whats-new.spec.ts`, `csp.spec.ts`
+  and every other existing spec: zero diff (#169, #179).
+
+**Packaged check (reviewer, #176, same method as Task 45 B3).**
+1. Run `npx electron-builder --dir --publish never
+   -c.directories.output=<OS temp>`.
+2. `asar list` shows `\dist\third-party-notices.json`, `\dist\LICENSE` and
+   `\package.json`.
+3. `asar extract-file` is run **with the temp directory as cwd**, never the
+   repo (see the evidence note). The extracted notices file is byte-equal to
+   `dist/`.
+4. Launch the packaged exe once, then open About and the notices. The E2
+   ceiling has only been measured for the unpackaged app, so this confirms
+   it still holds packaged.
+5. Delete the temp output.
+
+### Fault-injection plan
+
+The reviewer runs F1, F2 and F6 at minimum, and the engineer records every
+entry. Each fault is applied, observed **red**, and reverted with a captured
+patch and `git apply -R` (never `git checkout`/`restore`/`reset`). E2E
+observations need `npm run build` first.
+
+| # | Injected fault | Must go red |
+|---|---|---|
+| **F1** | Remove the CSP meta from `buildHelpHtml` | e2e inline-script canary (all three windows); unit CSP tests |
+| **F2** | Hash the **un-normalized** CSS (drop the LF normalization) | e2e zero-violation + styled (`max-width`/font) checks, because `app.css` is CRLF; unit CRLF test |
+| F3 | Resolve dependencies at the top level only (no nested lookup) | unit nested-shadowing test; `d3-array@2.12.1` missing from the real-lockfile test |
+| F4 | Follow roots' direct `dependencies` only (no transitive) | unit #173 real-lockfile test (`dompurify`, `d3-*`) and dist set-equality |
+| F5 | Add `MPL-2.0` in front of `Apache-2.0` in the allowlist, or remove `Apache-2.0` | unit OR-choice test (`chosenLicense` changes), or policy failure for `@chevrotain/types` |
+| **F6** | Delete the `khroma` override | `npm run build` exits non-zero, naming `khroma@2.1.0`; integration `two CLI runs … both equal dist/` goes red. (The integration CLI fail-closed test stays green by design: it deletes `khroma` from its own temp copy, so it cannot observe the repo's override going missing.) (amended at Task 46 review: N2) |
+| F7 | Change one character in `fastdom@1.0.12.txt` | build fails (`contains` verification); unit rule-2 case |
+| F8 | Hardcode `'1.1.0'` for the version in `onOpenAbout` | dist no-literal test (the e2e alone would stay green, which is why the dist test exists) |
+| F9 | Drop `escapeHtml` from one About field | unit #171 |
+| F10 | Implement `staticWindowOptions` as `{ ...defaults, ...size, webPreferences }` with the spread **after** `webPreferences` | unit cast-in test |
+| F11 | Remove `mermaid` from `BUILD_COPIED_PACKAGES` | unit root-sync test; dist set-equality |
+| F12 | Sort with `localeCompare` / leave unsorted | unit shuffled-input test |
+| F13 | Put a `:-` aligned table in `CHANGELOG.md` | D3 content-guard integration test (reverted immediately) |
+
+### Decisions for you (Step 1 review)
+
+- **D1:** Embed the static-window CSS with a hash-pinned `style-src`, which
+  restores Help/What's New styling (recommended). The alternative is D1-b:
+  drop the dead `<link>`s and stay unstyled.
+- **D2:** Notices as nested `<details>` in About (recommended), not a fourth
+  window.
+- **D3:** No `'unsafe-inline'` for style attributes. Aligned tables and images
+  in static-window content are blocked, and the content guard enforces this
+  in CI.
+- **D4:** An in-repo script with no new dependency (recommended; the Lead's
+  preference).
+- **Disclosures:**
+  - The count is 125, not 124 (`@types/trusted-types`, optional edge).
+  - Three overrides are needed, not one (`fastdom`, `strictdom` have no
+    license file).
+  - `fastdom`'s npm `gitHead` is absent upstream; the citation pins the
+    verified merge commit instead.
+  - E4 nuances Step 0's "ships none today".
+  - Pre-existing defect E1.
+- **Backlog candidates** (not built):
+  - Consolidate the three `shouldCreate*Window` one-liners (Rule of Three).
+  - `loadStaticHtml` swallows **every** load failure (including
+    `ERR_INVALID_URL`), not only close-aborts. Reported to the user and
+    recorded here; not written to `backlog.md` (Step 1 review instruction).
+  - Move `github-markdown-css` to `devDependencies` (Task 45 note, still open).
+
+### ADRs (real rejected alternatives exist)
+
+- **ADR-011 (proposed): static windows embed one hash-pinned stylesheet under
+  `default-src 'none'`.**
+  - Context: E1 (`file:` CSS is refused from `data:` documents), #178.
+  - Decision: LF-normalized CSS embedded in `<style>` with
+    `style-src 'sha256-…'`, computed in the same pure function that emits it;
+    no `script-src`; no `'unsafe-inline'`.
+  - **Main alternative weighed: `webContents.insertCSS()` from `main`**
+    (probed at Step 1 review, Electron 44.3.0). `main` would inject the CSS
+    string into each static window after load.
+    - **For it:** CSS injected by `main` bypasses the page CSP, so the policy
+      could be `style-src 'none'`, strictly tighter than a hash. There would be
+      no hash plumbing and no CRLF pitfall. Probe: it applies under
+      `default-src 'none'` with **0** CSP messages
+      (`Times New Roman` → `-apple-system…`).
+    - **Against it, and why it lost:**
+      1. **Unstyled flash.**
+         - At `dom-ready` (and at `did-finish-load`), `capturePage()` already
+           returned a painted frame with the **unstyled** content: about
+           50 000 non-white pixels and a computed `Times New Roman`. This held
+           in 6 of 6 successful captures. One cold-start capture failed with
+           `UnknownVizError`.
+         - `capturePage` forces a frame, so this proves an unstyled frame is
+           presentable at injection time. It does not prove the user saw one.
+           But static windows are visible from construction (`show` defaults
+           to true), so nothing prevents it.
+         - Closing the gap needs `show: false` plus `ready-to-show`, or
+           `dom-ready` gating in `createStaticWindow`. That is a lifecycle
+           change to the #142 factory for all three callers, plus an async
+           step whose failure path (injection rejected, window closed
+           mid-inject) needs its own handling.
+      2. **Styling moves out of the document.** Because `buildHelpHtml`'s
+         output would no longer contain its styles, only e2e could prove
+         styling, and there would be one more main-process step every
+         caller (or the factory) must remember.
+      3. **The security gain is marginal.** The hash allows exactly one
+         byte-exact `<style>` whose text the app controls. Attacker-derived
+         content is escaped Markdown (`html: false`) and cannot reproduce it.
+         `style-src 'none'` vs `'sha256-…'` differ only for a style element
+         with that exact text.
+    - **Chosen: the hash.** It is deterministic (no timing), self-contained
+      (one pure function emits the CSS and its hash from one string), and
+      unit-provable. `insertCSS` becomes the fallback if a future need
+      arises for CSS that the app does not control.
+  - Rejected:
+    - `'unsafe-inline'` (weaker for no gain).
+    - `loadFile`/`file:` static windows (a second load path, and `'self'` is
+      scheme-wide under `file:`, ADR-010 D3).
+    - A custom `app://` protocol (disproportionate, already a backlog item).
+    - A precomputed build-time hash (it could drift from the embedded text).
+    - Leaving the windows unstyled (D1-b).
+- **ADR-012 (proposed): third-party notices are generated by an in-repo,
+  dependency-free script over the lockfile.**
+  - Context: #173-#176; `mermaid` is a devDependency whose files ship.
+  - Decision: this Step 1's closure, policy and override rules.
+  - Rejected: `license-checker` (unmaintained, production filter drops
+    Mermaid), `license-checker-rseidelsohn` / `generate-license-file` (same
+    root model, plus a dependency), and bundler license plugins (we don't
+    bundle Mermaid; we copy a prebuilt file).
+
+The Lead writes both files as **Proposed** after approval. They are not in the
+engineer's scope, and the Lead flips them at Step 3 (the ADR-010 precedent).
+
+### In-scope files (proposed `current_scope.json` `in_scope`)
+
+- `package.json` (the `build` script only: the `LICENSE` copy plus the generator step)
+- `scripts/third-party-notices.mjs` (new)
+- `build/third-party/overrides.json`, `build/third-party/khroma@2.1.0.txt`,
+  `build/third-party/fastdom@1.0.12.txt`, `build/third-party/strictdom@1.0.1.txt` (new)
+- `src/main/index.ts`, `src/main/menu.ts`, `src/main/helpWindow.ts`,
+  `src/main/windowConfig.ts`, `src/main/paths.ts`
+- `src/main/aboutWindow.ts`, `src/main/thirdPartyNotices.ts` (new)
+- `tests/unit/menu.test.ts`, `tests/unit/buildHelpHtml.test.ts`
+- `tests/unit/thirdPartyNotices.test.ts`, `tests/unit/aboutWindow.test.ts`,
+  `tests/unit/staticWindowOptions.test.ts`, `tests/unit/staticPaths.test.ts` (new)
+- `tests/integration/dist-about.test.ts` (new)
+- `tests/e2e/about.spec.ts`, `tests/e2e/static-window-csp.spec.ts` (new)
+- `.agents/specs/review_report_task46.md` (reviewer output)
+
+Explicitly NOT touched:
+- `package-lock.json` (no dependency change), `electron-builder.yml`,
+  `LICENSE`, `CHANGELOG.md`, `README.md`, `src/main/help/help.md`.
+- `src/renderer/**`: the main window, its CSP (#160) and `app.css` are
+  unchanged. `.md-view-static` lives only in the shell's embedded CSS.
+- `src/preload/**` (#179: no bridge or IPC change), `linkPolicy.ts`,
+  `whatsNewWindow.ts`, `whatsNew.ts`.
+- Every existing file under `tests/e2e/` and `tests/integration/`.
+
+### Expected output format
+
+New files: full content. Existing files: diff (targeted edits).
+
+### Spec section this closes
+
+`functional_domain.md` Task 46, guardrails #169-#179.
+
+---
+
+### Task 46: User approval conditions (binding on implementation and review)
+
+The blueprint above was approved on 2026-09-26 subject to these conditions.
+Where a condition and the blueprint disagree, the condition wins.
+
+1. **D1-D4 approved as recommended:**
+   - D1: embedded, hash-pinned stylesheet.
+   - D2: nested `<details>` in About.
+   - D3: no `'unsafe-inline'`, and the content guard.
+   - D4: in-repo script, with no new dependency.
+2. **Step 0 amended in place** (before any manifest existed):
+   - The preamble now states what the packaged app ships (the 12 runtime
+     license files, unreachable; the 113 Mermaid-bundled packages, no
+     notice).
+   - #175 names all three overrides, with fastdom's missing-`gitHead` and
+     merge-commit evidence.
+3. **ADR-011 weighs `webContents.insertCSS()`** against the hash and records
+   why it lost (unstyled frame at `dom-ready`, measured; factory lifecycle
+   change; styling leaves the document). The hash is chosen.
+4. **New test (static-window styling), in Help, What's New and About:** the
+   computed `font-family` of `.markdown-body` is **not the browser default**.
+   - The default is **measured, not assumed.** The test reads the computed
+     `font-family` of a `<p>` in an unstyled `data:` document, loaded in a
+     hidden `BrowserWindow` it creates through `electronApp.evaluate`, and
+     destroys that window afterwards.
+   - It lives in `tests/e2e/static-window-csp.spec.ts`, beside the existing
+     `max-width: 704px` check.
+   - **Fault injection F14:** make the shell embed **no** CSS (an empty
+     stylesheet string at the `index.ts` call site), `npm run build`, and all
+     three windows' font test goes **red**. Revert with `git apply -R`.
+5. **Pre-existing bug recorded (found at Step 1, present since Task 14):** the
+   static windows (Help, and What's New since Task 43) were **never styled**.
+   A `data:` document cannot load `file:` stylesheets (E1). This task fixes it
+   through D1, and the test in condition 4 guards against regression. The
+   review report and the run log must list it as a pre-existing defect found
+   and fixed, not as a new regression.
+6. **Backlog candidate, reported only:** `loadStaticHtml` swallows every load
+   failure, not only close-aborts. It is **not** written to `backlog.md` in
+   this task.
+7. **Delegation rules:**
+   - TDD Red-Green-Refactor with the 3-cycle cap.
+   - `npm run build` before every e2e or dist RED/GREEN observation.
+   - Reverts via a captured patch and `git apply -R` only.
+   - The reviewer runs F1, F2, F6 and F14, **plus its own injections,
+     including at least one not in this plan**, and ends with a
+     `git status` backstop (the tree equals the implementation diff; no
+     stray files).
+   - **If a hook blocks a write: STOP and report. Never route around a hook
+     via Bash.** (`enforce-scope`'s out-of-repo block is still unfixed.)
+   - `asar` commands run **only with a temp directory as the cwd**.
+   - The Lead stops before `/log-run`.
+8. ADR-011 and ADR-012 are written by the Lead as **Proposed** before the
+   manifest, stay out of the engineer's scope, and are flipped at Step 3.
+
+---
+
 ## Task 47: Live-reload truncate race + e2e renderer-readiness race (Step 1)
 
 Closes `functional_domain.md` Task 47, guardrails #180-#188. Branch

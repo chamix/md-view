@@ -259,7 +259,7 @@ test.describe('(d) title-bar menu labels popup the real, shared buildMenuTemplat
       const bag = globalThis as unknown as { __mdViewLastPopupMenu: Electron.Menu | null };
       return bag.__mdViewLastPopupMenu?.items.map((item) => item.id ?? item.type) ?? [];
     });
-    expect(helpItemIds).toEqual(['menu-help']);
+    expect(helpItemIds).toEqual(['menu-help', 'separator', 'menu-about']);
   });
 
   test('clicking "Open…" inside the File popup triggers the exact same behavior as the native menu (proof the popup path calls buildMenuTemplate, not a duplicate)', async ({
@@ -551,7 +551,7 @@ test.describe('(g) #title-bar stays fixed and remains functional while the page 
       const bag = globalThis as unknown as { __mdViewLastPopupMenu: Electron.Menu | null };
       return bag.__mdViewLastPopupMenu?.items.map((item) => item.id ?? item.type) ?? [];
     });
-    expect(helpItemIds).toEqual(['menu-help']);
+    expect(helpItemIds).toEqual(['menu-help', 'separator', 'menu-about']);
   });
 
   // Deliberately NOT scrolled, unlike this describe block's other tests --
