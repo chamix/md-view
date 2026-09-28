@@ -3456,3 +3456,104 @@ data leak.
 - Help / README / CHANGELOG updates (release-time satellite).
 
 ---
+
+## Task 47: Live-reload truncate race and e2e renderer-readiness race (Step 0)
+
+Branch `feature/047-e2e-races` off `main` @ `38cb06b`. Task 46
+(`feature/046-about-window`, `fd71833`) stays unmerged until this task
+merges. It is then rebased onto `main` and must itself reach 3 consecutive
+green full e2e runs.
+
+**Evidence that motivated the task (user-supplied):**
+- `main`: 3 of 3 clean full e2e runs.
+- `feature/046`: 5 of 5 runs failed, across four different tests.
+- Neither branch left Electron processes behind.
+
+Task 46 changes nothing that every launch runs (renderer, preload,
+fixtures, config and main-window options are identical). The working
+theory is that its changed timing and load expose races that already
+existed.
+
+### Abstract contracts
+
+- **Document source** (input): a file whose bytes an external writer may
+  replace in more than one step (truncate, then write), with arbitrary
+  delays between steps.
+- **Change notification** (input): an asynchronous, lossy signal ("the file
+  may have changed"). The platform's watcher may coalesce or drop
+  notifications that arrive close together.
+- **Preview state** (output): the rendering of *some* read of the document
+  source.
+- **Renderer readiness** (state): the preview surface has registered every
+  receiver for main-to-renderer messages. Messages sent before readiness
+  are dropped, not queued.
+- **Test observation** (test-side): an e2e test's reading of app state, or
+  of files the app writes.
+
+### Invariants / guardrails
+
+180. **Eventual consistency of the preview (H1, production).** After an
+     external writer's *last* modification to the open file, the preview
+     eventually shows a rendering of that last content. That must hold
+     whatever the writer's intermediate states (including an empty,
+     truncated file) and however notifications were coalesced or dropped.
+     A preview left showing an intermediate state (for example empty) after
+     the file has settled is a defect.
+181. **Deterministic RED before fix (H1).** Before any production change, a
+     test reproduces #180's violation deterministically: truncate the file,
+     wait until the truncate's change has been delivered, then write the
+     final content inside the watcher's coalescing window. The test asserts
+     its own timing precondition: if the write did not land inside the
+     window, the test fails as "precondition not met" rather than passing.
+182. **Stated trade-off.** The chosen H1 fix states its cost (added latency,
+     extra reads or renders, transient intermediate renders) with measured
+     numbers, and names the rejected alternative.
+183. **No lost main-to-renderer actions in tests (H2, test-side).** No e2e
+     test triggers an action whose result is delivered to the renderer
+     before renderer readiness. A single shared helper establishes
+     readiness. Its readiness signal must be one that the initial blank
+     document, or a document that has not yet run the page scripts, cannot
+     satisfy.
+184. **Deterministic RED before fix (H2).** A test holds the renderer before
+     its page scripts run, triggers a main-side action, and shows that the
+     delivery is lost. The same hold then proves that the helper does not
+     report readiness while held, and that an action triggered after the
+     helper resolves is rendered.
+185. **Coverage is complete and checked.** The helper applies to every e2e
+     test that triggers actions from main: every test using the shared
+     launch fixture, and every test that launches Electron directly. A
+     check fails if a spec that launches Electron does not establish
+     readiness.
+186. **No masking.** No retry-until-green, no raised retries, no skipped or
+     loosened assertions, and no longer timeouts used as the fix. Existing
+     assertions keep their meaning. Any assertion that changes must become
+     stricter, never looser.
+187. **Evidence-only reporting** for `close-document.spec.ts:221` and
+     `view-menu.spec.ts:189`. Each is classified only on reproduced or
+     captured evidence. Where evidence is missing, the task adds capture
+     (test-side diagnostics only) and states "unconfirmed" instead of
+     guessing.
+188. **Done criterion.** `main` plus this task reaches **3 consecutive
+     green full e2e runs**: clean `dist/` (deleted, then `npm run build`),
+     `workers: 2`, no retries, all tiers. After merge, the rebased Task 46
+     must meet the same criterion before it can merge.
+
+### Explicitly out of scope (not built without asking)
+
+- **Accepted limitation: the production analogue of H2** (added at the
+  Step 1 review). The same race exists in the app: an action whose result
+  reaches the renderer before `renderer.js` has registered its receivers
+  is lost. Users cannot reach it.
+  - The only non-human open path, argv, already waits for the main window's
+    `did-finish-load` before sending (`index.ts` ~:497-506).
+  - There is no `second-instance` or `open-file` handler.
+  - Every other open path (File > Open…, Open Folder…, drag-and-drop, tree
+    clicks) starts from a human action on an already-loaded window.
+
+  It is not fixed. Revisit if a non-human open path is ever added (for
+  example single-instance forwarding or macOS `open-file`).
+- The broader parallel-contention investigation (backlog, Task 19).
+- Help / README / CHANGELOG updates (release-time satellite).
+- Any change to Task 46's code.
+
+---
