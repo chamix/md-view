@@ -12,6 +12,22 @@ export interface MenuHandlers {
   onOpenAbout: () => void;
   onOpenSettings: () => void;
   onClose: () => void;
+  // Task 51: one receiver behind the native menu and the title-bar popup.
+  onSelectSkin: (name: string) => void;
+  onEditSkins: () => void;
+}
+
+// Task 51: the Skin submenu's inputs. Names are user data (custom skins), so
+// they are used only as plain-text labels, never as ids, accelerators or code.
+export interface SkinMenu {
+  names: string[];
+  activeName: string;
+}
+
+// '&' is the accelerator marker in Windows/Linux menu labels; doubling it
+// renders a literal ampersand.
+function menuLabelText(name: string): string {
+  return name.replace(/&/g, '&&');
 }
 
 // Task 44 #151: `documentOpen` is deliberately a separate, REQUIRED input,
@@ -21,7 +37,8 @@ export interface MenuHandlers {
 export function buildMenuTemplate(
   handlers: MenuHandlers,
   initialViewSettings: ViewSettings,
-  documentOpen: boolean
+  documentOpen: boolean,
+  skinMenu: SkinMenu
 ): MenuItemConstructorOptions[] {
   return [
     {
@@ -85,6 +102,25 @@ export function buildMenuTemplate(
           type: 'radio',
           checked: initialViewSettings.currentTab === 'code',
           click: () => handlers.onSelectTab('code'),
+        },
+        { type: 'separator' },
+        {
+          id: 'menu-skin',
+          label: 'Skin',
+          submenu: [
+            // Ids are by index, never derived from the (user-authored) names.
+            ...skinMenu.names.map(
+              (name, index): MenuItemConstructorOptions => ({
+                id: `menu-skin-${index}`,
+                label: menuLabelText(name),
+                type: 'radio',
+                checked: name === skinMenu.activeName,
+                click: () => handlers.onSelectSkin(name),
+              })
+            ),
+            { type: 'separator' },
+            { id: 'menu-skin-edit', label: 'Edit Skins…', click: handlers.onEditSkins },
+          ],
         },
       ],
     },

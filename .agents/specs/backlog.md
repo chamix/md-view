@@ -973,3 +973,9 @@ packaging — not assumed fine just because Windows was.
      `--color-tab-hover-bg`.
   Decision for the next task: fix all three (visible change, needs the
   updated golden values and e2e eyes) or leave as-is.
+
+- [Pending, Task 51 review NB1] `onSelectSkin` persists the whole in-memory `{ activeSkin, customSkins }` after `canPersistSkinChange` (which only checks the file parses). A valid external edit to a custom skin that the focus re-read has not yet picked up could be overwritten if the user clicks a Skin radio within the few ms of that async re-read. Same race exists for `settings.json`. Low risk; fix if wanted: re-read inside `onSelectSkin` and merge only `activeSkin` into the on-disk object.
+
+- [Pending, Task 51 review NB4] `src/main/index.ts` now also holds skin state, skin handlers and the skins focus re-read. Acceptable for the composition root; if it keeps growing, extract a `SkinController`.
+
+- [Pending, Task 51] Tokyo Night preset and the scaffold: `initial_scaffold.md` Task 51 palette table still shows `#787c99` for Tokyo Night dark text-muted; the shipped, user-approved value is `#7d82a0` (AA fix). Code is authoritative.

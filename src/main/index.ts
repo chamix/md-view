@@ -24,6 +24,10 @@ import { IPC_CHANNELS } from '../preload/api';
 import type { FileRenderedMessage, DirectoryListResult, FolderTreeRootMessage, DocumentTab, ViewSettings } from '../preload/api';
 import { loadSettingsAtStartup, rereadSettingsOnFocus, ensureSettingsFileExists, writeSettingsFile } from './settingsStore';
 import { toPersistedViewSettings, fromViewSettings } from './settings';
+import { loadSkinsAtStartup, rereadSkinsOnFocus, ensureSkinsFileExists, writeSkinsFile, canPersistSkinChange } from './skinsStore';
+import { defaultSkinsFile, resolveSkin, listSkinNames, toSkinPayload } from './skins';
+import type { SkinsFile } from './skins';
+import type { SkinMenu } from './menu';
 
 let mainWindow: BrowserWindow | null = null;
 let helpWindow: BrowserWindow | null = null;
@@ -34,6 +38,12 @@ let aboutWindow: BrowserWindow | null = null;
 // settles. recordVersionSeen never rejects, so this promise always settles.
 let pendingSeenWrite: Promise<void> | null = null;
 let settingsFilePath: string;
+let skinsFilePath: string;
+
+// Task 51 (#213): skins.json is the only home of skin data; the active skin
+// is resolved from this in-memory copy (loaded strictly before createWindow(),
+// like settings). It never contains or changes Dark Mode.
+let skinsFile: SkinsFile = defaultSkinsFile;
 
 // currentTab is session-scoped only (Task 37 explicitly does NOT persist
 // it); darkMode/showFrontmatter/showTreePanel are persisted to
@@ -77,6 +87,60 @@ async function persistCurrentViewSettings(): Promise<void> {
 
 function warnSettingsWriteFailed(error: unknown): void {
   console.warn('md-view: could not save settings (kept in memory):', settingsFilePath, (error as NodeJS.ErrnoException)?.code ?? error);
+}
+
+// Task 51: an unknown activeSkin resolves to Default (#217), so the menu's
+// checked radio and the pushed payload always agree.
+function activeSkinName(): string {
+  return resolveSkin(skinsFile, skinsFile.activeSkin).name;
+}
+
+function skinMenuState(): SkinMenu {
+  return { names: listSkinNames(skinsFile), activeName: activeSkinName() };
+}
+
+// toSkinPayload is the choke point (#211): every color and filename is
+// re-validated here, immediately before leaving main.
+function broadcastSkin(): void {
+  mainWindow?.webContents.send(IPC_CHANNELS.SKIN, toSkinPayload(resolveSkin(skinsFile, skinsFile.activeSkin)));
+}
+
+function warnSkinsWriteFailed(error: unknown): void {
+  console.warn('md-view: could not save skins (kept in memory):', skinsFilePath, (error as NodeJS.ErrnoException)?.code ?? error);
+}
+
+// Radio selection (#219/#220, approval condition D2). Memory and the renderer
+// take the choice immediately; persisting is best-effort and never clobbers a
+// hand-edit in progress: the full { activeSkin, customSkins } is written only
+// when the file on disk is missing or currently parses cleanly. Only names
+// from the current list are accepted (never renderer- or id-derived input).
+async function onSelectSkin(name: string): Promise<void> {
+  if (typeof name !== 'string' || !listSkinNames(skinsFile).includes(name)) return;
+  skinsFile = { ...skinsFile, activeSkin: name };
+  broadcastSkin();
+  applyMenu();
+
+  try {
+    if (await canPersistSkinChange(skinsFilePath)) {
+      await writeSkinsFile(skinsFilePath, skinsFile);
+    } else {
+      console.warn('md-view: skins.json is not valid; skin choice applied in memory only, file left untouched:', skinsFilePath);
+    }
+  } catch (error) {
+    warnSkinsWriteFailed(error);
+  }
+}
+
+// View -> Skin -> Edit Skins…: mirrors onOpenSettings (#221). Creates the file
+// only if missing, never overwrites (even a corrupt one), then hands the fixed
+// main-computed path to the OS. The path never derives from renderer input.
+async function onEditSkins(): Promise<void> {
+  try {
+    await ensureSkinsFileExists(skinsFilePath);
+  } catch (error) {
+    warnSkinsWriteFailed(error);
+  }
+  await shell.openPath(skinsFilePath);
 }
 
 async function setDarkMode(checked: boolean): Promise<void> {
@@ -126,6 +190,8 @@ function menuHandlers(): MenuHandlers {
     onOpenHelp,
     onOpenAbout,
     onOpenSettings,
+    onSelectSkin,
+    onEditSkins,
     // Task 44: one receiver behind three invokers (native menu, title-bar
     // popup, CmdOrCtrl+W), never three implementations.
     onClose: () => documentSession.close(),
@@ -157,6 +223,26 @@ async function onOpenSettings(): Promise<void> {
 // actually differs from what's already in memory -- an unchanged read is a
 // no-op, no rebroadcast/rebuild for nothing.
 async function onWindowFocus(): Promise<void> {
+  await rereadSettingsIfChanged();
+  await rereadSkinsIfChanged();
+}
+
+// Task 51 (#216): same protective posture for skins.json. null (missing,
+// corrupt or partial) means ignore entirely: no write, no memory change, no
+// broadcast. A valid read that differs from memory replaces it and
+// re-broadcasts; an identical one does nothing. Key order is part of the
+// comparison because it is the order of custom names in the menu.
+async function rereadSkinsIfChanged(): Promise<void> {
+  const result = await rereadSkinsOnFocus(skinsFilePath);
+  if (result === null) return;
+  if (JSON.stringify(result) === JSON.stringify(skinsFile)) return;
+
+  skinsFile = result;
+  broadcastSkin();
+  applyMenu();
+}
+
+async function rereadSettingsIfChanged(): Promise<void> {
   const result = await rereadSettingsOnFocus(settingsFilePath);
   if (result === null) return;
 
@@ -174,7 +260,7 @@ async function onWindowFocus(): Promise<void> {
 
 function applyMenu(): void {
   Menu.setApplicationMenu(
-    Menu.buildFromTemplate(buildMenuTemplate(menuHandlers(), viewSettings, documentSession.isOpen()))
+    Menu.buildFromTemplate(buildMenuTemplate(menuHandlers(), viewSettings, documentSession.isOpen(), skinMenuState()))
   );
 }
 
@@ -557,6 +643,11 @@ app.whenReady().then(async () => {
   const startupSettings = await loadSettingsAtStartup(settingsFilePath);
   viewSettings = { ...viewSettings, ...toPersistedViewSettings(startupSettings) };
 
+  // Task 51: likewise strictly before createWindow(). This is also where a
+  // corrupt skins.json is backed up to skins.json.bak and self-healed (#215).
+  skinsFilePath = path.join(app.getPath('userData'), 'skins.json');
+  skinsFile = await loadSkinsAtStartup(skinsFilePath);
+
   createWindow();
 
   if (shouldSetDockIcon(app.isPackaged, process.platform)) {
@@ -570,6 +661,7 @@ app.whenReady().then(async () => {
   // opened, so the renderer must learn it even when there is no argv file.
   mainWindow?.webContents.once('did-finish-load', () => {
     broadcastViewSettings();
+    broadcastSkin();
   });
 
   const filePath = argvFilePath();
@@ -668,7 +760,7 @@ app.whenReady().then(async () => {
   // a second, hand-duplicated menu description.
   ipcMain.on(IPC_CHANNELS.POPUP_MENU, (_e, section: 'file' | 'view' | 'help', x: number, y: number) => {
     const index = menuSectionIndex(section);
-    const template = buildMenuTemplate(menuHandlers(), viewSettings, documentSession.isOpen());
+    const template = buildMenuTemplate(menuHandlers(), viewSettings, documentSession.isOpen(), skinMenuState());
     Menu.buildFromTemplate(template[index].submenu as MenuItemConstructorOptions[]).popup({
       window: mainWindow ?? undefined,
       x,

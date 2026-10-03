@@ -25,7 +25,19 @@ export const IPC_CHANNELS = {
   // name only ('copy' | 'copy-all') -- mirrors DOCUMENT_CLOSED's near-zero
   // payload style. No clipboard content ever crosses this channel either.
   COPY_COMMAND: 'md-view:copy-command',
+  // Task 51 (#223, ADR-014): main -> renderer push of the active skin. One
+  // channel, payload ResolvedSkin; no new renderer -> main surface.
+  SKIN: 'md-view:skin',
 } as const;
+
+// Task 51: what crosses to the renderer. Main re-validates every color and
+// filename (toSkinPayload) immediately before sending; the renderer re-checks
+// again before applying. Carries no file paths and no raw file content.
+export interface ResolvedSkin {
+  name: string;
+  palette: { light: Record<string, string>; dark: Record<string, string> };
+  syntax: { light: string; dark: string };
+}
 
 export type DocumentTab = 'preview' | 'code';
 
@@ -113,4 +125,6 @@ export interface BridgeApi {
   // { text, html } itself and writes via navigator.clipboard.write()
   // (D2/ADR-013) -- main never sees text/html.
   onCopyCommand(callback: (action: 'copy' | 'copy-all') => void): void;
+  // Task 51 (#223): main -> renderer push of the active skin.
+  onSkin(callback: (skin: ResolvedSkin) => void): void;
 }
