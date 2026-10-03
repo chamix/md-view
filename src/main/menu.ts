@@ -99,3 +99,27 @@ export function buildMenuTemplate(
     },
   ];
 }
+
+export interface CopyMenuHandlers {
+  onCopy: () => void;
+  onCopyAll: () => void;
+}
+
+// Task 49 (#196-#198, #201; initial_scaffold.md Task 49 Step 1 "Context
+// menu"): a separate template function, same "one template function, many
+// entry points" posture as buildMenuTemplate/#67 -- never an edit to that
+// File/View/Help template. `target` is the renderer's contextmenu
+// classification, `{ hasCopyTarget, documentOpen }` (#202 amended: no
+// clipboard content ever crosses this boundary). Copy is enabled only when
+// both hold; Copy All only needs documentOpen (#201: "no selection, no
+// diagram under cursor -> Copy disabled, Copy All still enabled"). Never
+// offers Cut/Paste/Find -- this is a read-only viewer (#201).
+export function buildCopyMenuTemplate(
+  handlers: CopyMenuHandlers,
+  target: { hasCopyTarget: boolean; documentOpen: boolean }
+): MenuItemConstructorOptions[] {
+  return [
+    { id: 'menu-copy', label: 'Copy', enabled: target.documentOpen && target.hasCopyTarget, click: handlers.onCopy },
+    { id: 'menu-copy-all', label: 'Copy All', enabled: target.documentOpen, click: handlers.onCopyAll },
+  ];
+}

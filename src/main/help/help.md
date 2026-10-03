@@ -32,6 +32,12 @@ re-renders the preview automatically — no manual refresh needed.
 ## Copy raw source
 A copy button in the document header copies the file's raw source, frontmatter included, to the clipboard regardless of which tab is active. The button shows a brief visual confirmation on click.
 
+## Copying text
+- Select text in the Preview or Code view and press **Ctrl/Cmd+C**, or right-click and choose **Copy**, to copy the selection to the clipboard.
+- Right-click and choose **Copy All** to copy the whole visible view — the rendered document in Preview (including frontmatter when it's shown), or the raw Markdown source in Code.
+- A Mermaid diagram always copies its Markdown source, never its drawing — whether you right-click directly on it, select text that spans it, or use Copy All.
+- The right-click menu only appears over the document area, and Copy is disabled when there's nothing selected (unless you're right-clicking a diagram). Both items are disabled when no file is open.
+
 ## Appearance
 - **View → Dark Mode** toggles a dark color scheme for the preview and syntax highlighting.
 - **View → Show Frontmatter** shows or hides YAML frontmatter at the top of the document.

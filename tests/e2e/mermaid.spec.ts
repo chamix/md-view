@@ -97,6 +97,31 @@ function fileRenderedCount(app: ElectronApplication): Promise<number> {
   return app.evaluate(() => (globalThis as unknown as { __mdvFileRendered: number }).__mdvFileRendered);
 }
 
+// Attribute names a browser can actually interpret as a URL or script source.
+// data-* attributes (e.g. the verbatim diagram-source cache Task 49 stores on
+// data-mdview-source, which legitimately contains attack-payload *text* as
+// Mermaid source content) are deliberately excluded as a whole namespace, not
+// by one-off name -- they are never read back into a URL/script context by
+// any browser mechanism. Shared by the #159 XSS suite assertion and its
+// fault-injection sibling below so both exercise the exact same narrowed
+// scanner: reverting or over-narrowing this logic must fail both.
+async function scanForUrlBearingJsAttrs(window: Page): Promise<string[]> {
+  return window.evaluate((urlBearingAttrs: string[]) => {
+    const content = document.getElementById('content')!;
+    const all = [content, ...Array.from(content.querySelectorAll('*'))];
+    const jsUrls: string[] = [];
+    for (const el of all) {
+      for (const attr of Array.from(el.attributes)) {
+        const name = attr.name.toLowerCase();
+        if (name.startsWith('data-')) continue;
+        if (!urlBearingAttrs.includes(name)) continue;
+        if (/javascript:/i.test(attr.value.replace(/\s+/g, ''))) jsUrls.push(`${el.tagName}.${attr.name}=${attr.value}`);
+      }
+    }
+    return jsUrls;
+  }, ['href', 'src', 'xlink:href', 'action', 'formaction', 'srcset']);
+}
+
 function trackPageErrors(window: Page): string[] {
   const errors: string[] = [];
   window.on('pageerror', (err) => errors.push(String(err)));
@@ -253,22 +278,20 @@ test('#159 XSS suite: no script, no on* attribute, no javascript: URL, canary st
     const content = document.getElementById('content')!;
     const all = [content, ...Array.from(content.querySelectorAll('*'))];
     const onAttrs: string[] = [];
-    const jsUrls: string[] = [];
     for (const el of all) {
       for (const attr of Array.from(el.attributes)) {
         if (/^on/i.test(attr.name)) onAttrs.push(`${el.tagName}.${attr.name}`);
-        if (/javascript:/i.test(attr.value.replace(/\s+/g, ''))) jsUrls.push(`${el.tagName}.${attr.name}=${attr.value}`);
       }
     }
     return {
       scripts: content.querySelectorAll('script').length,
       onAttrs,
-      jsUrls,
     };
   });
+  const jsUrls = await scanForUrlBearingJsAttrs(window);
   expect(findings.scripts).toBe(0);
   expect(findings.onAttrs).toEqual([]);
-  expect(findings.jsUrls).toEqual([]);
+  expect(jsUrls).toEqual([]);
   expect(await window.evaluate(() => (window as unknown as { __mdvCanary?: unknown }).__mdvCanary)).toBeUndefined();
 
   // Clicking every node and anchor still leaves the canary undefined.
@@ -280,6 +303,33 @@ test('#159 XSS suite: no script, no on* attribute, no javascript: URL, canary st
   await settle(300);
   expect(await window.evaluate(() => (window as unknown as { __mdvCanary?: unknown }).__mdvCanary)).toBeUndefined();
   expect(pageErrors).toEqual([]);
+});
+
+test('#159 XSS suite fault injection: narrowed scanner still flags a real javascript: href outside any diagram', async ({
+  electronApp,
+}) => {
+  const window = await launchedWindow(electronApp);
+  await openViaMenu(electronApp, TEST_FIXTURE);
+  await expect(window.locator('#content')).toBeVisible();
+
+  // Deliberately inject a real attack vector on an attribute the narrowed
+  // allowlist DOES cover (href), directly under #content and outside any
+  // diagram wrapper -- proves the narrowing didn't quietly blind the scanner.
+  const planted = await window.evaluate(() => {
+    const content = document.getElementById('content')!;
+    const a = document.createElement('a');
+    a.setAttribute('href', "javascript:window.__mdvCanary=1");
+    a.textContent = 'fault-injection probe';
+    content.appendChild(a);
+    return `${a.tagName}.href=${a.getAttribute('href')}`;
+  });
+
+  const jsUrls = await scanForUrlBearingJsAttrs(window);
+  expect(jsUrls).toEqual([planted]);
+
+  await window.evaluate(() => {
+    document.querySelector('#content a[href^="javascript:"]')?.remove();
+  });
 });
 
 test.describe('#158 locked keys: %%{init}%% and frontmatter config: cannot override them', () => {

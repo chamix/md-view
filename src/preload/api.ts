@@ -17,6 +17,14 @@ export const IPC_CHANNELS = {
   // Task 44: main -> renderer push, zero payload. Its arrival is the whole
   // fact ("the document slot is now empty"); not a FileRenderedMessage variant.
   DOCUMENT_CLOSED: 'md-view:document-closed',
+  // Task 49 (#202 amended, ADR-013 D2): renderer -> main, fire-and-forget,
+  // same shape as POPUP_MENU -- a target-classification descriptor only,
+  // never clipboard content.
+  POPUP_COPY_MENU: 'md-view:popup-copy-menu',
+  // Task 49: main -> renderer push, fire-and-forget, payload is the action
+  // name only ('copy' | 'copy-all') -- mirrors DOCUMENT_CLOSED's near-zero
+  // payload style. No clipboard content ever crosses this channel either.
+  COPY_COMMAND: 'md-view:copy-command',
 } as const;
 
 export type DocumentTab = 'preview' | 'code';
@@ -96,4 +104,13 @@ export interface BridgeApi {
   selectTab(tab: DocumentTab): void;
   copyRawSource(text: string): Promise<boolean>;
   onDocumentClosed(callback: () => void): void;
+  // Task 49 (#202 amended, ADR-013 D2): renderer -> main, fire-and-forget.
+  // `target` carries only enough for main to gate enabled state (#201) --
+  // never clipboard content.
+  popupCopyMenu(target: { hasCopyTarget: boolean; documentOpen: boolean }, x: number, y: number): void;
+  // Task 49: main -> renderer push, fire-and-forget, payload is the action
+  // name only. The renderer already knows the copy target; it builds
+  // { text, html } itself and writes via navigator.clipboard.write()
+  // (D2/ADR-013) -- main never sees text/html.
+  onCopyCommand(callback: (action: 'copy' | 'copy-all') => void): void;
 }

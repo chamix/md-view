@@ -8,7 +8,7 @@ import { markdownToHtml, highlightMarkdownSource } from './markdown';
 import { baseUrlForFile, changelogPathFor, packageJsonPathFor, licensePathFor, thirdPartyNoticesPathFor } from './paths';
 import { watchFile } from './watcher';
 import { isExternalHttpUrl } from './linkPolicy';
-import { buildMenuTemplate } from './menu';
+import { buildMenuTemplate, buildCopyMenuTemplate } from './menu';
 import type { MenuHandlers } from './menu';
 import { extractFrontmatter } from './frontmatter';
 import { shouldSetDockIcon } from './dockIcon';
@@ -675,6 +675,31 @@ app.whenReady().then(async () => {
       y,
     });
   });
+
+  // Task 49 (#196-#203, ADR-013 D2): the document-area right-click context
+  // menu. `target` is a narrow classification descriptor the renderer
+  // computed from its own contextmenu handler -- never clipboard content
+  // (#202 amended). Both menu-copy/menu-copy-all click handlers just send a
+  // content-free, fire-and-forget push naming the action; the renderer
+  // already knows the copy target and builds { text, html } itself
+  // (navigator.clipboard.write(), never webContents.copy()/execCommand here).
+  ipcMain.on(
+    IPC_CHANNELS.POPUP_COPY_MENU,
+    (_e, target: { hasCopyTarget: boolean; documentOpen: boolean }, x: number, y: number) => {
+      const template = buildCopyMenuTemplate(
+        {
+          onCopy: () => mainWindow?.webContents.send(IPC_CHANNELS.COPY_COMMAND, 'copy'),
+          onCopyAll: () => mainWindow?.webContents.send(IPC_CHANNELS.COPY_COMMAND, 'copy-all'),
+        },
+        target
+      );
+      Menu.buildFromTemplate(template).popup({
+        window: mainWindow ?? undefined,
+        x,
+        y,
+      });
+    }
+  );
 
   // Last step, after createWindow() and the did-finish-load registrations
   // above, so the main window stays firstWindow() and the synchronous-

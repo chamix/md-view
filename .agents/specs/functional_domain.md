@@ -3816,3 +3816,97 @@ Security
 - Changes to the release workflow.
 
 ---
+
+## Task 49: Copy text (selection, Copy All, context menu; diagrams copy their source) (Step 0)
+
+Depends on v1.2.0 (`main` at `d3edd79`, tag `v1.2.0`). Touches the renderer's
+preview and Code views, the diagram wrappers (Task 45), the clipboard boundary
+(Task 34, #101), the bridge contract, and menu construction (#67).
+
+Decisions taken with the user before drafting:
+- **Copy** copies the current selection as **both HTML and plain text**.
+- **Copy All** copies the whole visible view, also as HTML and plain text.
+- **A Mermaid diagram copies its Mermaid source**, not its drawing.
+- Lead's reading of "left button" in the original note: the user selects with
+  the left mouse button and copies through the right-click context menu or
+  `Ctrl/Cmd+C`. Flag it if the user meant something else.
+
+Guardrail numbers: start at #196 (Task 48 ended at #195). Renumber from the next
+free number if that is taken, and say so.
+
+### Abstract contracts
+
+- **Copy payload** (pure): a pair `{ text, html }` written to the clipboard in
+  one operation, so a paste target picks the richest format it supports.
+- **Copy target** (renderer-side fact): one of: a selection inside the Preview;
+  a selection inside the Code view; the whole Preview (Copy All); the whole
+  Code view (Copy All); a single diagram (right-click on it); nothing.
+- **Diagram contribution rule**: wherever a diagram falls inside the copied
+  content, it contributes its Mermaid source: in `text` as the source itself,
+  in `html` as a `<pre><code>` block with the source escaped. It never
+  contributes SVG markup or its drawn labels. This applies equally to a
+  right-click on a diagram, to a selection that spans a diagram, and to Copy
+  All.
+- **Context menu**: a native menu built in `main` (the same "one template
+  function, many entry points" posture as #67), with Copy and Copy All. Its
+  enabled state reflects the copy target.
+
+### Invariants / guardrails
+
+196. **Copy = selection, in two formats.** With text selected in the Preview,
+     Copy writes the selection as `html` (its rendered markup) and as `text`
+     (its plain text), in a single clipboard write. Proof reads the real OS
+     clipboard in both formats (`clipboard.readText()` / `readHTML()`), never an
+     in-memory value (same posture as Task 34's #98).
+197. **Copy All = the whole visible view.** In the Preview, it copies the
+     rendered document (without the frontmatter block when it is hidden, and
+     with it when it is shown). In the Code view, it copies the raw Markdown
+     source, byte-identical to the existing copy-raw-source button.
+198. **Diagrams copy their source** (the contribution rule above): a right-click
+     on a rendered diagram, a failed diagram, or a diagram still rendering
+     copies exactly its Mermaid source (byte-identical to the fence body). A
+     selection or Copy All that includes diagrams replaces each one with its
+     source, in document order. Proof: the clipboard `text` contains the fence
+     body and contains no SVG markup or drawn label text.
+199. **The source survives rendering.** Drawing a diagram currently replaces
+     its wrapper's children, removing the source from the DOM (`showSvg`).
+     Every wrapper keeps its exact source available after the first render,
+     after every Dark Mode re-render, and after a render failure. Step 1 must
+     reuse whatever #164's theme re-render already relies on, not add a second
+     copy that can drift.
+200. **Keyboard parity.** `Ctrl/Cmd+C` with a selection behaves exactly like the
+     menu's Copy, including the diagram rule. Step 1 verifies (not assumes) what
+     `Ctrl+C` does today in this frameless window with no Edit menu, and
+     whether `Ctrl/Cmd+A` is in scope as the keyboard form of Copy All (it is
+     not required by this Step 0).
+201. **Menu states.** With no file open, or with an error shown, Copy and Copy
+     All are disabled. Copy is disabled when there is no selection, except on a
+     diagram. The menu opens only over the document area, not over the title
+     bar, the tree panel or the status bar. It never offers editing commands
+     (Cut, Paste) in this read-only viewer.
+202. **Narrow, validated boundary.** Clipboard writes happen either in `main`
+     (#101, the existing copy-raw-source path) or through the renderer's
+     native copy event (`clipboardData.setData`) within the document area. No
+     new bridge method carries clipboard content. `main` never parses or
+     renders `html`; where it participates at all, it only ever writes it to
+     the clipboard. `contextIsolation`, `sandbox`, `nodeIntegration: false`,
+     `html: false` and both CSPs are unchanged. No `script-src` relaxation,
+     and the copied `html` never becomes a live document inside md-view.
+     (Amended at Task 49 Step 1 review, D2: see ADR-013.)
+203. **Nothing else changes.** The existing copy-raw-source button (#98-#101),
+     Close, live reload, diagram rendering and the static windows behave
+     exactly as before. The Help file gains a short "Copying text" section
+     (release docs remain a release-time task, but Help is user-facing
+     behavior and ships with the feature).
+
+### Explicitly out of scope (not built without asking)
+
+- Copy Link / Copy Image / Save Image.
+- Copying a diagram as an image (SVG or PNG).
+- Context menus in the Help, What's New and About windows.
+- Cut, Paste, Find, or any editing command.
+- A "copy as Markdown" of a rendered selection (converting rendered HTML back
+  to Markdown). The raw source is already available through Copy All in the
+  Code view and the copy-raw-source button.
+
+---
