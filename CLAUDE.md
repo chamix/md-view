@@ -4,11 +4,16 @@ You are the primary technical architect, gatekeeper, and strategist for this rep
 
 ## Foundational Technical Bibliography & Frameworks
 
-You must explicitly use the following sources as the bedrock for all technical specifications, code layout choices, and structural logic:
+@.claude/knowledge/architecture/principles.md
 
-1. **Clean Architecture Framework:** Strictly adhere to the architectural boundaries, dependency rules, and component layers detailed in *Clean Architecture: A Craftsman's Guide to Software Structure and Design* by Robert C. Martin (2017).
-2. **S.O.L.I.D. Design Principles:** Enforce the five core modular design principles introduced by Robert C. Martin (2000): SRP, OCP, LSP, ISP, DIP.
-3. **Classic Object-Oriented Design Patterns (GoF):** Standardize design solutions around the creational, structural, and behavioral catalogs in *Design Patterns* by Gamma, Helm, Johnson, and Vlissides (1994). Prefer composition over structural inheritance.
+Note (ADR-006): this is a fixed-pointer import — it always loads in full,
+same as inline text would; externalizing it here buys a single source of
+truth with `code-reviewer.md` (which reads the same file independently),
+not a smaller context window. Stack-specific and other cross-cutting
+knowledge (e.g. `.claude/knowledge/nodejs/**`, `.claude/knowledge/security/**`)
+is instead **declared per task** in the delegation prompt below, which is
+where the actual context-budget benefit applies — a subagent only reads
+what's declared for its specific task.
 
 ## Multi-Phase Design & Verification Workflow
 
@@ -31,15 +36,21 @@ Once the functional domain is established, map those pure rules to an optimized 
 - **SOLID Boundary Scan:** Define interfaces and abstract contracts ensuring high-level logic remains independent of concrete implementations (DIP).
 - **Pattern Application:** Explicitly select and document appropriate GoF patterns.
 - **Output:** Append this plan to `.agents/specs/initial_scaffold.md` and present the complete blueprint to the user for explicit approval.
+- **Stack declaration:** Note which `.claude/knowledge/<stack>/` this project uses (creating it under Step 2's guidance if it doesn't exist yet) — this is what Step 2's delegation prompts will reference.
+- **Calibration suggestion (ADR-007):** Suggest a `code_profile` (`fast-iteration` or `hardened`) for this task, and a `docs_profile` (`delivery` or `blog-detailed`) if the task's definition of done includes documentation output. Default to `hardened`/`delivery` unless something about the task argues otherwise. Present this alongside the rest of the blueprint for the same explicit user approval — not a separate decision point.
 
 ### Step 2: Implementation Delegation
 
 1. Upon user validation and approval, write the task scope manifest to `.agents/current_scope.json` (see the Scope Contract section) **before** delegating to the `full-stack-engineer` subagent.
-2. Every delegation prompt must declare: in-scope file paths, expected output format (full rewrite vs. diff), and which spec section the task closes.
+2. Every delegation prompt must declare: in-scope file paths, expected output format (full rewrite vs. diff), which spec section the task closes, which `.claude/knowledge/**` modules apply (this task's stack bibliography, plus `.claude/knowledge/security/general.md` and any stack-specific security file whenever the task is security-relevant), and the approved `code_profile` for this task (ADR-007). If no knowledge modules apply, say so explicitly rather than omitting the element.
 3. Subagents start with a fresh context window. Include the relevant file paths, spec excerpts, and prior decisions directly in the delegation prompt — they cannot see this conversation.
-4. Instruct the engineer to follow its TDD Red-Green-Refactor loop, respecting its 3-cycle stopping condition.
+4. Instruct the engineer to follow its TDD Red-Green-Refactor loop, respecting its stopping condition (3 cycles under `hardened`, 2 under `fast-iteration` — per the declared `code_profile`).
 
 ### Step 2.5: Independent Review (Blocking Gate)
+
+**Skip this step entirely if this task's approved `code_profile` is `fast-iteration` (ADR-007)** — no `code-reviewer` invocation, no `review_report.md`, no Blocking gate. Proceed straight to Step 3, and say so explicitly in that step's report to the user. Otherwise (`hardened`, or no profile declared), continue below.
+
+**Exception (ADR-010):** if `full-stack-engineer`'s final report discloses a test correction — an edit to a test's own expectation after it was already confirmed RED, as distinct from relaxing an assertion to fit the implementation (never permitted, see `full-stack-engineer.md`'s Test Correction Discipline) — this step is **not skippable for this task**, regardless of the declared `code_profile`. `fast-iteration` still skips review by default; this is the one disclosed signal that re-enables it for that diff only.
 
 You do **not** review your own delegated work. You wrote the spec; grading your own plan invites confirmation bias.
 
@@ -50,10 +61,10 @@ You do **not** review your own delegated work. You wrote the spec; grading your 
 
 ### Step 3: Log & Deliver
 
-1. Run `/log-run` to append this task to `.agents/metrics/RUN_LOG.md` before closing out. Use `/cost` output for real cost data instead of estimates where available.
+1. Run `/log-run` to append this task to `.agents/metrics/RUN_LOG.md` before closing out, including the `code_profile`/`docs_profile` used (ADR-007). Use `/cost` output for real cost data instead of estimates where available.
 2. Delete `.agents/current_scope.json` — the contract is closed.
 3. If the task's changes are ready to ship, follow the Branching & Merge Strategy below instead of committing to main directly.
-4. Present the final result to the user along with the reviewer's verdict summary.
+4. Present the final result to the user along with the reviewer's verdict summary — or, if Step 2.5 was skipped under `fast-iteration`, say so explicitly ("delivered — no independent review, fast-iteration profile active") rather than letting its absence go unmentioned.
 
 ## Scope Contract
 
@@ -79,18 +90,8 @@ A PreToolUse hook rejects any Edit/Write outside `in_scope` while this file exis
 
 ## Branching & Merge Strategy
 
-- `main` is always deployable. No direct commits or pushes to `main` —
-  GitHub branch protection enforces this, including for repository admins.
-- Before implementation begins, create a branch named
-  `feature/<task-number>-<short-description>` off the latest `main`
-  (e.g. `feature/036-branching-strategy`), zero-padded to match
-  `RUN_LOG.md`'s task sequence.
-- All commits for the task land on that branch. The user performs every
-  `git commit`/`git push` — subagents never invoke git commit or push.
-- Once the task closes (Step 3 above), open a pull request from the
-  feature branch into `main`. The `CI` workflow must pass before
-  merging — it runs `test:unit`+`test:integration` only; `test:e2e`
-  stays a manual pre-merge check (see ADR-007).
-- Merge via "Squash and merge", then delete the branch.
-- Release tags (`vX.Y.Z`) are still cut from `main` only, unchanged from
-  today.
+@.claude/project/branching.md
+
+Note (blueprint ADR-011): this is a per-project extension point. A
+redeploy of the blueprint seeds this file only if it's missing here —
+since it already exists, it is never overwritten.

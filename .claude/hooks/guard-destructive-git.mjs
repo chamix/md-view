@@ -53,10 +53,38 @@
  * original draft. Not touched here — out of scope for this pass; the
  * reviewer's independent `git status` check remains the backstop.
  *
+ * v4 fix — nested-repo blindness (discovered via a deliberate spike on
+ * stackfold's md-presenter-style governance layout, SK-ADR-004 A+C: a
+ * project's own repo has `.agents/` excluded via `.git/info/exclude` and
+ * `.agents/` is itself a SEPARATE nested git repo for private governance
+ * backup). Every check below used to run with `cwd: projectDir` — the
+ * OUTER repo root — no matter what path or `cd` the command actually
+ * targeted. Since the outer repo has no knowledge of an excluded nested
+ * repo's tracked content, `git diff`/`git status` against it always came
+ * back "clean", so `git checkout -- .agents/metrics/RUN_LOG.md` or `cd
+ * .agents && git reset --hard` were both silently ALLOWED and, verified
+ * by hand, actually destroyed uncommitted nested-repo content. Verified
+ * empirically: ran both, exit 0 both times, then confirmed the change
+ * was gone after actually executing `git reset --hard` in `.agents/`.
+ *
+ * Fix: track `cd <path>` clauses to know the command's effective cwd,
+ * resolve the verdict's target to an absolute path from THAT cwd (not
+ * projectDir), then walk up from the resolved path to find the NEAREST
+ * enclosing git repo (a directory containing `.git`) and run the dirty
+ * check there, with the target expressed relative to that repo root.
+ * This also handles the non-`cd` case (`git checkout -- .agents/…`
+ * with cwd still at projectDir) via the same walk-up, since it's driven
+ * by the resolved target path, not by cwd tracking alone. For tree-wide
+ * verdicts (`reset --hard`, `clean -f`), the effective target is the
+ * WHOLE enclosing repo (git semantics: these always operate on the
+ * entire working tree of the repo containing cwd, not just cwd's
+ * subtree), so the check target there is the nested repo's root itself.
+ *
  * Exit 2 = block; stderr is fed back to Claude as the reason.
  */
 import { execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync, statSync } from "node:fs";
+import { resolve, dirname, relative, join } from "node:path";
 
 let input;
 try {
@@ -85,6 +113,29 @@ const isForceFlag = (t) => t === "--force" || /^-[a-z]*f[a-z]*$/.test(t);
 const isHardFlag = (t) => t === "--hard";
 const isStagedFlag = (t) => t === "--staged" || t.startsWith("--staged=");
 const isWorktreeFlag = (t) => t === "--worktree" || t.startsWith("--worktree=");
+
+/**
+ * Walk up from `startAbsPath` (file or directory) to find the nearest
+ * enclosing git repo root — a directory containing a `.git` entry
+ * (directory for a normal repo, file for a worktree/submodule; either
+ * counts). Returns null if none is found before the filesystem root.
+ */
+function findRepoRoot(startAbsPath) {
+  let dir;
+  try {
+    dir = existsSync(startAbsPath) && statSync(startAbsPath).isDirectory()
+      ? startAbsPath
+      : dirname(startAbsPath);
+  } catch {
+    dir = dirname(startAbsPath);
+  }
+  while (true) {
+    if (existsSync(join(dir, ".git"))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return null; // hit filesystem root
+    dir = parent;
+  }
+}
 
 function findVerdictTarget(clause) {
   const tokens = tokenize(clause);
@@ -144,12 +195,14 @@ function findVerdictTarget(clause) {
   return null;
 }
 
-function hasUncommittedChanges(target, { includeUntracked = false } = {}) {
+function hasUncommittedChanges(target, { cwd, includeUntracked = false } = {}) {
   const t = JSON.stringify(target ?? ".");
   try {
     // Exit 0 = clean (no diff on TRACKED content). execSync throws on
     // git diff's exit 1 (dirty) — the throw IS the "dirty" signal here.
-    execSync(`git diff --quiet HEAD -- ${t}`, { cwd: projectDir, stdio: "pipe" });
+    // It also throws if `cwd` has no HEAD yet (brand-new repo); treating
+    // that as "dirty" is the conservative, fail-closed reading.
+    execSync(`git diff --quiet HEAD -- ${t}`, { cwd, stdio: "pipe" });
   } catch {
     return true;
   }
@@ -158,7 +211,7 @@ function hasUncommittedChanges(target, { includeUntracked = false } = {}) {
     // --porcelain also respects .gitignore, matching what `git clean -f`
     // itself would actually remove.
     const status = execSync(`git status --porcelain -- ${t}`, {
-      cwd: projectDir,
+      cwd,
       encoding: "utf8",
     });
     if (status.trim().length > 0) return true;
@@ -166,13 +219,51 @@ function hasUncommittedChanges(target, { includeUntracked = false } = {}) {
   return false;
 }
 
+let effectiveCwd = projectDir;
+
 for (const clause of CLAUSES) {
+  const tokens = tokenize(clause);
+
+  // Track `cd <path>` so later clauses in the same chain resolve targets
+  // against the right effective cwd, not always projectDir.
+  if (tokens[0] === "cd" && tokens.length >= 2 && !tokens[1].startsWith("-")) {
+    effectiveCwd = resolve(effectiveCwd, tokens[1]);
+    continue;
+  }
+
   const verdict = findVerdictTarget(clause);
   if (!verdict) continue;
-  if (hasUncommittedChanges(verdict.target, { includeUntracked: verdict.includeUntracked })) {
+
+  // Resolve the verdict's target to an absolute path using the command's
+  // EFFECTIVE cwd (post any preceding `cd`), not projectDir.
+  const targetAbs =
+    verdict.kind === "tree" ? effectiveCwd : resolve(effectiveCwd, verdict.target);
+
+  // Find the nearest enclosing repo — may be a nested repo (e.g.
+  // `.agents/`), may be projectDir itself. Fall back to projectDir if
+  // somehow nothing is found (shouldn't happen inside a real checkout).
+  const repoRoot = findRepoRoot(targetAbs) ?? projectDir;
+
+  // Tree-wide operations (`reset --hard`, `clean -f`) always act on the
+  // WHOLE working tree of the repo containing cwd — git semantics, not a
+  // subtree scoped to cwd — so the check target is the repo root itself.
+  const relTarget =
+    verdict.kind === "tree" ? "." : relative(repoRoot, targetAbs) || ".";
+
+  if (
+    hasUncommittedChanges(relTarget, {
+      cwd: repoRoot,
+      includeUntracked: verdict.includeUntracked,
+    })
+  ) {
+    const repoNote =
+      repoRoot !== projectDir
+        ? ` (nested repo at '${relative(projectDir, repoRoot) || "."}')`
+        : "";
     process.stderr.write(
       `BLOCKED: '${clause.trim()}' would discard uncommitted changes ` +
-        `${verdict.kind === "path" ? `on '${verdict.target}'` : "in the working tree"}. ` +
+        `${verdict.kind === "path" ? `on '${verdict.target}'` : "in the working tree"}` +
+        `${repoNote}. ` +
         `If this is your own fault-injection revert, use a narrower method ` +
         `that only undoes YOUR edit (git apply -R on a captured patch, or a ` +
         `direct string revert) — a whole-file/tree checkout can't ` +
