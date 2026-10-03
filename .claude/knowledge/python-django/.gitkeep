@@ -1,0 +1,5 @@
+# Placeholder
+
+This folder is intentionally empty per ADR-006: populate it
+(`bibliography.md`, `security.md`, etc.) only when a real Python/Django
+project needs it — no speculative scaffolding ahead of demonstrated need.
