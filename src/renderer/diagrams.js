@@ -242,6 +242,11 @@ function createDiagramDomView(containerEl, doc) {
         const code = wrapper.querySelector('code');
         // textContent decodes main's escaping exactly once (#157).
         const source = code ? code.textContent || '' : '';
+        // Task 49 D1 (#199): piggyback on this existing capture point so the
+        // exact source survives showSvg/showFailure replacing the wrapper's
+        // CHILDREN -- the wrapper's own attributes are untouched by either.
+        // No new export, no second map that could drift from this one.
+        wrapper.dataset.mdviewSource = source;
         return {
           source,
           showSvg(svg) {

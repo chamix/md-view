@@ -234,6 +234,73 @@ describe('Task 34: COPY_RAW_SOURCE channel / copyRawSource method', () => {
   });
 });
 
+describe('Task 49: POPUP_COPY_MENU / COPY_COMMAND channels, popupCopyMenu/onCopyCommand methods', () => {
+  // #202 amended (ADR-013 D2): neither new channel/method ever carries
+  // clipboard content (`text`/`html`) -- only a target descriptor
+  // ({ hasCopyTarget, documentOpen }) on the way out, and an action name
+  // ('copy' | 'copy-all') on the way back in.
+  it('exposes non-empty, distinct string channel names for POPUP_COPY_MENU and COPY_COMMAND', () => {
+    expect(typeof IPC_CHANNELS.POPUP_COPY_MENU).toBe('string');
+    expect(IPC_CHANNELS.POPUP_COPY_MENU.length).toBeGreaterThan(0);
+    expect(typeof IPC_CHANNELS.COPY_COMMAND).toBe('string');
+    expect(IPC_CHANNELS.COPY_COMMAND.length).toBeGreaterThan(0);
+
+    // Checked against Object.values (not a hand-maintained list), same
+    // posture as the DOCUMENT_CLOSED test above -- a future channel can
+    // never silently collide with either of these.
+    const others = Object.entries(IPC_CHANNELS)
+      .filter(([key]) => key !== 'POPUP_COPY_MENU' && key !== 'COPY_COMMAND')
+      .map(([, value]) => value);
+    expect(others).not.toContain(IPC_CHANNELS.POPUP_COPY_MENU);
+    expect(others).not.toContain(IPC_CHANNELS.COPY_COMMAND);
+    expect(IPC_CHANNELS.POPUP_COPY_MENU).not.toBe(IPC_CHANNELS.COPY_COMMAND);
+  });
+
+  // Honest limitation: same as above -- BridgeApi is a TypeScript interface,
+  // erased at compile time. What this proves is that a popupCopyMenu method
+  // taking a { hasCopyTarget, documentOpen } descriptor plus x/y is usable
+  // as claimed at runtime, fire-and-forget (no return value awaited);
+  // `tsc --strict` proves the interface shape itself.
+  it('BridgeApi is constructible with a popupCopyMenu method and it is callable with the target descriptor and coordinates', () => {
+    let received: { target: { hasCopyTarget: boolean; documentOpen: boolean }; x: number; y: number } | null = null;
+    const sample: BridgeApi = {
+      version: '0.0.0-test',
+      onFileRendered: () => {},
+      onViewSettings: () => {},
+      openDroppedFile: () => {},
+      popupCopyMenu: (target, x, y) => {
+        received = { target, x, y };
+      },
+    };
+
+    sample.popupCopyMenu({ hasCopyTarget: true, documentOpen: true }, 12, 34);
+    expect(received).toEqual({ target: { hasCopyTarget: true, documentOpen: true }, x: 12, y: 34 });
+  });
+
+  // Honest limitation: same as above. What this proves is that an
+  // onCopyCommand method whose callback receives exactly the action name is
+  // usable as claimed at runtime -- never `text`/`html` (#202 amended).
+  it('BridgeApi is constructible with an onCopyCommand method whose callback receives only the action name', () => {
+    const receivedActions: string[] = [];
+    const sample: BridgeApi = {
+      version: '0.0.0-test',
+      onFileRendered: () => {},
+      onViewSettings: () => {},
+      openDroppedFile: () => {},
+      onCopyCommand: (callback) => {
+        callback('copy');
+        callback('copy-all');
+      },
+    };
+
+    sample.onCopyCommand((action) => {
+      receivedActions.push(action);
+    });
+
+    expect(receivedActions).toEqual(['copy', 'copy-all']);
+  });
+});
+
 describe('Task 44: DOCUMENT_CLOSED channel / onDocumentClosed method', () => {
   it('exposes a non-empty string channel name for DOCUMENT_CLOSED, distinct from every other IPC_CHANNELS value', () => {
     expect(typeof IPC_CHANNELS.DOCUMENT_CLOSED).toBe('string');

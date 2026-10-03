@@ -97,6 +97,24 @@ if (typeof document !== 'undefined') {
     view: createDiagramDomView(container, document),
   });
 
+  // Task 49 (#196-#203, ADR-013 D2): the copy/Copy All/diagram-substitution
+  // controller (src/renderer/copy.js, loaded before this file, after
+  // diagrams.js). Ports mirror diagramController's above: doc/win are the
+  // only DOM/BOM globals reached into. documentOpen reuses Task 34's
+  // existing canCopyRawSource(lastMessage) predicate (declared further down
+  // this file, but this is a closure -- lastMessage is always initialized by
+  // the time any listener below actually calls documentOpen()) rather than a
+  // second "is a file open" check that could drift from #copy-raw-source's
+  // own disabled state.
+  const copyController = createCopyController({
+    doc: document,
+    win: window,
+    contentEl: container,
+    codeContentEl,
+    frontmatterEl,
+    documentOpen: () => canCopyRawSource(lastMessage),
+  });
+
   const markdownLightLink = document.getElementById('theme-markdown-light');
   const markdownDarkLink = document.getElementById('theme-markdown-dark');
   const hljsLightLink = document.getElementById('theme-hljs-light');
@@ -189,6 +207,42 @@ if (typeof document !== 'undefined') {
       }
     });
   }
+
+  // Task 49 D2: physical Ctrl+C / any real copy gesture. ONE
+  // document.addEventListener('copy', ...); the scope check (is
+  // event.target inside #content/#code-content) and the "no diagram in the
+  // selection -> do nothing, let Chromium's own default (already proven
+  // correct) write both formats" decision both live inside onCopyEvent.
+  document.addEventListener('copy', (event) => copyController.onCopyEvent(event));
+
+  // Task 49: document-area right-click context menu. Attached ONLY to
+  // #content/#code-content (#201's "only over the document area" falls out
+  // of where this listener lives, not a runtime check) -- a right-click on
+  // the title bar/tree/status bar never reaches this at all. Suppresses the
+  // default Electron/Chromium context menu (onContextMenu calls
+  // preventDefault()) and pops main's own Copy/Copy All menu instead, via
+  // the new popupCopyMenu bridge call -- never mutates window.getSelection().
+  if (container) {
+    container.addEventListener('contextmenu', (event) => {
+      const target = copyController.onContextMenu(event);
+      window.mdview.popupCopyMenu(target, event.clientX, event.clientY);
+    });
+  }
+  if (codeContentEl) {
+    codeContentEl.addEventListener('contextmenu', (event) => {
+      const target = copyController.onContextMenu(event);
+      window.mdview.popupCopyMenu(target, event.clientX, event.clientY);
+    });
+  }
+
+  // Task 49/D2: main's content-free 'copy'|'copy-all' push. The renderer
+  // already knows the copy target (the remembered contextmenu classification,
+  // or the whole visible pane for Copy All) and builds { text, html } itself
+  // via navigator.clipboard.write() -- main never sees text/html, never
+  // calls webContents.copy() or execCommand.
+  window.mdview.onCopyCommand((action) => {
+    void copyController.onCopyCommand(action);
+  });
 
   const renderHtml = (html, baseUrl) => {
     applyRenderedContent(

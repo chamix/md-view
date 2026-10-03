@@ -51,6 +51,12 @@ const api: BridgeApi = {
     // Zero payload: the IPC event object is deliberately not forwarded.
     ipcRenderer.on(IPC_CHANNELS.DOCUMENT_CLOSED, () => callback());
   },
+  popupCopyMenu: (target, x, y) => {
+    ipcRenderer.send(IPC_CHANNELS.POPUP_COPY_MENU, target, x, y);
+  },
+  onCopyCommand: (callback) => {
+    ipcRenderer.on(IPC_CHANNELS.COPY_COMMAND, (_event, action: 'copy' | 'copy-all') => callback(action));
+  },
 };
 
 contextBridge.exposeInMainWorld('mdview', api);

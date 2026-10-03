@@ -8094,3 +8094,406 @@ Diff (targeted edits), not full rewrites.
 `functional_domain.md` Task 48 section, guardrails #189-#195.
 
 ---
+
+## Task 49: Copy text (selection, Copy All, context menu; diagrams copy their source) (Step 1)
+
+Closes `functional_domain.md` Task 49, guardrails #196-#203. Branch:
+`feature/049-copy-text` (off `main` @ `d3edd79`).
+
+### Evidence this plan rests on (measured, not assumed)
+
+Five throwaway Playwright probes ran against the built app (`npm run build`,
+then a temp `tests/e2e/_zzz-copy-probe*.spec.ts` deleted immediately after —
+no probe file is part of this diff or this branch). Each opened a real
+document, made a real DOM selection inside `#content`, and read the real OS
+clipboard (`electronApp.evaluate(({ clipboard }) => …)`), the same posture
+Task 34's #98 and this task's #196 require.
+
+| Probe | Result |
+|---|---|
+| `Ctrl+C` with a non-editable selection in `#content`, no app code involved (no accelerator on this channel, no `role: 'copy'` menu item — `menu.ts` has no Edit menu) | **Already copies today.** `clipboard.readText()` returns the selected plain text, and `clipboard.has('text/html')` is `true` immediately after. This is Chromium's own default handling of the `copy` edit command on a selection — it does not go through `Menu.setApplicationMenu()`'s accelerator table (which only carries File/View/Help) and it does not go through `ipcMain`/`main`'s `clipboard` module at all. |
+| A `document.addEventListener('copy', e => { e.preventDefault(); e.clipboardData.setData(...) })` registered in the renderer, then `Ctrl+C` | The listener fires and **its** payload lands on the OS clipboard instead of the default one. App JS can fully override what a real `Ctrl+C` writes, still with zero IPC. |
+| `BrowserWindow.webContents.copy()` (called from `main`, the same primitive behind `role: 'copy'`) against the same live selection, same listener installed | Same result: the listener fires, its payload wins. A menu-triggered Copy is indistinguishable from `Ctrl+C` from the renderer's point of view. |
+| `document.execCommand('copy')` called from renderer JS itself (no live keyboard event) against a Range selected programmatically, same listener installed | Same result: `execCommand` returns `true`, the listener fires, its payload wins. |
+| `navigator.clipboard.write([new ClipboardItem({'text/plain': …, 'text/html': …})])` (the async Web Clipboard API — distinct from both `execCommand` and Electron's `clipboard` module) called from renderer JS with **no** prior selection and **no** `copy` event in play | Works with no permission prompt (this app sets no `session.setPermissionRequestHandler`), writes both formats to the real OS clipboard, and `window.getSelection().toString()` is `""` both before and after — nothing about the visible selection changes. |
+
+Consequence: the `copy` `ClipboardEvent` — however it is triggered — is a
+renderer-side interception point that writes to the real OS clipboard without
+crossing into `main`, and separately, `navigator.clipboard.write()` is a
+*second*, independent renderer-side write path that needs no selection and
+no event at all. Together these are the single most load-bearing facts in
+this plan (see ADR-013, D2 resolved below); the engineer's first TDD cycle
+should re-pin both with real (non-throwaway) e2e tests before anything else
+is built on top of them.
+
+### Where #164's diagram source lives today, and how #199 reuses it
+
+Today (`src/renderer/diagrams.js`): `createDiagramDomView.collectSlots()`
+reads `code.textContent` out of each `.md-view-diagram` wrapper's `<code>`
+child **once**, at `documentRendered()` time (line ~244), and returns it
+inside a `{ source, showSvg, showFailure }` slot object. `createDiagramController`
+closes over the resulting `slots` array. `darkModeChanged()` (#164) does
+**not** re-collect from the DOM — it reuses that same closed-over `slots`
+array, because by the time a theme change happens, `showSvg` has already
+replaced the wrapper's children with SVG, so the `<code>` element (and the
+DOM's only copy of the source) may already be gone.
+
+That closure is invisible outside `diagrams.js`/the controller — a right-click
+handler or a selection-serializer living in `renderer.js`/a new `copy.js`
+has no way to reach it, and adding a second, independently-maintained map
+from wrapper → source (e.g. a `WeakMap` built by the copy feature by
+re-reading `code.textContent` on its own) is exactly the "second copy that
+can drift" #199 forbids: it would only be correct before the first render,
+and silently wrong (empty, or stale) after.
+
+**Recommendation:** extend the *existing* capture, don't add a parallel one.
+In `collectSlots()`, at the exact line that already reads `source` from
+`code.textContent`, also write `wrapper.dataset.mdviewSource = source`. This
+piggybacks on #164's own capture point, costs nothing extra, and gives every
+consumer (the copy feature, and anything else that shows up later) a single
+DOM-anchored source of truth that:
+- exists before the render pass starts (so a right-click on a still-rendering
+  diagram already has it — closes part of #198),
+- survives `showSvg` (only children are replaced, never the wrapper's own
+  attributes) and `showFailure` (same),
+- needs no new export from `diagrams.js` and no change to `#164`'s own
+  reuse-the-closure behavior, which stays exactly as it is.
+
+`darkModeChanged()` itself is untouched — this is additive, not a
+replacement of its existing mechanism.
+
+### Ctrl+C today, and Ctrl/Cmd+A
+
+Verified above: plain `Ctrl+C` on a `#content`/`#code-content` selection
+already round-trips through the real OS clipboard today, natively, with both
+`text/plain` and `text/html` populated, and with zero lines of app code.
+Nothing about this app's frameless-window/custom-title-bar setup
+(`frame: false`, no visible native menu bar, `Menu.setApplicationMenu()`
+carrying only File/View/Help) disables Chromium's own default `copy` command
+handling for a non-editable selection — that handling lives below the
+Electron accelerator table, in Blink's own edit-command resolution, and it
+doesn't care whether an `Edit` menu exists.
+
+`Ctrl/Cmd+A` was not probed (#200 says it's not required by Step 0) — flagged
+here only as a fact worth one line in Step 2's task: it almost certainly
+already does *something* today (native "select all" inside whichever pane has
+focus), and that existing behavior must not regress, but building it out as
+the keyboard form of Copy All stays explicitly out of scope for this task.
+
+### Decisions
+
+**D1. Diagram source storage: `wrapper.dataset.mdviewSource`. Approved as
+drafted.** Covered above. Alternative rejected: a `WeakMap<wrapper, source>`
+populated by the copy feature itself — rejected as the second, driftable
+copy #199 warns against.
+
+**D2. Native interception vs. a bridge-mediated write. Resolved: Option A,
+refined at Step 1 review. See ADR-013 (Proposed) for the full record.**
+
+Approved shape (supersedes the two sub-options originally drafted here):
+
+- **Physical `Ctrl+C` / any real `copy` gesture, scoped to `#content` and
+  `#code-content` only** (review condition: everywhere else — title bar,
+  tree panel, status bar — keeps the unmodified browser default; this is
+  now an explicit scope check in the handler, not just a consequence of
+  where diagrams happen to live). One
+  `document.addEventListener('copy', handler)`. No diagram in the
+  selection: `handler` returns without calling `preventDefault()`, and
+  Chromium's own default — already proven correct above — writes both
+  formats, for free. A diagram is in the selection: `handler` calls
+  `preventDefault()` and builds `{ text, html }` itself (D3), then
+  `event.clipboardData.setData('text/plain', text)` /
+  `.setData('text/html', html)`.
+- **Menu-triggered Copy and Copy All: `navigator.clipboard.write()`, not
+  `execCommand`/`webContents.copy()`.** `main` sends a content-free,
+  fire-and-forget IPC naming only the action (`'copy'` or `'copy-all'`). The
+  renderer already knows the target — the live selection (Copy) or the
+  whole visible pane (Copy All, D4) — builds `{ text, html }` with the same
+  D3 function, and writes it directly via
+  `navigator.clipboard.write([new ClipboardItem({ 'text/plain': new
+  Blob([text]), 'text/html': new Blob([html]) })])`. No selection is moved
+  to make this work (review condition 2), and no deprecated API is called.
+  A right-click directly on a diagram (no pre-existing text selection) no
+  longer needs `window.getSelection().selectAllChildren(wrapper)` either —
+  the `contextmenu` handler just remembers the classified target for the
+  menu-click IPC to consume (see the context-menu section below, revised).
+- **`execCommand('copy')` is not used anywhere in the approved design.** It
+  was proven to work (evidence table above) but is rejected per review
+  condition 2 now that a Copy-All path exists that needs neither
+  `execCommand` nor a moved selection. ADR-013 keeps it on record as the
+  documented fallback if `navigator.clipboard.write()` ever regresses (a
+  pinned-Electron risk the ADR carries explicitly, caught by e2e tests
+  reading the real clipboard, not silently).
+- **`webContents.copy()` is not used for menu-triggered actions.** It stays
+  correct in principle (evidence table above) but is unnecessary once
+  Copy/Copy All don't need a native command dispatch at all; using it only
+  for Copy while Copy All uses `navigator.clipboard.write()` would be two
+  mechanisms doing the same job for no reason.
+- **Result for #202** (amended in `functional_domain.md` at this review):
+  no new bridge method carries `text` or `html`, ever. The bridge grows by
+  one renderer→main descriptor (`popupCopyMenu`) and one main→renderer
+  action-name push — both covered in the bridge section below.
+  `copyRawSource` (#101) is unaffected and unchanged: it exists because a
+  plain button click has no `copy` gesture to intercept and no way to reach
+  `navigator.clipboard` from... actually it *could* reach
+  `navigator.clipboard` too, but that's a separate, out-of-scope
+  refactor of already-shipped, already-tested code — #203 keeps it as-is.
+- **New invariant (review condition 3): the copied `html` never contains an
+  internal attribute.** D3's diagram substitution builds a *fresh*
+  `<pre><code>` element holding only the escaped source text — never the
+  original `.md-view-diagram` wrapper's `outerHTML` with children swapped,
+  which would leak `data-mdview-source` (and `class="md-view-diagram"`,
+  `data-diagram="mermaid"`) into whatever the user pastes elsewhere.
+- **New fault injection (review condition 3):** remove the `copy` event
+  handler entirely (not just its `preventDefault()` call) — the
+  `Ctrl+C`-over-a-diagram e2e case must go red, and specifically the
+  clipboard must contain the diagram's rendered SVG label text instead of
+  its source (a stronger, more direct assertion than F1 below, which only
+  removes `preventDefault()`; both faults are kept, they catch different
+  regressions).
+
+**D3. Diagram-substitution serialization. Approved as drafted.** Cloning `Range.cloneContents()`,
+replacing each `.md-view-diagram` node in the clone with
+`<pre><code>{escaped wrapper.dataset.mdviewSource}</code></pre>`, mounting
+the mutated clone in an off-screen-but-laid-out container
+(`position: fixed; left: -99999px`, not `display: none` — `innerText` needs
+layout), then reading `container.innerHTML` for `html` and
+`container.innerText` for `text` (not `.textContent`, which collapses block
+boundaries and would run headings/paragraphs together — `innerText`
+approximates rendered line breaks the same way a real "select and copy" in a
+browser does). This needs the engineer's first TDD cycle to pin exact
+whitespace/blank-line behavior against real fixtures (multi-paragraph text
+around a diagram, a diagram as the very first/last node, two adjacent
+diagrams) before it's trusted — flagged as an estimate, not a proof, unlike
+the four probes above.
+
+**D4. Copy All target element. Approved as drafted.** Preview: a synthetic Range spanning
+`#frontmatter` (only when `!frontmatter.hidden`) followed by `#content` —
+this falls out of the existing DOM structure for free (`#frontmatter` is a
+real `hidden`-attribute sibling inside `#document-main`, excluded from
+selection/copy whenever it's hidden, with no new visibility logic needed) and
+satisfies #197 exactly. Code: `codeContentEl.textContent` directly,
+byte-identical to `copyRawSource`'s existing payload — no Range, no `copy`
+event, just the same string the existing button already sends over
+`copyRawSource` (#98-#101), consistent with #197's "byte-identical" wording.
+Note: `#frontmatter`'s visibility is independent of which tab is active
+(existing, unrelated behavior — it can show above the Code tab too when
+toggled on); #197 does not ask Code-tab Copy All to account for that, so it
+doesn't.
+
+### Context menu: how it's built, and how `main` learns the copy target
+
+Same posture as #67/`buildMenuTemplate`: one small template function,
+e.g. `buildCopyMenuTemplate(handlers, target)` in `menu.ts` (or a sibling
+file if that keeps `menu.ts` focused — engineer's call), returning
+`[{ id: 'menu-copy', label: 'Copy', enabled, click }, { id: 'menu-copy-all',
+label: 'Copy All', enabled, click }]`, popped via
+`Menu.buildFromTemplate(...).popup({ window, x, y })` — the exact pattern
+`POPUP_MENU`'s handler (`index.ts:669-677`) already uses for the File/View/Help
+sections.
+
+`main` learns the target from a new `'contextmenu'` listener added in the
+renderer (there is none today over the document area — the existing
+`popupMenu` calls are click handlers on the three title-bar labels, not a
+right-click handler), attached only to `#content` and `#code-content` (so a
+right-click outside the document area never fires it at all — #201's "only
+over the document area" falls out of where the listener is attached, not a
+runtime check). On `contextmenu`, the renderer classifies `event.target`
+(inside a `.md-view-diagram` wrapper → `'diagram'`; inside `#content`/
+`#code-content` with `!window.getSelection().isCollapsed` → `'selection'`;
+otherwise `'none'`) and **remembers that classification** (which wrapper, or
+"use the live selection") for the menu-click IPC below to consume — it does
+**not** mutate `window.getSelection()` (D2's revised design: neither Copy
+nor Copy All needs a live selection to work). `main` never needs to know
+*which* diagram; it only needs enough to gate `enabled` (#201): a 2-field
+descriptor, `{ hasCopyTarget: boolean, documentOpen: boolean }`, sent as the
+payload of a new `mdview.popupCopyMenu(target, x, y)` bridge call (own
+method, not a fourth value shoehorned into the existing
+`popupMenu('file'|'view'|'help', …)` signature, since the shapes genuinely
+differ).
+
+`menu-copy`'s and `menu-copy-all`'s `click` handlers in `main` do the exact
+same thing: send a content-free, fire-and-forget IPC naming the action
+(`mdview.onCopyCommand(callback)` on the renderer side, payload
+`'copy' | 'copy-all'`). `main` never calls `webContents.copy()` and never
+constructs or inspects `text`/`html`. The renderer's handler for that IPC
+reads back its remembered `contextmenu` classification (for `'copy'`) or
+runs D4's Range-over-the-whole-pane logic (for `'copy-all'`), builds the
+payload with the same D3 function the `copy`-event path uses, and writes it
+with `navigator.clipboard.write()`.
+
+### The bridge change (#202, amended)
+
+Resolved (D2/ADR-013): the bridge grows by exactly two members, and neither
+carries clipboard content:
+
+```ts
+// renderer -> main, fire-and-forget (mirrors popupMenu's existing shape)
+popupCopyMenu(target: { hasCopyTarget: boolean; documentOpen: boolean }, x: number, y: number): void;
+
+// main -> renderer push, fire-and-forget (mirrors onDocumentClosed's zero/near-zero payload style)
+onCopyCommand(callback: (action: 'copy' | 'copy-all') => void): void;
+```
+
+No `copyPayload`/`{text, html}` method exists in the approved design — there
+is nothing for `main` to validate or size-cap, because nothing crosses into
+`main`. (Kept on record in ADR-013 as the fallback if the
+`navigator.clipboard.write()` risk it names ever materializes: a
+`copyPayload(text: string, html: string): Promise<boolean>` mirroring
+`copyRawSource`'s exact shape, with `main` validating both are strings and
+size-capping before `clipboard.write({ text, html })` — not built now.)
+
+Unchanged: `contextIsolation`, `sandbox`, `nodeIntegration: false`,
+`html: false`, both CSPs, and `copyRawSource` itself.
+
+### Test plan
+
+- **Unit** (`tests/unit/copy.test.ts`, new — pure functions only, no DOM):
+  the diagram-substitution predicate, the escaping used inside the
+  substituted `<pre><code>`, and (mirroring `diagrams.test.ts`'s style) any
+  pure target-classification logic factored out of the `contextmenu`
+  handler.
+- **Integration** (`tests/integration/preload-api-contract.test.ts`,
+  extended): the new bridge method(s) exist, are the right shape, and (Task
+  34's honest-limitation posture) prove runtime callability, not the
+  `BridgeApi` type itself.
+- **e2e, real OS clipboard only** (`tests/e2e/copy-text.spec.ts`, new; same
+  `electronApp.evaluate(({ clipboard }) => …)` posture as #98, reading both
+  `clipboard.readText()` and `clipboard.read('text/html')` — note
+  `clipboard.readHTML()` does not exist on this Electron's `clipboard`
+  object, confirmed by probe; the own-property list is `clear, has, readText,
+  writeText, read, write`):
+  - #196: select plain text, `Ctrl+C`, both formats correct.
+  - #197: Copy All in Preview with frontmatter shown/hidden; Copy All in
+    Code, byte-identical to `copyRawSource`'s existing assertion. Also
+    asserts `window.getSelection().toString()` is unchanged before/after
+    Copy All (review condition 2: no visible-selection side effect).
+  - #198: right-click a rendering/failed/succeeded diagram; a selection
+    spanning text+diagram+text; Copy All over a document with two diagrams —
+    `text` contains the fence body verbatim and contains no `<svg`/`<path`.
+    Also asserts the copied `html` contains no `data-mdview-source`,
+    `data-diagram` or `class="md-view-diagram"` (review condition 3: no
+    internal attribute leaks into what the user pastes).
+  - #199: same diagram, before first render (mid-pass), after render, after
+    a Dark Mode toggle, after a forced failure — right-click copy returns the
+    identical source every time.
+  - #200: `Ctrl+C` parity with menu Copy on the same selection, same payload.
+  - #201: no file open → both disabled; error shown → both disabled; no
+    selection, no diagram under cursor → Copy disabled, Copy All still
+    enabled; right-click on title bar/tree/status bar → no document menu
+    appears (the `contextmenu` listener is scoped to `#content`/
+    `#code-content`, review condition 3 — assert directly, not just via
+    absence of a menu).
+  - #202 (amended): `contextIsolation`/`sandbox`/CSP assertions unchanged
+    (reuse `csp.spec.ts`'s existing canaries, don't duplicate them); assert
+    the `popupCopyMenu` payload and the `onCopyCommand` callback argument
+    never contain `text`/`html` fields (assert the method/callback
+    signatures via the integration test above, not a runtime grep).
+  - #203: `copyRawSource`'s existing three e2e assertions (`ui-shell.spec.ts`,
+    `mermaid.spec.ts:802`) stay green unmodified.
+
+### Fault injection
+
+| # | Injected fault | Must go red |
+|---|---|---|
+| F1 | Remove the `preventDefault()` call for the diagram-containing branch, but leave the handler registered | #198's spanning-selection and right-click-diagram e2e cases (native copy fires *after* the handler's `setData`, and Chromium's default overwrites it with the SVG's rendered text) |
+| F2 | Drop the `wrapper.dataset.mdviewSource` write from `collectSlots()` (revert D1) | #199's after-first-render and after-Dark-Mode-toggle cases |
+| F3 | Use `.textContent` instead of `.innerText` when building the Copy-All/diagram-spanning `text` | a fixture with two adjacent paragraphs around a diagram — text runs together with no line break |
+| F4 | Skip the `#frontmatter` `.hidden` check in Copy All (always include it) | #197's "without the frontmatter block when it is hidden" case |
+| F5 | `menu-copy`'s `enabled` ignores the target descriptor (always `true`) | #201's "no selection, no diagram" disabled case |
+| F6 (review condition 3) | Remove the `document.addEventListener('copy', handler)` registration entirely (not just `preventDefault()`) | The `Ctrl+C`-over-a-diagram e2e case: the clipboard must contain the diagram's rendered SVG label text, not its source — a stronger, differently-shaped regression than F1's |
+| F7 | Serialize the diagram substitution from the original wrapper's `outerHTML` (children swapped) instead of a fresh `<pre><code>` element | #198's new "no internal attribute" assertion — `data-mdview-source`/`data-diagram`/`class="md-view-diagram"` appear in the copied `html` |
+
+### Blast-radius checklist (run — not just proposed)
+
+Per-memory process note: a menu-template change must be grepped across the
+whole test tree before `in_scope` is finalized, not assumed from the file
+list above. Now that D2 is resolved and the new names are final, this ran
+for real against `tests/` and `src/`:
+
+```
+grep -rl "menu-copy\|popupCopyMenu\|onCopyCommand\|POPUP_COPY_MENU\|COPY_COMMAND\|md-view:popup-copy-menu\|md-view:copy-command" tests/ src/
+```
+
+**Zero hits** — expected, since every one of these names is brand new and
+nothing existing references them yet. The equivalent grep for the *existing*
+`menu-*`/`popupMenu`/`POPUP_MENU` tokens hits 19 files (`tests/unit/menu.test.ts`,
+`tests/integration/preload-api-contract.test.ts`, and 17 `tests/e2e/*.spec.ts`
+files), confirmed unaffected: Task 49 adds a new template function
+(`buildCopyMenuTemplate`) and new IPC channels rather than editing
+`buildMenuTemplate`/`POPUP_MENU`, so none of those 19 need a code change —
+only `preload-api-contract.test.ts` joins `in_scope`, and it does so for its
+own reason (the `BridgeApi` interface grows), not because of this grep.
+
+### Finalized in-scope files (for `current_scope.json`)
+
+- `src/renderer/diagrams.js` (D1: the one-line `dataset` addition to
+  `collectSlots()`)
+- `src/renderer/renderer.js` (wiring: `contextmenu` listener scoped to
+  `#content`/`#code-content`, `copy` event listener installation)
+- `src/renderer/copy.js` (new — pure serialization/classification functions +
+  the DOM adapter, same split as `diagrams.js`'s policy/use-case/adapter
+  layering)
+- `src/renderer/index.html` (new script tag for `copy.js`, loaded after
+  `diagrams.js` and before `renderer.js`, same ordering rule as #4/Task 45)
+- `src/main/menu.ts` (new `buildCopyMenuTemplate`)
+- `src/main/index.ts` (new `POPUP_COPY_MENU` / `COPY_COMMAND` IPC handlers,
+  mirroring `POPUP_MENU`'s existing one)
+- `src/preload/api.ts`, `src/preload/index.ts` (bridge growth: `popupCopyMenu`,
+  `onCopyCommand` — both content-free, per amended #202)
+- `src/main/help/help.md` (#203's "Copying text" section)
+- `tests/unit/copy.test.ts` (new)
+- `tests/integration/preload-api-contract.test.ts`
+- `tests/e2e/copy-text.spec.ts` (new)
+- `.agents/specs/functional_domain.md` (already amended this review: #202)
+- `.agents/specs/decisions/ADR-013_md-view.md` (already drafted this review,
+  Proposed; stays Proposed until Step 3 close-out, same as ADR-010/012's
+  precedent — not in the engineer's scope to flip)
+
+The blast-radius grep above returned zero additional hits, so this list is
+final, not provisional.
+
+Explicitly NOT touched: `copyRawSource`'s existing implementation
+(`index.ts:625-629`, `renderer.js:174-185`), `menu.ts`'s existing
+`buildMenuTemplate` (a new, separate template function, not an edit to the
+File/View/Help one — #67's "many entry points" reading), both CSPs,
+`windowConfig.ts`, `diagrams.js`'s existing render/theme logic beyond the
+one-line D1 addition, all 19 files the existing-token blast-radius grep
+returned, `tests/e2e/mermaid.spec.ts`'s existing assertions.
+
+### Expected output format
+
+New files: full content. Existing files: diff (targeted edits).
+
+### Spec section this closes
+
+`functional_domain.md` Task 49, guardrails #196-#203.
+
+---
+
+### Task 49: User approval conditions (binding on implementation and review)
+
+The blueprint above was approved on 2026-09-28 subject to these conditions.
+Where a condition and the blueprint disagree, the condition wins.
+
+1. **D2 approved as Option A**, refined: menu-triggered Copy/Copy All use
+   `navigator.clipboard.write()`, not `execCommand`/`webContents.copy()`
+   (verified during this review to need neither a live selection nor a
+   deprecated API). `functional_domain.md` #202 amended in place (done, this
+   review) rather than left for the engineer to reinterpret.
+2. **ADR-013 drafted, Proposed** (done, this review) — records Option A vs.
+   Option B, the `execCommand` deprecation risk, and
+   `navigator.clipboard.write()` as the verified resolution. Stays Proposed
+   until Step 3 close-out.
+3. **Scope and leak conditions**, both folded into D2/D3 above and into new
+   fault injections F6/F7: the `copy` interception and the `contextmenu`
+   listener fire only inside `#content`/`#code-content`; the copied `html`
+   never contains `data-mdview-source`/`data-diagram`/
+   `class="md-view-diagram"` — every diagram becomes a clean `<pre><code>`;
+   removing the `copy` handler entirely must turn the
+   `Ctrl+C`-over-a-diagram e2e case red (copies SVG labels).
+4. **D1, D3, D4 approved as drafted**, no changes.
+5. In-scope finalized from the blast-radius grep (done, this review — zero
+   additional hits beyond the file list already proposed).
+
+---
