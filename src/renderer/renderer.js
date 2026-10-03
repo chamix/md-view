@@ -262,13 +262,36 @@ if (typeof document !== 'undefined') {
   // highlighting) together, atomically. No partial-toggle state is ever
   // reachable because both stylesheet pairs and the body class are set here,
   // in one call, never independently elsewhere.
+  // Task 51 (#226, ADR-014): the skin push and the view-settings push arrive
+  // independently over two channels, in either order. The last value of each
+  // is kept here and the skin is re-applied whenever EITHER changes, so the
+  // result is the same whichever arrives first. skin.js (loaded before this
+  // file) owns validation and DOM application; this is only the wiring.
+  let lastSkin = null;
+  let lastDark = false;
+  const reapplySkin = () => {
+    if (!lastSkin) return;
+    applySkin(
+      { body: document.body, hljsLightLink, hljsDarkLink, baseUri: initialBaseURI },
+      lastSkin,
+      lastDark
+    );
+  };
+
   const applyDarkMode = (isDark) => {
     if (markdownLightLink) markdownLightLink.disabled = isDark;
     if (markdownDarkLink) markdownDarkLink.disabled = !isDark;
     if (hljsLightLink) hljsLightLink.disabled = isDark;
     if (hljsDarkLink) hljsDarkLink.disabled = !isDark;
     document.body.classList.toggle('dark-mode', isDark);
+    lastDark = isDark;
+    reapplySkin();
   };
+
+  window.mdview.onSkin((skin) => {
+    lastSkin = skin;
+    reapplySkin();
+  });
 
   // onFileRendered and onViewSettings arrive independently over two separate
   // channels (functional_domain.md: view preferences are a session fact, not

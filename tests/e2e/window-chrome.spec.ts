@@ -252,6 +252,9 @@ test.describe('(d) title-bar menu labels popup the real, shared buildMenuTemplat
       'separator',
       'menu-view-preview',
       'menu-view-code',
+      // Task 51: forced expectation change (Skin submenu appended to View).
+      'separator',
+      'menu-skin',
     ]);
 
     await window.locator('#menu-label-help').click();
@@ -544,6 +547,9 @@ test.describe('(g) #title-bar stays fixed and remains functional while the page 
       'separator',
       'menu-view-preview',
       'menu-view-code',
+      // Task 51: forced expectation change (Skin submenu appended to View).
+      'separator',
+      'menu-skin',
     ]);
 
     await window.locator('#menu-label-help').click();

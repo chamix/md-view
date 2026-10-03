@@ -6,6 +6,7 @@ import type {
   DirectoryListResult,
   FolderTreeRootMessage,
   DocumentTab,
+  ResolvedSkin,
 } from '../../src/preload/api';
 
 describe('IPC_CHANNELS (preload/main contract)', () => {
@@ -338,5 +339,39 @@ describe('Task 44: DOCUMENT_CLOSED channel / onDocumentClosed method', () => {
     });
     expect(calls).toBe(1);
     expect(receivedArgs).toEqual([]);
+  });
+});
+
+describe('Task 51: SKIN channel / onSkin method / ResolvedSkin shape (#223)', () => {
+  it('exposes the exact channel name, distinct from every other IPC_CHANNELS value', () => {
+    expect(IPC_CHANNELS.SKIN).toBe('md-view:skin');
+    const others = Object.entries(IPC_CHANNELS)
+      .filter(([key]) => key !== 'SKIN')
+      .map(([, value]) => value);
+    expect(others).not.toContain(IPC_CHANNELS.SKIN);
+  });
+
+  // Honest limitation: interfaces are erased at runtime; `tsc --strict` proves
+  // the shape, this proves it is usable as claimed.
+  it('BridgeApi is constructible with an onSkin method whose callback receives a ResolvedSkin', () => {
+    const half = { '--color-accent': '#fff' };
+    const skin: ResolvedSkin = {
+      name: 'Default',
+      palette: { light: half, dark: half },
+      syntax: { light: 'github.css', dark: 'github-dark.css' },
+    };
+    const received: ResolvedSkin[] = [];
+    const sample: BridgeApi = {
+      version: '0.0.0-test',
+      onFileRendered: () => {},
+      onViewSettings: () => {},
+      openDroppedFile: () => {},
+      onSkin: (callback) => {
+        callback(skin);
+      },
+    };
+
+    sample.onSkin((s) => received.push(s));
+    expect(received).toEqual([skin]);
   });
 });

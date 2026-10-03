@@ -44,6 +44,15 @@ A copy button in the document header copies the file's raw source, frontmatter i
 
 View-menu toggles (Dark Mode, Show Frontmatter, Show File Tree) are saved to `settings.json` and restored automatically the next time md-view launches.
 
+## Skins
+- **View → Skin** picks the color scheme of the app chrome: the title bar, tab strip, folder sidebar, status bar and the code-highlighting colors. md-view ships four: **Default**, **Claude**, **Obsidian** and **Tokyo Night**.
+- Every skin has a light and a dark half. **View → Dark Mode** decides which half is shown, so switching Dark Mode never changes your skin.
+- The rendered Markdown (the document card) and Mermaid diagrams keep their usual colors in every skin.
+- Your choice is saved to `skins.json` and restored the next time md-view launches.
+- **View → Skin → Edit Skins…** opens `skins.json` in your text editor, creating it if needed. Add your own skins under `customSkins`: each needs a name (1 to 40 characters) and both a `light` and a `dark` set of all 16 color entries, copied from the file's pattern. Colors may be `#rgb`, `#rrggbb`, `#rrggbbaa`, `rgb(r, g, b)`, `rgba(r, g, b, a)` or `transparent`. Custom skins use the Default code-highlighting colors.
+- Changes you save in the editor are picked up when you return to md-view.
+- If `skins.json` is missing, md-view uses Default. If it has a mistake, md-view ignores edits made while it is running, and at launch it starts on Default and saves your broken file as `skins.json.bak` before writing a fresh one. If `activeSkin` names a skin that doesn't exist, Default is shown.
+
 ## Settings file
 **File → Settings** opens `settings.json` (created automatically if it doesn't exist yet) in your OS's default text editor, so you can inspect or hand-edit it directly.
 

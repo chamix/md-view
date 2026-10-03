@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { bridgeApi, IPC_CHANNELS } from './api';
-import type { BridgeApi, FileRenderedMessage, ViewSettings, FolderTreeRootMessage } from './api';
+import type { BridgeApi, FileRenderedMessage, ViewSettings, FolderTreeRootMessage, ResolvedSkin } from './api';
 
 const api: BridgeApi = {
   version: bridgeApi.version,
@@ -56,6 +56,9 @@ const api: BridgeApi = {
   },
   onCopyCommand: (callback) => {
     ipcRenderer.on(IPC_CHANNELS.COPY_COMMAND, (_event, action: 'copy' | 'copy-all') => callback(action));
+  },
+  onSkin: (callback) => {
+    ipcRenderer.on(IPC_CHANNELS.SKIN, (_event, skin: ResolvedSkin) => callback(skin));
   },
 };
 
