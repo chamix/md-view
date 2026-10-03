@@ -1,0 +1,5 @@
+﻿# Normalize all text files to LF, regardless of OS checkout.
+* text=auto eol=lf
+
+# Binary assets — no line-ending conversion, no text diffs.
+*.png binary
