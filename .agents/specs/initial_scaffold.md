@@ -8562,3 +8562,113 @@ Final names may shift slightly during implementation, but the one-definition-per
 `src/renderer/app.css`, `tests/unit/css-color-tokens.test.ts`. The golden-master script lives in the scratchpad, outside the repo.
 
 Branch: `feature/050-css-color-variables` off `main`. Task number 50 confirmed against RUN_LOG (last logged is Task 49 plus its correction notes).
+
+---
+
+# Task 51: Skins system (Step 1)
+
+Maps `functional_domain.md` Task 51, guardrails #211-#227.
+
+## Inward Dependency Rule
+
+```
+ renderer/skin.js  --\                 main/index.ts  (composition root: state, IPC, focus)
+ preload/*          ---> preload/api.ts <---/   main/menu.ts (pure template builder)
+                          (types only)         main/skinsStore.ts  (file I/O)
+                                                     |
+                                           main/skins.ts  (pure core: schema, validator, resolve)
+                                                     |
+                                           main/skinPresets.ts (pure data)
+```
+
+Pure core (`skins.ts`, `skinPresets.ts`) imports no `electron`, no `node:fs`. `skinsStore.ts` is the I/O adapter, and `index.ts` wires them. `menu.ts` stays a pure function of its inputs. `renderer/skin.js` is a classic script like `copy.js`/`diagrams.js`: pure policy at the top, DOM application below, composed in `renderer.js`.
+
+## Pattern Application
+
+- **Strategy.** Each preset is an interchangeable `SkinDefinition` (colors + syntax pair) behind one resolve function, so adding a skin means adding data only (OCP).
+- **Repository.** `skinsStore.ts` mirrors `settingsStore.ts` function for function: `loadSkinsAtStartup`, `rereadSkinsOnFocus`, `writeSkinsFile`, `ensureSkinsFileExists`.
+- **Adapter.** `toSkinPayload` is the narrow on-disk/in-memory -> wire adapter, the same role as `toPersistedViewSettings`.
+- **Observer-style push.** The existing `broadcastViewSettings` posture, plus `broadcastSkin`.
+- The composition root stays `index.ts` and `renderer.js`. No pattern is forced beyond these.
+
+## Architecture decision (given, recorded as ADR-014)
+
+Token values move from static CSS to data pushed from main and applied with `body.style.setProperty`. Details beyond the brief:
+
+- Properties are set on `document.body`, not `documentElement`, because `body.dark-mode` re-declares the tokens on `body` and would shadow anything set on `<html>`.
+- The renderer applies **only the active half** (chosen by Dark Mode) and re-applies on every Dark Mode or skin change. A custom skin can therefore never leave stale properties from the other half.
+- One uniform code path for every skin, Default included. There is no special case that clears properties. The Default preset's values are pinned to app.css by the drift test (#212), so the CSS fallback and the Default preset cannot diverge silently.
+
+## Shared contract (`src/preload/api.ts`)
+
+`IPC_CHANNELS.SKIN = 'md-view:skin'`; `interface ResolvedSkin { name: string; palette: { light: Record<string,string>; dark: Record<string,string> }; syntax: { light: string; dark: string } }`; `BridgeApi.onSkin(callback: (skin: ResolvedSkin) => void): void`. The token-name list lives in `skins.ts`, so the contract stays free of main-process imports.
+
+## Menu (`menu.ts`)
+
+`buildMenuTemplate(handlers, viewSettings, documentOpen, skinMenu)` gets a fourth REQUIRED parameter, `skinMenu: { names: string[]; activeName: string }`, so `tsc` flags any call site that forgets it (the same posture as `documentOpen`). View gains, after the Preview/Code radios and a separator, a `Skin` submenu: one radio per name (ids `menu-skin-0..n` by index, never derived from names), checked on `activeName`; then a separator; then `menu-skin-edit` ("Edit Skins…"). Handlers: `onSelectSkin(name)`, `onEditSkins()`. The existing unit test that pins "View's submenu has exactly 6 entries" must be updated deliberately (a disclosed expectation change, not a relaxed assertion). Menus are built from in-memory state at popup time, so the list is as fresh as the last focus re-read.
+
+## The split I recommend (one branch, one PR, two delegations)
+
+| Unit | Delivers | Review |
+|---|---|---|
+| **51a: core + persistence** | `skins.ts`, `skinPresets.ts`, `skinsStore.ts`, drift/validator/schema tests, store integration tests. It is inert (nothing imports it yet) and independently reviewable. This is where all the security-relevant logic lives. | Blocking `code-reviewer` pass on 51a alone |
+| **51b: wiring + UI** | `menu.ts`, `index.ts`, preload, `renderer/skin.js`, `renderer.js`, `index.html`, `package.json` build copies, Help section, ADR-014 finalize, unit/e2e tests | Blocking pass on the whole diff |
+
+Two reviewer passes cost more, but 51a is exactly the code where a defect becomes an injection or a data-loss bug, and a narrow review of it is cheap. The alternative is a single delegation with one review at the end.
+
+## Proposed palettes (design data; values tunable without any architecture change)
+
+Default is today's literals, verbatim. The three new presets below are proposals. Columns are Light / Dark. For all three, `--color-close-hover-bg` is `#e81123` / `#e81123`, `--color-close-hover-glyph` is `#ffffff` / `#ffffff`, and `--color-tab-hover-bg` equals `--color-bg-hover` (the intended behavior, #222).
+
+| Token | Claude | Obsidian | Tokyo Night |
+|---|---|---|---|
+| bg-page | `#faf9f5` / `#262624` | `#ffffff` / `#1e1e1e` | `#e6e7ed` / `#1a1b26` |
+| bg-chrome | `#f0eee6` / `#1f1e1d` | `#f5f6f8` / `#262626` | `#d5d6db` / `#16161e` |
+| border | `#ddd9ce` / `#3d3d3a` | `#e3e4e8` / `#363636` | `#b4b5b9` / `#292e42` |
+| text-primary | `#3d3929` / `#e8e6dc` | `#2e3338` / `#dadada` | `#343b58` / `#c0caf5` |
+| text-muted | `#6b6a60` / `#a09f96` | `#6a6f76` / `#999999` | `#565a6e` / `#787c99` |
+| text-disabled | `#a8a69c` / `#6b6a63` | `#a5a9ae` / `#5f5f5f` | `#9699a3` / `#4a5072` |
+| border-disabled | `#e6e3d9` / `#3d3d3a` | `#e9eaed` / `#363636` | `#c4c5cb` / `#292e42` |
+| text-error | `#b3261e` / `#f08c85` | `#c4313b` / `#fb464c` | `#8c4351` / `#f7768e` |
+| bg-hover | `rgba(61,57,41,0.08)` / `rgba(250,249,245,0.08)` | `rgba(46,51,56,0.07)` / `rgba(255,255,255,0.07)` | `rgba(52,59,88,0.08)` / `rgba(192,202,245,0.08)` |
+| accent | `#d97757` / `#d97757` | `#705dcf` / `#7f6df2` | `#34548a` / `#7aa2f7` |
+| bg-accent | `rgba(217,119,87,0.14)` / `rgba(217,119,87,0.18)` | `rgba(112,93,207,0.14)` / `rgba(127,109,242,0.2)` | `rgba(52,84,138,0.14)` / `rgba(122,162,247,0.16)` |
+| bg-accent-hover | `rgba(217,119,87,0.22)` / `rgba(217,119,87,0.28)` | `rgba(112,93,207,0.22)` / `rgba(127,109,242,0.3)` | `rgba(52,84,138,0.22)` / `rgba(122,162,247,0.26)` |
+| tab-active | `#d97757` / `#d97757` | `#705dcf` / `#7f6df2` | `#965027` / `#bb9af7` |
+
+Syntax pairs: Default `github`/`github-dark`; Claude `atom-one-light`/`atom-one-dark`; Obsidian `stackoverflow-light`/`obsidian` (the non-matched pair, the Lead's judgment call from the brief); Tokyo Night `tokyo-night-light`/`tokyo-night-dark`. Light-half `text-primary`/`text-muted` on `bg-chrome` are unit-checked for WCAG AA (>= 4.5:1) so a proposed value cannot ship illegible.
+
+## Verification plan (hardened)
+
+1. **Unit (`skins.test.ts`)**: the color validator, with positives and a negative table (injection attempts: `red; background:url(x)`, `var(--x)`, `url(…)`, `rgb(0 0 0)` without commas, trailing junk, 9-digit hex); strict-schema rejection (missing or extra token, extra top-level key, wrong types); name rules; `resolveSkin` fallbacks; `listSkinNames` order; payload choke point; all built-ins pass the validator; **drift test: Default preset == parsed app.css `:root`/`body.dark-mode`**; contrast check; each preset's syntax pair is inside the allowlist and exists in `node_modules/highlight.js/styles`.
+2. **Integration (`skinsStore.test.ts`)**: missing -> Default and no write; corrupt -> healed plus `.bak` holds the original bytes; focus re-read ignores corrupt and partial files; `ensureSkinsFileExists` never overwrites; atomic write.
+3. **e2e**: Skin submenu present with 4 radios (+ custom names) and Edit Skins…; selecting a skin changes computed chrome colors and the loaded hljs stylesheet; Dark Mode toggle swaps halves of the active skin; persistence across relaunch; unknown `activeSkin` -> Default; corrupt file self-heals at launch; focus re-read picks up an external edit; write-while-held is contained (mirrors `settings-locked.spec.ts`); selecting a skin while `skins.json` is corrupt does not overwrite it (#219). The existing `settings-menu`/`settings-locked`/`view-menu` specs pass unmodified.
+4. **Fault injection (reported with raw output)**: (i) let one invalid color through the validator -> the injection-table test goes RED; (ii) apply the wrong half on Dark Mode toggle -> e2e RED; (iii) drop the on-disk-parse check before persisting -> the #219 e2e goes RED; (iv) skip the `.bak` copy -> the integration test goes RED. Each one reverted with `git apply -R`, then green.
+5. Blast radius for menu changes (from the standing lesson): `tests/unit/menu.test.ts` (the 6-entry View assertion), and the popup/menu-ID users `window-chrome.spec.ts`, `ui-shell.spec.ts`, `close-document.spec.ts`, `copy-text.spec.ts`, `mermaid.spec.ts` must be re-run, and any that assert View's contents scoped explicitly.
+
+## Stack declaration and calibration
+
+- **Stack:** `.claude/knowledge/nodejs/bibliography.md`. **Security-relevant: yes**, so each delegation also declares `.claude/knowledge/nodejs/security.md` and `.claude/knowledge/security/general.md`.
+- **`code_profile`: `hardened`** (confirmed: persisted user-edited input, new IPC, injection surface). Three Red-Green-Refactor cycles maximum per delegation.
+- **`docs_profile`: `delivery`.** User-facing behavior gets a short "Skins" section in the Help file (the Task 49 precedent), plus ADR-014 (the token-push architecture, drafted Proposed at approval, finalized at 51b close). Release notes stay a release-time task. `blog-detailed` is not warranted.
+
+## Scope manifests (written per delegation after approval)
+
+- **51a:** `src/main/skins.ts`, `src/main/skinPresets.ts`, `src/main/skinsStore.ts`, `tests/unit/skins.test.ts`, `tests/integration/skinsStore.test.ts`.
+- **51b:** `src/main/menu.ts`, `src/main/index.ts`, `src/preload/api.ts`, `src/preload/index.ts`, `src/renderer/skin.js` (new), `src/renderer/renderer.js`, `src/renderer/index.html`, `package.json`, `src/main/help/help.md`, `tests/unit/menu.test.ts`, `tests/unit/skin.test.ts` (new, renderer module), `tests/unit/preload-api.test.ts`, `tests/integration/preload-api-contract.test.ts`, `tests/unit/renderer-order.test.ts`, `tests/e2e/skins-menu.spec.ts` (new), `tests/e2e/skins-persistence.spec.ts` (new), plus the scoped e2e hits from the blast-radius grep, if any need an expectation change.
+- `src/renderer/app.css` is **not** touched: its blocks keep their Task 50 role, and the drift test only reads it.
+
+Branch: `feature/051-skins-system` off `main` (HEAD `0ab0d20`, Task 50 merged). Task number 51 confirmed against RUN_LOG (last row is Task 50).
+
+---
+
+### Task 51: User approval conditions (binding on implementation and review)
+
+Approved 2026-10-03 ("All approved"). Where a condition and the blueprint disagree, the condition wins.
+
+1. **Split approved:** one branch (`feature/051-skins-system`), one PR, two delegations (51a core + persistence, 51b wiring + UI), a blocking `code-reviewer` pass after 51a and another over the whole diff after 51b.
+2. **D1 approved:** corrupt `skins.json` at startup is copied to `skins.json.bak` before the self-heal overwrite (#215).
+3. **D2 approved:** a radio selection while `skins.json` exists but does not parse applies in memory, warns, and never overwrites the file (#219).
+4. **D4 approved:** Default keeps the three preserved Task 50 quirks; the new presets use the intended behavior (#222). The backlog item stays open.
+5. **Palettes approved as proposed**, including the non-matched Obsidian syntax pair. The document card keeping GitHub colors in every skin is confirmed.
+6. **ADR-014 drafted, Proposed** (done); finalized at 51b close.

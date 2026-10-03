@@ -3945,3 +3945,55 @@ Phase 1 of 2 toward configurable skins (Task 51, out of scope here). Guardrails 
 - Everything in Task 51: skins, `skins.json`, menu UI, presets.
 - Fixing the two quirks in #206.
 - Any change to `src/main/**`, `src/renderer/*.js`, `index.html` or the third-party stylesheets.
+
+---
+
+# Task 51: Configurable skins (chrome tokens + syntax-highlight pair)
+
+Phase 2 of 2 on Task 50's token foundation. Guardrails continue the numbering above (#211 onward).
+
+## Abstract Schema Contracts
+
+- **ColorValue.** A string that passes the color validator. Grammar (anchored, closed): `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`; `rgb(r, g, b)` and `rgba(r, g, b, a)` with comma-separated numeric components (r/g/b 0-255, a 0-1); the keyword `transparent`. Nothing else: no `var(`, `url(`, `;`, `!important`, named colors, other functions.
+- **TokenName.** The closed set of the 16 chrome tokens Task 50 defined. No other token is skinnable.
+- **HalfPalette.** A total map TokenName -> ColorValue. Exactly 16 keys, none missing, none extra.
+- **SkinColors.** `{ light: HalfPalette, dark: HalfPalette }`.
+- **SyntaxPair.** `{ light: ThemeFile, dark: ThemeFile }`, where ThemeFile is a member of a closed allowlist of 8 bundled filenames: `github.css`, `github-dark.css`, `atom-one-light.css`, `atom-one-dark.css`, `stackoverflow-light.css`, `obsidian.css`, `tokyo-night-light.css`, `tokyo-night-dark.css`.
+- **Skin.** A name plus SkinColors. A built-in skin also has a SyntaxPair. A custom skin has none; it always uses the Default pair.
+- **SkinsFile (on disk).** `{ activeSkin: string, customSkins: { [name]: SkinColors } }`. Strict at every level.
+- **ResolvedSkin (what crosses to the renderer).** `{ name, palette: SkinColors, syntax: SyntaxPair }`. It carries no file paths and no raw file content.
+- **Independence from Dark Mode.** Dark Mode stays a `settings.json` fact. Skins carry both halves, and Dark Mode picks which half is applied.
+
+## Pure Transformation Logic
+
+1. `parseSkins(raw) -> SkinsFile | null`: JSON.parse plus a strict schema. Syntax errors and shape errors both collapse to `null`, like `parseSettings` (#104).
+2. `resolveSkin(file, activeName) -> ResolvedSkin`: a built-in name resolves to that preset. A custom name resolves to its colors with the Default syntax pair. Anything else resolves to Default.
+3. `listSkinNames(file) -> string[]`: the four built-ins in fixed order, then custom names in file order.
+4. `toSkinPayload(resolved) -> ResolvedSkin`: the one choke point where every color and filename is re-validated immediately before it leaves main. A failure falls back to the Default payload (this is defence in depth for built-ins).
+5. Renderer: `applySkin(doc, payload, isDark)` sets the 16 properties of the active half on `body.style` and points the two hljs `<link>`s at the pair's files.
+
+## Edge-Case Invariant Guardrails
+
+211. **Nothing unvalidated reaches the page.** Every ColorValue passes the validator before `style.setProperty`, for custom skins at parse time and for built-ins at the payload choke point and in unit tests. Every hljs filename comes from the closed allowlist in main, and the renderer re-checks it against `^[a-z0-9-]+\.css$` before building an href.
+212. **Default is today's look.** With the Default skin active, every computed chrome color and both highlight stylesheets equal what the app showed before Task 51, in both modes. The Default preset's 32 values equal app.css's `:root` and `body.dark-mode` literals, enforced by a drift test that parses app.css. This includes the three latent quirks Task 50 preserved (see #222).
+213. **Orthogonality.** `skins.json` never contains or changes Dark Mode, and `settings.json` never contains skin data. Toggling Dark Mode changes only which half is applied, with no round trip.
+214. **Missing file is not an error.** No `skins.json`: Default in memory, nothing written (mirrors #108).
+215. **Corrupt file at startup self-heals.** The file is overwritten with a valid default file, as `settings.json` does (#103). Before overwriting, the original bytes are copied to `skins.json.bak` (see decision D1), so a typo cannot silently destroy user-authored skins. A failed heal write or backup is contained: the app boots on Default.
+216. **Corrupt or partial file on focus is ignored entirely.** No write, no memory change, no broadcast (#103's protective path). A valid re-read that differs from memory replaces it and re-broadcasts. An identical one does nothing.
+217. **Unknown `activeSkin` falls back to Default** at resolve time. The file's string is left as the user wrote it, and the Default radio shows checked.
+218. **Name rules.** A custom skin name is 1-40 characters, already trimmed, has no control characters, and does not equal a built-in name case-insensitively. A violation fails the whole file. Names reach the menu only as `label` text, never as item ids or code.
+219. **Choosing a skin never clobbers a hand-edit in progress.** A radio selection updates memory and broadcasts at once. It then persists the full `{ activeSkin, customSkins }` only if the file currently on disk is missing or parses cleanly. If it exists but does not parse, main keeps the choice in memory, warns, and writes nothing.
+220. **Write failures are contained** exactly as in Task 47 (EPERM while an editor holds the file): the app stays alive, memory and renderer keep the choice, and a warning is logged.
+221. **Edit Skins… creates only if missing and never overwrites**, even a corrupt file (mirrors `ensureSettingsFileExists`), then calls `shell.openPath`. The path is `userData/skins.json` and never derives from renderer input.
+222. **Cascade quirks stay in Default only.** Default reproduces Task 50's three preserved quirks via its token values. The three new presets use the intended behavior (red/white close hover, a proper tab hover wash). The backlog item "[Pending, next task]" is untouched by this task (see decision D4).
+223. **Narrow bridge.** One new push channel (main -> renderer, payload `ResolvedSkin`) and one new `BridgeApi` method, `onSkin(callback)`. No raw IPC passthrough, no new renderer -> main surface. `contextIsolation`, `sandbox`, `nodeIntegration: false`, `html: false`, both CSPs and `shell.openExternal`-only external links are unchanged.
+224. **Markdown content and Mermaid are not skinned.** `.markdown-body` keeps `github-markdown-*` in every skin, and the static windows (Help, What's New, About) do not apply skins. Mermaid still follows Dark Mode only.
+225. **First paint is Default.** app.css's `:root`/`body.dark-mode` blocks stay as the pre-IPC fallback. A non-Default skin applies when the first push arrives, so a brief Default flash at startup is accepted.
+226. **Order independence.** The skin push and the view-settings push arrive independently. The renderer keeps the last of each and re-applies whenever either changes.
+227. **No new dependency, no vendored files.** The six new hljs themes come from the pinned `highlight.js@11.11.1`, copied at build time like github.css.
+
+### Explicitly out of scope
+
+- `.markdown-body` / hljs theme authoring, skinning of Mermaid, static windows.
+- A skin editor UI, import/export, per-skin syntax choice for custom skins, `prefers-color-scheme`.
+- Fixing Task 50's three preserved quirks in Default (decision D4).
