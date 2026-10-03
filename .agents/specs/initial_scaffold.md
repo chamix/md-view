@@ -8497,3 +8497,68 @@ Where a condition and the blueprint disagree, the condition wins.
    additional hits beyond the file list already proposed).
 
 ---
+
+---
+
+# Task 50: Chrome color tokens in `app.css` (Step 1)
+
+Maps `functional_domain.md` Task 50, guardrails #204-#210.
+
+## Inward Dependency Rule
+
+The "core" here is the token table, a single definition site. Rules (the periphery) depend on tokens through `var(--...)`. Nothing depends on a literal. A skin (Task 51) will later replace the token table without touching any binding rule.
+
+## Pattern Application
+
+- **Strategy via cascade.** The mode is the strategy and the token table is its parameter set. `body.dark-mode` re-declares the same token names with different values, and the base rules never branch on mode.
+- **Single source of truth (DRY).** Each color is declared once per mode instead of once per rule per mode.
+- OCP: adding a skin means adding a third token table. No binding rule changes.
+- No GoF class pattern fits a stylesheet, and none is forced.
+
+## Token table (proposed; values are today's literals, verified against a full read of the 692-line file)
+
+| Token | Light | Dark | Used by |
+|---|---|---|---|
+| `--color-bg-page` | `transparent` | `#0d1117` | `body` |
+| `--color-bg-chrome` | `#f6f8fa` | `#161b22` | title bar, tree panel, status bar, frontmatter, doc header, maximize glyph fill |
+| `--color-border` | `#d0d7de` | `#30363d` | title bar, status bar, frontmatter, doc container/header, header action, resize-handle line |
+| `--color-text-primary` | `#24292f` | `#c9d1d9` | menu labels, window glyphs, frontmatter, tabs, header action, tree rows |
+| `--color-text-muted` | `#57606a` | `#8b949e` | empty states, status bar, tree loading/empty/up |
+| `--color-text-disabled` | `#8c959f` | `#6e7681` | disabled header action |
+| `--color-border-disabled` | `#d8dee4` | `#30363d` | disabled header action |
+| `--color-text-error` | `#cf222e` | `#ff7b72` | tree error, diagram error |
+| `--color-bg-hover` | `rgba(208,215,222,0.32)` | `rgba(48,54,61,0.6)` | menu label, window control, tab, header action, tree row |
+| `--color-accent` | `#0969da` | `#58a6ff` | resize-handle hover, active-row border, drag-over outline |
+| `--color-bg-accent` | `rgba(9,105,218,0.15)` | `rgba(88,166,255,0.18)` | active tree row |
+| `--color-bg-accent-hover` | `rgba(9,105,218,0.22)` | `rgba(88,166,255,0.28)` | active tree row on hover |
+| `--color-tab-active` | `#fd8c73` | `#fd8c73` | active tab underline (same both modes) |
+| `--color-close-hover-bg` | `#e81123` | `rgba(48,54,61,0.6)` | close button hover (preserves quirk #206a) |
+| `--color-close-hover-glyph` | `#ffffff` | `#c9d1d9` | close glyph on hover (preserves quirk #206b) |
+
+Final names may shift slightly during implementation, but the one-definition-per-mode rule may not.
+
+## Structure
+
+- One token block under `:root` (light), next to the existing layout properties.
+- One token block under `body.dark-mode` (dark). `body.dark-mode` is the only mode-prefixed selector left, and the 25-odd `body.dark-mode <x>` blocks go away. `body { background: var(--color-bg-page) }` replaces the dark-only background rule.
+- Expected survivors: none. Each dark override today is a pure color swap on a rule that also has a light base, so each becomes a token swap.
+
+## Verification plan (hardened)
+
+1. **Golden master (not committed, in scratchpad).** Before touching the CSS, a throwaway Playwright script captures computed `color`, `background-color`, `background-image`, `border-*-color` and `outline-color` for every chrome element in both modes. States covered: rest, hover (forced via `page.hover`), active tree row, disabled header action, maximized glyph and drag-over. After the refactor the same script is rerun and the two captures are diffed, which must be empty. This is needed because the existing e2e suite asserts only a handful of these values (body background, content color, tree row and panel color). It would not catch a swapped token on, say, the status bar or the disabled button.
+2. **Committed guard** `tests/unit/css-color-tokens.test.ts` (in scope; I recommend including it rather than leaving it optional): (a) no color literal (hex, `rgb(`, `rgba(`, named color other than `transparent`) outside the two token blocks; (b) every `var(--color-*)` reference is defined in both blocks; (c) both blocks define the identical token set. This turns #208 into a durable invariant for Task 51 to build on.
+3. Full suite unmodified: `test:unit`, `test:integration`, and `test:e2e` (including `view-menu.spec.ts`, `tree-panel.spec.ts`, `window-chrome.spec.ts`).
+4. **Fault injection**, reported explicitly: (i) swap a light/dark pair on one token and (ii) typo one `var()` reference. Confirm RED in the golden-master diff, the unit guard, and the e2e assertions where one exists, then `git apply -R` and confirm GREEN. Because several tokens have no e2e coverage, the report states which layer caught each injection.
+5. The `dist-about` size-budget test (the About data URL embeds `app.css`) should be unaffected or slightly better, since the CSS gets shorter.
+
+## Stack declaration and calibration
+
+- **Stack:** `.claude/knowledge/nodejs/bibliography.md`. The change is CSS and Vitest only, so `nodejs/security.md` and `security/general.md` are not applicable (no input handling, no IPC, no CSP change).
+- **`code_profile`: `hardened`** (confirmed: shared global styling, and fault injection is the standing practice). Three Red-Green-Refactor cycles maximum, and Step 2.5 independent review applies.
+- **`docs_profile`: `delivery`.** RUN_LOG only. I don't plan an ADR, because there is no contested architectural choice. If you want the token-naming scheme recorded as one for Task 51, say so.
+
+## Scope manifest (written only after approval)
+
+`src/renderer/app.css`, `tests/unit/css-color-tokens.test.ts`. The golden-master script lives in the scratchpad, outside the repo.
+
+Branch: `feature/050-css-color-variables` off `main`. Task number 50 confirmed against RUN_LOG (last logged is Task 49 plus its correction notes).

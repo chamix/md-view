@@ -3910,3 +3910,38 @@ free number if that is taken, and say so.
   Code view and the copy-raw-source button.
 
 ---
+
+---
+
+# Task 50: Chrome colors as CSS custom properties (no visual change)
+
+Phase 1 of 2 toward configurable skins (Task 51, out of scope here). Guardrails continue the numbering above.
+
+## Abstract Schema Contracts
+
+- **Palette contract.** The app chrome's appearance is a pure function `appearance(mode, element, state) -> color`, where `mode` is one of {light, dark}, `element` is a chrome region, and `state` is one of {rest, hover, active, disabled, drag-over}. Today the function is encoded redundantly: light values sit on the base rules, and dark values re-state the same rule structure under a `body.dark-mode` prefix.
+- **Token contract (target).** The function factors into two parts: a *token table* (token -> value, one column per mode) and a *binding table* (element/state -> token). Mode selection changes only the token column, never a binding. Each token is defined exactly once per mode.
+- **Out of the contract.** `.markdown-body` content colors and the highlight.js theme (ADR-003, whole third-party stylesheet pairs swapped by the existing `theme-css` mechanism), Mermaid theming (JS-driven), and non-color declarations.
+
+## Pure Transformation Logic
+
+1. Collect every color literal bound to a chrome rule in `app.css`, in both modes.
+2. Equal (light value, dark value) pairs that serve the same semantic role collapse to one token. Pairs that are equal in the two modes but differ in role stay separate (e.g. `#d0d7de` border vs `#d8dee4` disabled border).
+3. Replace each literal with its token reference in the base rule, and delete the `body.dark-mode`-prefixed rule it made redundant.
+4. A dark override survives only if it cannot be a token swap; each survivor must be justified in the report.
+
+## Edge-Case Invariant Guardrails
+
+204. **Zero visual change.** For every (mode, element, state), the computed color of every color-bearing property is byte-identical before and after. Applies to `color`, `background-color`, `background-image` gradients, `border-*-color`, and `outline-color`.
+205. **Light body background stays unset.** Today's light `body` has no background (computed `rgba(0, 0, 0, 0)`). Its light token must therefore be `transparent`, not `#ffffff`. `view-menu.spec.ts` asserts the computed `backgroundColor` across the toggle.
+206. **Cascade quirks are preserved, not fixed.** Specificity today makes two dark-mode states differ from their light counterparts: (a) `body.dark-mode .window-control:hover` outranks `.window-control-close:hover`, so the close button's hover background is the neutral wash in dark and `#e81123` only in light; (b) `body.dark-mode .window-control-close::before` outranks `.window-control-close:hover::before`, so the close glyph stays `#c9d1d9` on hover in dark instead of turning white. The refactor reproduces these via dark values of dedicated tokens, and they are reported to the user as latent defects. Fixing them is a visual change and is a separate decision.
+207. **Active-row hover ordering holds.** `.tree-row-active:hover` must keep winning over `.tree-row:hover` in both modes (the Task 24 regression). With tokens it holds by source order at equal specificity. The dark-mode compensating rules disappear because the cause (a specificity gap) disappears.
+208. **Token completeness.** Every `var(--color-*)` referenced anywhere in `app.css` is defined in `:root` and re-defined in `body.dark-mode`, so no token can silently fall back to an unset value in either mode.
+209. **No new capability.** The mode switch stays the existing `body.dark-mode` class toggled atomically with the `theme-css` links. No `prefers-color-scheme`, no new settings, no main-process change.
+210. **Color-free tokens stay out.** Keywords like `transparent` used for layout trickery (gradient stops, the inactive tab's border) are not themed colors and stay literal.
+
+### Explicitly out of scope
+
+- Everything in Task 51: skins, `skins.json`, menu UI, presets.
+- Fixing the two quirks in #206.
+- Any change to `src/main/**`, `src/renderer/*.js`, `index.html` or the third-party stylesheets.
