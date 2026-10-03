@@ -272,3 +272,9 @@
 {"ts":"2026-09-29T03:13:52.894Z","path":"src/main/menu.ts","scripts":[{"script":"test:unit","exitCode":0,"durationMs":6236},{"script":"test:integration","exitCode":0,"durationMs":4614}],"ok":true}
 {"ts":"2026-09-29T03:16:04.108Z","path":"src/renderer/renderer.js","scripts":[{"script":"test:unit","exitCode":0,"durationMs":6460}],"ok":true}
 {"ts":"2026-09-29T03:18:27.534Z","path":"src/renderer/copy.js","scripts":[{"script":"test:unit","exitCode":0,"durationMs":5430}],"ok":true}
+{"ts":"2026-10-03T13:34:15.312Z","path":"tests/e2e/mermaid.spec.ts","scripts":[],"reason":"e2e-path-never-auto-run","ok":true}
+{"ts":"2026-10-03T13:35:11.797Z","path":"tests/e2e/mermaid.spec.ts","scripts":[],"reason":"e2e-path-never-auto-run","ok":true}
+{"ts":"2026-10-03T13:35:23.093Z","path":"tests/e2e/mermaid.spec.ts","scripts":[],"reason":"e2e-path-never-auto-run","ok":true}
+{"ts":"2026-10-03T13:35:32.548Z","path":"tests/e2e/mermaid.spec.ts","scripts":[],"reason":"e2e-path-never-auto-run","ok":true}
+{"ts":"2026-10-03T13:36:09.338Z","path":"tests/e2e/mermaid.spec.ts","scripts":[],"reason":"e2e-path-never-auto-run","ok":true}
+{"ts":"2026-10-03T13:36:53.068Z","path":"tests/e2e/mermaid.spec.ts","scripts":[],"reason":"e2e-path-never-auto-run","ok":true}
