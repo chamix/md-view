@@ -937,3 +937,39 @@ packaging — not assumed fine just because Windows was.
   - **The engineer's attribution (one per unit-test run) was wrong** and is
     recorded here as corrected.
   - Fix: create the directory inside a fixture or `beforeAll`.
+
+- [Waived 2026-10-03, Task 50] Task 50's before/after computed-style capture
+  (88 chrome states, both modes) differed from pre-refactor on exactly one
+  property: `border-{top,right,bottom,left}-color` on the **dark-mode**
+  `.window-control-close::before` (rest and hover), `rgb(201, 209, 217)` ->
+  `rgb(0, 0, 0)`. Cause: the old `body.dark-mode .window-control::before {
+  border-color: #c9d1d9 }` rule outranked `.window-control-close::before {
+  border: none }` on the color longhand only, leaving a stale color in a
+  border whose style is `none` and width is 0, so it never painted. With the
+  dark override rule gone, the color falls back to `currentcolor` (black).
+  Nothing renders differently, so the user chose to **waive** the "every
+  computed color byte-identical" invariant for this one value rather than add
+  a 17th token (`currentcolor` light / `#c9d1d9` dark) whose only job would be
+  to reproduce an invisible quirk. That token would also have become part of
+  the token set Task 51 (skins) exposes for customization, for no visible
+  effect. A comment sits on the `.window-control-close::before` rule in
+  `app.css`. Revisit only if a skin ever gives that pseudo-element a visible
+  border.
+
+- [Pending, next task] Three latent dark-mode defects found in Task 50 and
+  deliberately **preserved** there (a refactor with a zero-visual-change
+  invariant could not fix them). Each is reproduced today by a dedicated
+  token whose dark value encodes the quirk; fixing it is a one-token value
+  change plus its row in the pinning test:
+  1. Dark close-button hover background is the neutral wash
+     (`rgba(48,54,61,0.6)`), not `#e81123`. `body.dark-mode
+     .window-control:hover` used to outrank `.window-control-close:hover`.
+     Token: `--color-close-hover-bg`.
+  2. Dark close-glyph stays `#c9d1d9` on hover instead of turning white. The
+     old dark `::before` rule outranked `.window-control-close:hover::before`.
+     Token: `--color-close-hover-glyph`.
+  3. `.doc-tab:hover` keeps the light-mode wash `rgba(208,215,222,0.32)` in
+     dark mode; no dark rule ever existed for it. Token:
+     `--color-tab-hover-bg`.
+  Decision for the next task: fix all three (visible change, needs the
+  updated golden values and e2e eyes) or leave as-is.
