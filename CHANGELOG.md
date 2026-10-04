@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Copy text: select text in the Preview or Code view and copy it with `Ctrl/Cmd+C` or the right-click Copy menu item; Copy All copies the whole visible view — the rendered document in Preview (including frontmatter when it's shown), or the raw Markdown source in Code. A Mermaid diagram always copies its Markdown source, never its rendered drawing, whether you right-click it directly, select across it, or include it in Copy All.
+- Skins: View → Skin picks the color scheme of the app chrome (title bar, tab strip, folder sidebar, status bar) and the code-highlighting colors. Four built-in skins ship — Default, Claude, Obsidian, and Tokyo Night — each with independent light and dark halves; Dark Mode decides which half shows without changing the active skin. View → Skin → Edit Skins… opens `skins.json` for hand-editing custom skins.
+
 ## [1.2.0] - 2026-09-28
 
 ### Added

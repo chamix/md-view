@@ -3997,3 +3997,79 @@ Phase 2 of 2 on Task 50's token foundation. Guardrails continue the numbering ab
 - `.markdown-body` / hljs theme authoring, skinning of Mermaid, static windows.
 - A skin editor UI, import/export, per-skin syntax choice for custom skins, `prefers-color-scheme`.
 - Fixing Task 50's three preserved quirks in Default (decision D4).
+
+---
+
+## Task 52: Pre-release documentation catch-up — README + CHANGELOG for Tasks 49-51 (Step 0)
+
+Docs-and-housekeeping task, following the Task 42/48 pattern, but explicitly
+**not** a release: no version bump, no new CHANGELOG version header or date.
+Tasks 49 (Copy text), 50 (chrome color tokens) and 51 (configurable skins)
+are merged to `main` (`8d02751`) but undocumented in `README.md` and
+`CHANGELOG.md`. `src/main/help/help.md` already carries the Task 49/51
+Help sections (written as part of those tasks' own delivery, per their own
+guardrails #203/`docs_profile: delivery`) — this task does not touch it.
+
+Guardrail numbers: start at #228 (Task 51 ended at #227).
+
+### Abstract Schema Contracts
+
+- **Release section** (user-facing, future): a `## [Unreleased]` CHANGELOG
+  section is not a release section — it is a holding area for shipped-but-
+  untagged change entries, in the same Keep a Changelog vocabulary as every
+  dated section below it, distinguished only by carrying no version number
+  or date yet. The eventual release task (Task 42/48's pattern) will rename
+  it in place when a version is cut; this task does not pre-guess that name
+  or date.
+- **README feature list** (developer/visitor-facing): an ordered list of
+  user-visible capabilities. Each bullet is a fact about shipped behavior,
+  traced to the same source each prior README bullet was traced to — not a
+  restatement of a task's internal spec language.
+- **Out of the contract.** Task 50 (chrome color token refactor) shipped no
+  new user-visible capability — its own guardrail #204 is "zero visual
+  change" — so it is not itself a Feature-list fact. Whether it earns an
+  optional one-line "Changed" CHANGELOG mention is a judgment call for the
+  writer/reviewer, not a Features-list entry either way.
+
+### Pure Transformation Logic
+
+None. This is a documentation-only task — no runtime code changes, no new
+schema, no transformation. Same tier as Task 42/48.
+
+### Edge-Case Invariant Guardrails
+
+228. **Every documented claim is true of the shipped build.** Each new
+     README bullet and each new CHANGELOG line is traced by the reviewer to
+     the actual source (code, test, or the already-shipped `help.md`
+     wording for Skins/Copy text) — not to this brief's own paraphrase of
+     those facts. A claim with no trace is removed or corrected, never kept
+     on the writer's authority (mirrors #190).
+229. **No version bump, no release section.** `package.json` is untouched.
+     `CHANGELOG.md` gains exactly one new section, `## [Unreleased]`, with
+     no date and no version number, inserted above `## [1.2.0]` — never a
+     new `## [1.2.x]`/`## [1.3.0]` header, which would misrepresent this
+     task as a cut release.
+230. **User-facing language only, no internal process leakage.** Same rule
+     as #189: no task numbers, guardrail numbers, ADR references, reviewer/
+     agent vocabulary, or repo-only file paths in either file's prose.
+231. **`help.md` is out of scope and must show zero diff.** Its Task 49/51
+     sections ("Copying text", "Skins") are the primary source of truth for
+     wording in the README's new bullets (per the brief) but are not
+     re-authored or touched by this task.
+232. **The in-scope set is exactly two files.** `README.md` and
+     `CHANGELOG.md` — no `src/`, no `package.json`/`package-lock.json`, no
+     `help.md`. A PreToolUse hook enforces this via `current_scope.json`.
+233. **No behavior change; no TDD loop.** No testable logic exists in this
+     task (docs-task exemption, Task 42/48 precedent) — Step 2.5 (blocking
+     review) still runs, since this task's calibration keeps `code_profile`
+     at hardened-equivalent scrutiny for a pre-release doc pass (no
+     `fast-iteration` skip was declared).
+
+### Explicitly out of scope (not built without asking)
+
+- Creating a version bump, a new dated CHANGELOG section, a git tag, or a
+  GitHub Release — this task is explicitly pre-release prep, per the user.
+- Any edit to `help.md`, `package.json`, or any file under `src/`.
+- Deciding Task 50's CHANGELOG inclusion one way for the user — the writer
+  may omit it as noise per the brief's own guidance; the reviewer checks
+  that whichever choice was made is internally consistent (not half-added).
