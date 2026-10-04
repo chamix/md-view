@@ -21,13 +21,15 @@ A minimal Electron + TypeScript desktop app for previewing Markdown files.
 - **Close** — File → Close (`Ctrl/Cmd+W`) closes the open file and returns to the "No file open" view. The folder tree stays open. The item is disabled when no file is open
 - **Mermaid diagrams** — fenced code blocks tagged `mermaid` render as diagrams in the Preview and follow Dark Mode. An invalid or oversized diagram shows a notice and its source without affecting the rest of the document. Theme and security settings inside a diagram are ignored. The Code tab and the copy button still show the raw Markdown
 - **About window and third-party notices** — Help → About md-view shows the app version, the Electron/Chromium/Node.js versions, copyright, license, a repository link, and the license notices of the open-source packages bundled into md-view (Electron's and Chromium's own license files ship alongside the app)
+- **Copy text** — select text in the Preview or Code view and copy it with `Ctrl/Cmd+C` or the right-click **Copy** menu item; right-click **Copy All** copies the whole visible view (the rendered document in Preview, including frontmatter when it's shown, or the raw Markdown source in Code). A Mermaid diagram always copies its Markdown source, never its rendered drawing, whether you right-click it directly, select across it, or include it in Copy All. There's no new top-level menu item for this — Copy and Copy All are context-menu and keyboard actions only
+- **Skins** — View → Skin picks the color scheme of the app chrome (title bar, tab strip, folder sidebar, status bar) and the code-highlighting colors. Four skins ship — Default, Claude, Obsidian, and Tokyo Night — each with independent light and dark halves; Dark Mode decides which half shows without ever changing which skin is active. View → Skin → Edit Skins… opens `skins.json` for hand-editing custom skins
 
 ## Stack
 
 - **Electron** — desktop shell (main/preload/renderer process model)
 - **TypeScript** — compiles `src/main` and `src/preload` to CommonJS (`dist/`); the renderer is plain JS, no build step
 - **markdown-it** — Markdown → HTML conversion, with raw HTML passthrough explicitly disabled
-- **highlight.js** — syntax highlighting for fenced code blocks with an explicit, recognized language (no auto-detection)
+- **highlight.js** — syntax highlighting for fenced code blocks with an explicit, recognized language (no auto-detection). Eight of its theme stylesheets ship in `dist/renderer/` — the default light/dark pair plus six more backing the Skins feature's code-highlighting halves
 - **chokidar** — file watching for live-reload
 - **Mermaid** (11.17.2, pinned) — diagram rendering in the Preview. Shipped as a build-time asset: `npm run build` copies `mermaid.min.js` into `dist/renderer/`, and the renderer loads it only when a document contains a diagram
 - **zod** — schema validation for the hand-editable `settings.json` file

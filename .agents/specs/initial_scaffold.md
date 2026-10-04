@@ -8672,3 +8672,129 @@ Approved 2026-10-03 ("All approved"). Where a condition and the blueprint disagr
 4. **D4 approved:** Default keeps the three preserved Task 50 quirks; the new presets use the intended behavior (#222). The backlog item stays open.
 5. **Palettes approved as proposed**, including the non-matched Obsidian syntax pair. The document card keeping GitHub colors in every skin is confirmed.
 6. **ADR-014 drafted, Proposed** (done); finalized at 51b close.
+
+---
+
+# Task 52: Pre-release documentation catch-up — README + CHANGELOG (Step 1)
+
+Maps `functional_domain.md` Task 52, guardrails #228-#233.
+
+No architectural impact: no runtime code, no layer boundary, no interface,
+no GoF pattern applicable (Task 42/48 precedent). The inward-dependency
+rule is unaffected — no `src/` file is touched at all, which is a stricter
+posture than Task 48 (that task still touched `help.md` and `package.json`).
+
+### Facts verified directly against source before drafting
+
+- `src/renderer/copy.js` + `src/main/help/help.md` "Copying text": Copy /
+  Copy All via right-click context menu or `Ctrl/Cmd+C`; no new File/View
+  menu item was added for this feature (`menu.ts` carries no `menu-copy*`
+  entries).
+- `src/main/menu.ts:108-122`: View's `Skin` submenu (`id: 'menu-skin'`),
+  one radio per preset name, then `Edit Skins…` (`id: 'menu-skin-edit'`) —
+  exact labels confirmed.
+- `src/main/help/help.md` "Skins" section (lines 47-54): four built-ins —
+  Default, Claude, Obsidian, Tokyo Night — confirmed against
+  `skinPresets.ts`'s 4-entry set referenced in Task 51's spec.
+- `src/renderer/app.css:167-207`: 16 custom properties under `:root`
+  (light) and the same 16 re-declared under one `body.dark-mode` block
+  (dark) — count confirmed by reading the full token block.
+- `.agents/specs/backlog.md:941-957`: the one waived invisible
+  `border-color` difference on `.window-control-close::before` (dark
+  mode), with its own `app.css` comment — confirmed as the only disclosed
+  visual discrepancy from Task 50, and it is invisible (`border: none`).
+- `package.json`'s `build` script: confirms six additional highlight.js
+  theme files (`atom-one-light`, `atom-one-dark`, `stackoverflow-light`,
+  `obsidian`, `tokyo-night-light`, `tokyo-night-dark`) copied into
+  `dist/renderer/` alongside the pre-existing `github`/`github-dark` pair.
+- `CHANGELOG.md`: current top section is `## [1.2.0] - 2026-09-28`, no
+  `[Unreleased]` section exists yet — confirms the brief's framing.
+- `README.md` Features list: confirmed the existing bullet voice (bold
+  lead term, em dash, concise behavior sentence) to model the two new
+  bullets on.
+
+No discrepancy found between the brief and the shipped code/docs; the
+Content inventory in `functional_domain.md` Task 52 stands as given.
+
+### Changes
+
+1. `README.md` Features list: one new bullet for Copy text (selection +
+   Copy All + context menu + `Ctrl/Cmd+C`; diagrams copy their Mermaid
+   source), one new bullet for Skins (View → Skin, four built-ins, Edit
+   Skins…, independent of Dark Mode), placed after the existing Mermaid/
+   About bullets, matching their voice. One optional Stack-section
+   sentence noting the six additional bundled highlight.js themes, if it
+   reads naturally alongside the existing highlight.js stack line.
+2. `CHANGELOG.md`: insert `## [Unreleased]` (no date, no version) above
+   `## [1.2.0]`, with an `### Added` section carrying the Copy text and
+   Skins entries in the same Keep a Changelog voice as the `[1.2.0]`
+   entries. Task 50 gets at most one `### Changed` line, or is omitted
+   entirely — the writer's call per the brief, the reviewer checks
+   internal consistency either way.
+
+### Who writes
+
+`technical-writer` subagent, both files, full rewrites (both are short;
+per the brief, a diff buys nothing here). It receives this section, the
+Task 52 Step 0 text, and the verified-facts list above; it cites a trace
+for every new line. It does not run tests or git.
+
+### Verification plan for #228 (claim → source)
+
+| Claim | Source |
+|---|---|
+| Copy / Copy All via context menu + Ctrl/Cmd+C, no new menu item | `src/renderer/copy.js`; `help.md` "Copying text"; `menu.ts` (no copy entries) |
+| Diagrams copy their Mermaid source, not the drawing | `copy.js` `diagramCopyPayload`; `help.md` "Copying text" line 3 |
+| Skin submenu + Edit Skins…, four built-ins | `menu.ts:108-122`; `help.md` "Skins" |
+| Skins independent of Dark Mode | `help.md` "Skins" line 2; `functional_domain.md` #213 |
+| Six extra hljs themes bundled at build | `package.json` build script |
+| Task 50: no visual change except one waived invisible value | `backlog.md:941-957`; `app.css` comment near `.window-control-close::before` |
+| No `[Unreleased]` section exists yet | `CHANGELOG.md` current content |
+
+The reviewer re-reads each cited source directly, not this table's
+paraphrase; a row that does not hold removes or corrects the claim (#228).
+
+### Gate (#229, #230, #232)
+
+- `git diff --stat` shows exactly `README.md` and `CHANGELOG.md`.
+- Reviewer reads the full diff of both files and greps the new text for
+  `Task`, `#[0-9]`, `ADR`, `guardrail`, `reviewer`, `agent`, `spec`,
+  `.agents`, `src/`, `tests/` (#230).
+- Confirms `CHANGELOG.md`'s new section header is exactly
+  `## [Unreleased]` — no date, no version number (#229) — and that
+  `package.json`'s `version` field is unchanged.
+- Confirms `help.md` shows zero diff (#231).
+- No TDD loop: no testable logic (docs-task exemption, Task 42/48).
+
+### In-scope files
+
+- `README.md`
+- `CHANGELOG.md`
+
+### Expected output format
+
+Full file rewrite for both (per the brief — both files are short).
+
+### Spec section this closes
+
+`functional_domain.md` Task 52 section, guardrails #228-#233.
+
+### Stack declaration and calibration
+
+- **Stack:** none applicable — prose-only change, no code. No
+  `.claude/knowledge/<stack>/` module or `security/general.md` applies;
+  said explicitly rather than omitted.
+- **`code_profile`: N/A** (docs-only, no runtime code — Task 42/48
+  precedent). Step 2.5 (blocking `code-reviewer` review) still runs: the
+  brief calls for an independent review pass, so the skip condition in
+  CLAUDE.md's Step 2.5 (requires a declared `fast-iteration` profile) does
+  not apply here.
+- **`docs_profile`: `delivery`.** RUN_LOG only; no ADR (no architectural
+  decision in this task).
+
+### Scope manifest (written only after approval)
+
+`README.md`, `CHANGELOG.md`.
+
+Branch: `feature/052-docs-catchup-49-51` off `main` (HEAD `8d02751`, Task
+51 merged). Task number 52 confirmed against RUN_LOG (last row is Task 51).
