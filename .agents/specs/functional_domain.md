@@ -4073,3 +4073,92 @@ schema, no transformation. Same tier as Task 42/48.
 - Deciding Task 50's CHANGELOG inclusion one way for the user — the writer
   may omit it as noise per the brief's own guidance; the reviewer checks
   that whichever choice was made is internally consistent (not half-added).
+
+---
+
+## Task 53: v1.3.0 release documentation (Step 0)
+
+Release cut following the Task 42/48 pattern. Task 52 already moved the
+Copy text / Skins prose for `README.md`/`CHANGELOG.md` under
+`## [Unreleased]` — this task's own content is zero: it retitles that
+section and bumps the version, nothing else. `help.md` is explicitly
+confirmed current (Task 52) and stays untouched.
+
+Guardrail numbers: start at #234 (Task 52 ended at #233).
+
+### Abstract Schema Contracts
+
+- **Version identity.** A single semver string, `1.3.0`, must agree across
+  three storage locations that currently disagree (`1.2.0`): `package.json`
+  `.version`, `package-lock.json` `.version` (root) and
+  `.packages[""].version`. These are the same fact duplicated by npm's
+  lockfile format, not three independent facts.
+- **Release section.** `## [Unreleased]` is retitled in place to
+  `## [1.3.0] - 2026-10-09` — a rename of the existing section's identity
+  (no date, no version → both), not creation of new content. The bullets
+  under it are unchanged data, already verified true at Task 52.
+- **README status line.** A single sentence whose only variable is the
+  version token; the surrounding prose is independent of version number
+  (confirmed by reading the full "About this project" section — no other
+  v1.2.0 reference exists there or elsewhere in `README.md`).
+
+### Pure Transformation Logic
+
+A rename/bump only — no new prose is authored:
+1. `package.json.version`: `"1.2.0"` → `"1.3.0"`.
+2. `package-lock.json`: the same two fields (root `.version`,
+   `.packages[""].version`) → `"1.3.0"`. Every other `"1.2.0"` hit in the
+   lockfile is an unrelated dependency's own version (`tinyrainbow`,
+   `gopd`, etc.) and must not change.
+3. `CHANGELOG.md`: `## [Unreleased]` → `## [1.3.0] - 2026-10-09` in place.
+   Bullet content underneath is byte-identical before/after.
+4. `README.md`: `**Status: v1.2.0.**` → `**Status: v1.3.0.**`.
+
+### Edge-Case Invariant Guardrails
+
+234. **Exactly one CHANGELOG header changes, nothing beneath it.** The
+     diff on `CHANGELOG.md` is a single-line header rename; the bullet
+     list under the renamed section is untouched (verbatim from Task 52).
+235. **Version fields only, no `npm install`.** `package.json`'s only
+     diff is the `version` field. `package-lock.json`'s only diff is the
+     same two fields, hand-edited — running `npm install` is explicitly
+     forbidden (Task 42/48 precedent) since it would churn unrelated
+     dependency entries.
+236. **README's Status line is the only version-bearing text in that
+     file**, confirmed by reading the full "About this project" section
+     before editing (no other v1.2.0 reference exists there or
+     elsewhere in `README.md` — the surrounding prose describes the
+     governance process, not a version-specific fact).
+237. **No `src/` change.** `app.getVersion()` is the runtime single
+     source of truth (traced to `src/main/index.ts:571`,
+     `src/main/aboutWindow.ts`, both of which call the Electron API
+     rather than reading a literal) — electron-builder bakes
+     `package.json.version` into the packaged app at build time, so the
+     version bump alone is sufficient.
+238. **No test file needs editing.** All five test files containing the
+     literal string `1.2.0` (`appStateStore.test.ts`,
+     `buildHelpHtml.test.ts`, `thirdPartyNotices.test.ts`,
+     `whatsNew.test.ts`, `whatsNewWindow.test.ts`) pass it as an
+     arbitrary mocked argument to a fully-stubbed function, never by
+     reading the real `package.json` — confirmed by reading each hit
+     before this plan was written. `dist-changelog.test.ts` and
+     `tests/e2e/whats-new.spec.ts` *do* read the real `package.json` at
+     run time and must still pass unmodified after the bump (they derive
+     their expectation from the file, not from a literal).
+239. **Post-edit grep audit.** `grep -r "1\.2\.0"` across
+     `package.json`/`package-lock.json`/`CHANGELOG.md`/`README.md` must
+     return nothing except (a) unrelated dependency versions inside
+     `package-lock.json` and (b) `CHANGELOG.md`'s own historical
+     `## [1.2.0]` section header, which must stay untouched.
+240. **Release date.** `2026-10-09` matches today's date at spec-writing
+     time; the Lead confirms this with the user before finalizing, same
+     caveat as Task 48's amended date — if the actual tag lands on a
+     different day, the header is corrected then, not pre-guessed now.
+
+### Explicitly out of scope (not built without asking)
+
+- Any edit to `help.md` — confirmed current through Skins by Task 52.
+- Any edit to the CHANGELOG bullet content itself, or any new Added/
+  Changed/Fixed/Security entry — Task 52 already wrote and verified it.
+- A git tag or GitHub Release — out of this task's file-level scope;
+  left to the user per the Branching & Merge Strategy.

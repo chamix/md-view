@@ -8798,3 +8798,131 @@ Full file rewrite for both (per the brief — both files are short).
 
 Branch: `feature/052-docs-catchup-49-51` off `main` (HEAD `8d02751`, Task
 51 merged). Task number 52 confirmed against RUN_LOG (last row is Task 51).
+
+---
+
+## Task 53: v1.3.0 release documentation (Step 1)
+
+No architectural impact: no runtime code, no layer boundary, no interface,
+no GoF pattern applicable (Task 42/48 precedent). The inward-dependency
+rule is unaffected — no `src/` file is touched at all (unlike Task 48,
+which touched `help.md`). Guardrails are #234-#240 (Task 52 ended at #233).
+
+### Changes
+
+1. `CHANGELOG.md`: rename `## [Unreleased]` → `## [1.3.0] - 2026-10-09`
+   in place. Bullet content underneath stays byte-identical (#234).
+2. `README.md`: `**Status: v1.2.0.**` → `**Status: v1.3.0.**`. No other
+   line in the file changes (#236).
+3. `package.json`: `"version": "1.2.0"` → `"1.3.0"`, that field only
+   (#235).
+4. `package-lock.json`: root `.version` (line 3) and `.packages[""]
+   .version` (line 9) → `"1.3.0"`, hand-edited, no `npm install` (#235).
+
+### Who writes
+
+`technical-writer` subagent, all four files. It receives this section,
+the Task 53 Step 0 text, and the blast-radius findings below. It does not
+run tests or git. The Lead runs the gate; the `code-reviewer` verifies.
+
+### Blast-radius checklist (ADR-013)
+
+(a) **Ships in the deliverable.** `package.json.version` is read by
+electron-builder at package time and becomes `app.getVersion()` in the
+built app (`src/main/index.ts:571`, `src/main/aboutWindow.ts`) — this is
+a production-packaging field, not dev-only metadata. `CHANGELOG.md` is
+copied into `dist/` and read by compiled code at runtime
+(`changelogPathFor`, proven by `tests/integration/dist-changelog.test.ts`)
+— so the renamed section must exist in the *built* changelog, not just
+the repo-root one, which is why the gate requires `npm run build` before
+the integration run. `README.md` ships nowhere (repo docs only).
+`package-lock.json` is dev/CI-only (never packaged).
+
+(b) **Tests asserting a changed contract.** Grepped
+`grep -rn "1\.2\.0" tests/` — five hits
+(`appStateStore.test.ts`, `buildHelpHtml.test.ts`,
+`thirdPartyNotices.test.ts`, `whatsNew.test.ts`, `whatsNewWindow.test.ts`),
+all passing `'1.2.0'` as an arbitrary literal argument to a fully-mocked
+function, never reading the real `package.json` — none need editing, and
+none are added to `in_scope` for that reason (confirmed by reading each
+hit, not just the count). Two files *do* read the real version/changelog
+at run time and exercise this task's exact change —
+`tests/integration/dist-changelog.test.ts` (both of its `it` blocks) and
+`tests/e2e/whats-new.spec.ts`'s `app.getVersion()` sanity test plus its
+seeded-with-current-version suite — these are read-only contract checks
+for this task (no edit expected), not additions to `in_scope`, but the
+gate below runs them explicitly rather than assuming the dynamic lookup
+is safe.
+
+(c) **Test tier per changed surface.** `package.json`/`package-lock.json`
+version fields → exercised by `tests/integration/dist-changelog.test.ts`
+and `tests/e2e/whats-new.spec.ts` (both read `package.json` at run time),
+tier: integration + e2e, post-build. `CHANGELOG.md` section rename →
+same two tests (the extractor must find a non-blank `1.3.0` section),
+tier: integration + e2e. `README.md` Status line → no test reads README
+prose; verified by human/reviewer read only, tier: none (explicitly
+noted, not omitted).
+
+### Verification plan (claim → code / test)
+
+| Claim | Code | Test |
+|---|---|---|
+| `app.getVersion()` is the runtime version source, no `src/` literal | `src/main/index.ts:571`, `src/main/aboutWindow.ts` | `tests/e2e/whats-new.spec.ts:68` (sanity: equals `package.json`) |
+| Built changelog has a non-blank section for the bumped version | `src/main/changelog.ts` (`extractChangelogSection`), `changelogPathFor` | `tests/integration/dist-changelog.test.ts` (both `it` blocks) |
+| Changelog extractor is version-string-generic, not pinned to `1.2.0`/`1.3.0` | `src/main/changelog.ts` | `tests/unit/changelog.test.ts` (fixtures use `1.1.0`/`1.0.0`/`2.0.0`, none real) |
+| What's New flow reads the real current version at launch | `src/main/whatsNew.ts` | `tests/e2e/whats-new.spec.ts` (seeded-with-older/current suites) |
+
+The reviewer re-opens each cited line and reruns the cited test, not this
+table's paraphrase.
+
+### Gate
+
+- `git diff --stat` shows exactly the four in-scope files; `package-lock
+  .json`'s diff is two lines.
+- `grep -rn "1\.2\.0" package.json package-lock.json CHANGELOG.md
+  README.md` returns only unrelated dependency versions inside
+  `package-lock.json` and `CHANGELOG.md`'s own historical `## [1.2.0]`
+  header (#239).
+- `npm run build`, then `npm run test:unit`, `npm run test:integration`
+  (`dist-changelog.test.ts` proves the `1.3.0` section is found in the
+  built output), then `tests/e2e/whats-new.spec.ts` specifically (not
+  necessarily the full e2e suite, since no other e2e surface changed).
+- No TDD loop: no testable logic authored by this task (docs/metadata
+  only, Task 42/48 precedent).
+
+### In-scope files
+
+- `package.json`
+- `package-lock.json`
+- `CHANGELOG.md`
+- `README.md`
+
+### Expected output format
+
+Full file rewrite for `README.md` and `CHANGELOG.md` (per the brief —
+both files are short, and the rewrite makes the single-line change easy
+to diff-review). Targeted edits only for `package.json`'s and
+`package-lock.json`'s version fields — everything else in those two
+files must stay byte-identical.
+
+### Spec section this closes
+
+`functional_domain.md` Task 53 section, guardrails #234-#240.
+
+### Stack declaration and calibration
+
+- **Stack:** none applicable — version/metadata bump and a changelog
+  header rename, no code. No `.claude/knowledge/<stack>/` module or
+  `security/general.md` applies; said explicitly rather than omitted.
+- **`code_profile`: N/A** (docs/metadata only, no `src/**` change, no RGR
+  loop — same exemption as Tasks 35/42/48, per the brief).
+- **`docs_profile`: `delivery`.** RUN_LOG only; no ADR (no architectural
+  decision in this task).
+
+### Scope manifest (written only after approval)
+
+`package.json`, `package-lock.json`, `CHANGELOG.md`, `README.md`.
+
+Branch: `feature/053-v1.3.0-release-docs`, cut from latest `main` (HEAD
+`80cd7e3`, Task 52 merged via PR #24). Task number 53 confirmed against
+RUN_LOG (last row is Task 52).
