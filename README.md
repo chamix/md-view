@@ -75,7 +75,7 @@ File → Open Folder… (`Ctrl/Cmd+Shift+O`) is a second way to start: it opens 
 
 ## About this project
 
-**Status: v1.2.0.** `md-view` is a small, working tool — and also a live testbed.
+**Status: v1.3.0.** `md-view` is a small, working tool — and also a live testbed.
 
 This app was built end-to-end under a governed, multi-agent development
 process: every feature went through explicit scope contracts, independent
