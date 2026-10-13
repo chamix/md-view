@@ -3248,9 +3248,15 @@ or a small stateful object) is the engineer's choice; its semantics are not:
      Known accepted limitation: `Cmd+W` conventionally closes the *window* on
      macOS; macOS is not a shipped target (`electron-builder.yml` builds Windows
      only).
-152. **Nothing persisted, nothing else reset.** Close writes neither
-     `settings.json` nor `state.json`, and does not touch dark mode, the
-     frontmatter toggle, tree-panel visibility or `currentTab`.
+152. **Nothing persisted, nothing else reset — except the open-file
+     pointer (amended, Task 54).** Close writes neither `settings.json`
+     nor, originally, `state.json`. Task 54 guardrail #250 introduces the
+     one exception: an `acted` close clears `lastFileOpenPath` to `null`
+     in `state.json` via `onOpenFileChanged(null)`, and nothing else.
+     Beyond that single field, this guardrail's original promise holds
+     unchanged — Close still does not touch dark mode, the frontmatter
+     toggle, tree-panel visibility or `currentTab`, and still writes
+     nothing at all when `close()` is inert.
 153. **The tree survives.** Close keeps the tree root and the expanded/fetched
      tree DOM; only the active-file highlight clears. Conversely, Open Folder,
      dropped/opened directories and "Up one level" never change slot occupancy
@@ -4162,3 +4168,237 @@ A rename/bump only — no new prose is authored:
   Changed/Fixed/Security entry — Task 52 already wrote and verified it.
 - A git tag or GitHub Release — out of this task's file-level scope;
   left to the user per the Branching & Merge Strategy.
+
+---
+
+## Task 54: Remember last open folder/file (Step 0)
+
+Depends on Task 44 (document slot / single `FILE_RENDERED` choke point,
+`onOccupancyChanged`), Task 17/18 (`establishTreeRoot`'s canonicalization and
+its existing `resolvedRootPath === currentTreeRoot` no-op guard) and Task 43 /
+ADR-009 (`state.json` / `AppState`, atomic writes, the `will-quit` pending-
+write hold).
+
+Decisions taken with the user before drafting:
+1. Persistence location: extend the existing `state.json` / `AppState`
+   schema (no new file, no new dependency) — `electron-store` considered and
+   rejected again, for the same reasons already recorded in ADR-009.
+2. The restored state must be decided **before** the window is shown (no
+   flash of the wrong screen). Implemented as `await`ed `fs/promises` reads
+   before `createWindow()`, the same tier `settings.json`/`skins.json`
+   already use — not a literal blocking `fs.existsSync`. This reaches the
+   same user-facing guarantee the user chose (decide before the window
+   exists) without blocking the event loop; flagged here explicitly since it
+   is not the literal mechanism offered, for confirmation in the Step 1
+   blueprint approval.
+
+Found while tracing the existing code (verified by reading, not assumed —
+ways-of-working standing requirement):
+- `documentSession.open()` already re-roots the tree to the opened file's own
+  directory as a side effect (`establishTreeRootFor`, Task 44), independent
+  of Open Folder / drag-drop. "Last folder" and "last open file's folder" can
+  therefore legitimately diverge in one real scenario: the user opens a file,
+  then separately browses an **unrelated** folder via Open Folder/drop
+  (`openFolderViaDialog`/the dropped-directory branch never touch
+  `documentSession`, Task 44 guardrail #153) without closing or reopening the
+  file. Restore must reproduce both facts, in an order that doesn't let one
+  silently overwrite the other (guardrail #244 below).
+- `state.json` today has exactly one writer family (`prepareWhatsNew`'s
+  first-launch branch and `recordVersionSeen`), and both call
+  `ports.saveState(state: AppState)` with a **replace-the-whole-file**
+  contract, not a merge. A second, independent writer for this feature,
+  calling the same `writeAppStateFile` directly, would race: whichever write
+  lands last on disk silently erases whatever fields only the other writer
+  knew about. Resolved by unifying every `state.json` write behind one
+  merge-and-write choke point (ADR-015), shared by this feature and What's
+  New — not two independently-tracked pending writes.
+
+### Abstract Schema Contracts
+
+- **Persisted session pointer** (internal bookkeeping, same tier as
+  `lastSeenVersion`, never user-facing/hand-edited): `lastFolderPath: string
+  | null` and `lastFileOpenPath: string | null`, stored alongside
+  `lastSeenVersion` in the existing `state.json` (ADR-009) — never a second
+  file. `null` means "never recorded" / "nothing open." All three
+  `AppState` fields become `.nullable().optional()` (widened from
+  `lastSeenVersion`'s current required-string shape) so a `state.json`
+  written by a pre-Task-54 build — missing the two new keys — still
+  validates, instead of invalidating and silently losing the already-
+  recorded `lastSeenVersion` on upgrade. (#135's "no partial recovery"
+  governs malformed data — wrong type, truncated JSON — not which keys a
+  later schema version adds; this is a disclosed, intentional widening, not
+  a relaxation of that guardrail.)
+- **Restore decision** (pure function of four facts): `lastFolderPath`,
+  `lastFileOpenPath`, whether each still exists on disk as the right kind
+  (folder is a directory, file is a file — not merely "exists"), and nothing
+  else. Argv-file precedence (see below) is **not** folded into this pure
+  function — it is already correctly handled by the existing `argvFilePath()`
+  branch in `index.ts`, and the new restore call is only reached from that
+  branch's `else`, so the decision never needs to model "was there an argv
+  file" as one of its own cases.
+- **Write triggers** (session facts, mirrored into `state.json` on change,
+  never on every render): `lastFolderPath` changes exactly when
+  `currentTreeRoot` changes — `establishTreeRoot`'s existing no-op guard
+  already limits this to real changes, so no new guard is duplicated.
+  `lastFileOpenPath` changes exactly when the document slot's open file
+  identity changes: to the new path on a successful, actually-delivered open
+  (not a watcher-triggered re-render of the *same* file — that must not
+  write on every save-triggered live reload), to `null` on an acted Close. A
+  failed open (`ok: false`) and an inert Close (#150) change neither.
+
+### Pure Transformation Logic
+
+1. **Schema widening** (`appState.ts`): `lastSeenVersion`, `lastFolderPath`,
+   `lastFileOpenPath` all become `z.string().min(1).nullable().optional()`;
+   the object stays `.strict()` (unknown keys still invalidate the whole
+   file, unchanged).
+2. **`mergeAppState(current: AppState | null, patch: Partial<AppState>):
+   AppState`** (new, pure, `appState.ts`): `{ ...(current ?? {}), ...patch
+   }` — a shallow merge. `null` in `patch` is a deliberate, intentional
+   overwrite (e.g. Close's `{ lastFileOpenPath: null }`); callers never pass
+   `undefined` for a key they don't mean to touch (they omit the key
+   entirely).
+3. **`decideSessionRestore(input: { lastFolderPath: string | null;
+   lastFileOpenPath: string | null; folderExists: boolean; fileExists:
+   boolean }): { folderPath: string | null; filePath: string | null }`**
+   (new, pure, `appState.ts`): keeps each path only if its own existence
+   flag is true, independently — `{ folderPath: folderExists ?
+   lastFolderPath : null, filePath: fileExists ? lastFileOpenPath : null }`.
+   Deliberately this simple: the real nuance (ordering, the divergent-folder
+   case, not forcing the tree panel open) lives in the composition root's
+   orchestration (Step 1), not in this decision, because that nuance is
+   about *how* to apply the two independent targets using functions that
+   already exist (`documentSession.open`, `establishTreeRoot`), not about
+   *which* targets are valid.
+
+### Edge-Case Invariant Guardrails
+
+241. **No new persistence file, no new dependency.** `lastFolderPath` /
+     `lastFileOpenPath` live in `state.json` next to `lastSeenVersion`,
+     written through the same atomic write/temp-file-then-rename
+     (`atomicWriteFile.ts`, unchanged, ADR-009 #141) — never a plain
+     non-atomic write, never a second JSON file, never `electron-store`.
+242. **Backward-compatible schema widening.** A `state.json` written by any
+     build through Task 53 (`{ lastSeenVersion: "1.3.0" }`, no folder/file
+     keys) parses successfully after this task ships, with
+     `lastFolderPath`/`lastFileOpenPath` read as absent (normalized to
+     `null` for in-memory use, never left `undefined`). Forward
+     compatibility is explicitly not attempted: a `state.json` with an
+     unrecognized extra key is still entirely invalid (`.strict()`,
+     unchanged, #135).
+243. **Argv always wins.** When the app is launched with a `.md` file
+     argument (`argvFilePath() !== null`, existing Task 16/17 logic,
+     untouched), the restore logic in this task does not run at all — not
+     "runs and is then overridden." The pre-existing `if (filePath !== null)
+     { … } else { … }` shape in `app.whenReady()` is where this is enforced;
+     this task adds only the `else` branch.
+244. **Restore order when both are valid: file, then folder.** If both the
+     last folder and the last open file independently still exist (right
+     kind each), the composition root calls `documentSession.open(filePath)`
+     first, then `establishTreeRoot(folderPath)` second — in that order,
+     unconditionally, every time both are present. `establishTreeRoot`'s own
+     pre-existing no-op guard (`resolvedRootPath === currentTreeRoot`)
+     absorbs the common case where the file's own directory already equals
+     the recorded folder (the second call is then a harmless no-op, not a
+     duplicated fetch). The order matters only in the divergent case found
+     above (file open, tree separately browsing an unrelated folder): doing
+     it file-then-folder reproduces that exact divergence on restart,
+     because `documentSession.open()`'s own `establishTreeRootFor` side
+     effect would otherwise silently re-root the tree back to the file's
+     directory if folder were applied first (or not applied at all).
+245. **Folder-only restore does not force the tree panel open.** Unlike
+     `openFolderViaDialog`/the dropped-directory branch (which call
+     `forceShowTreePanelAndRebuildMenu()`, Task 18/27 posture — "the user
+     just asked to see a folder"), session restore never calls that
+     function. Tree-panel visibility on restore is governed exclusively by
+     the pre-existing, independently persisted `ViewSettings.showTreePanel`
+     (Task 37 `settings.json`) — restoring *what* folder is at the root must
+     not also flip *whether* the panel is shown, which is a different,
+     already-persisted preference.
+246. **Folder missing at launch ⇒ true pristine, not an error state.**
+     `establishTreeRoot` is never called with a path that is checked and
+     found missing beforehand — existence is checked first (folder-is-a-
+     directory), and on failure the folder is simply treated as `null` by
+     `decideSessionRestore`. This is deliberate: calling `establishTreeRoot`
+     on a dead path would send a `{ok:false, rootPath, error}`
+     `FOLDER_TREE_ROOT` message and set `currentTreeRoot` to an unresolved
+     path — a visible error state — instead of the plain, silent "nothing
+     was there" the feature asks for. Same posture for the file: a missing
+     `lastFileOpenPath` is never handed to `documentSession.open()`.
+247. **File missing but folder present ⇒ folder only, matching the written
+     ask verbatim.** When `lastFileOpenPath` fails its existence check but
+     `lastFolderPath` passes, only `establishTreeRoot(folderPath)` runs. The
+     empty-state message is shown (document slot stays `empty`, same as
+     fresh launch, Task 7/44 guardrail #145), `File > Close` stays disabled
+     (#151), no watcher starts.
+248. **Neither present or neither valid ⇒ no restore call at all.** No
+     `establishTreeRoot`, no `documentSession.open`, no forced menu rebuild
+     beyond what already runs at launch. Observably identical to a fresh
+     install's first launch (pristine empty-state, no tree root), confirmed
+     against the same locators Task 44 guardrail #146 already pins.
+249. **A failed restore-time open behaves exactly like any other failed
+     open.** If `lastFileOpenPath` passes the existence check but then
+     fails to render (e.g. deleted between the check and the read, or
+     became unreadable) — `renderFile()`'s own existing try/catch handles
+     this exactly as it does for the dialog/drag-drop/argv paths, no new
+     error handling is added. Per the write-trigger contract above, a
+     failed open does not persist a change to `lastFileOpenPath` (the stale
+     on-disk value is left exactly as it was, self-correcting on the next
+     launch where the existence pre-check alone will catch it). Known,
+     accepted limitation: between "exists at the pre-check" and "the read
+     itself," a narrow TOCTOU race is possible, same as every other
+     existing open path in this app — not newly introduced, not specially
+     guarded against here.
+250. **Persisting the open file never fires on a live-reload re-render.**
+     The watcher's re-render callback goes through the same shared
+     `deliver()` choke point as `open()`, but the new persistence call is
+     made only from `open()`'s own success branch (`if (message.ok) {
+     startWatching(filePath); <persist here>; }`), not from inside
+     `deliver()` itself — a file saved and re-rendered ten times does not
+     write `state.json` ten times; the identity of "the open file" did not
+     change, so its own persisted field is never touched again. Close
+     clears it from its own `acted` branch (`close()`), using a *new* port
+     with a nullable payload (`onOpenFileChanged(filePath: string | null)`),
+     never the existing `onOccupancyChanged` (which only signals the empty
+     ↔ occupied menu-enabled transition, Task 44 #151, and stays false when
+     a second, *different* file replaces a first one while already
+     occupied — the wrong signal for "which file is this" bookkeeping).
+251. **An open discarded by a race with Close is never persisted.** Per Task
+     44 #149, `deliver()` returning `false` means the whole open is
+     discarded — `open()` already returns before reaching `startWatching`/
+     the new persistence call in that case, so no extra guard is needed:
+     this guardrail documents an existing code-path fact, not new logic.
+252. **State-write failures never block the app** (same posture as #140 for
+     What's New, same file, same writer now). A failed `state.json` write —
+     on a folder change, a file open/close, or a seen-version record — is
+     `console.warn`'d and otherwise invisible: folder browsing, file
+     opening and the What's New window all continue to work exactly as if
+     persistence did not exist.
+253. **One pending-write hold at quit, shared.** `will-quit` continues to
+     hold `app.quit()` for a bounded timeout (unchanged 3000ms, ADR-009-era
+     constant) only while a `state.json` write is actually in flight — now
+     for *any* write through the single merge-and-write function, not only
+     What's New's. A folder browsed or a file opened in the last instant
+     before quitting is not silently lost to an unflushed write any more
+     than a just-closed What's New window already wasn't.
+254. **No self-heal write on a failed restore.** Finding, at launch, that
+     `lastFileOpenPath` (or `lastFolderPath`) no longer exists does **not**
+     trigger a corrective `state.json` write clearing that field. The stale
+     pointer is left on disk; the next launch's existence check simply
+     fails again, at the cost of one extra `fs.stat` call — explicitly
+     scoped out as unnecessary complexity for negligible benefit (the field
+     self-corrects the moment the user opens anything new), not an
+     oversight.
+
+### Explicitly out of scope (not built without asking)
+
+- Any UI affordance to see or clear the remembered folder/file (e.g. a
+  "Recent" menu, a "forget this folder" action). The ask is launch-time
+  auto-restore only.
+- Multi-entry history (several recent folders/files). Exactly one pointer
+  each, overwritten, same shape as `lastSeenVersion`.
+- Restoring `ViewSettings` (dark mode, frontmatter, tab, tree-panel
+  visibility) differently than today — all four are already persisted
+  independently (Task 37/51) and are untouched by this task.
+- Reproducing the exact scroll position or active tab (Preview/Code) of the
+  previously open file. Only "which file is open" is in scope.

@@ -19,6 +19,12 @@ export interface DocumentSessionPorts {
   establishTreeRootFor(filePath: string): Promise<void>;
   // index.ts: applyMenu() (File > Close's `enabled` mirrors occupancy).
   onOccupancyChanged(): void;
+  // Task 54 (#250/#251): "which file is open" bookkeeping, distinct from
+  // onOccupancyChanged (empty<->occupied). Called with the path on a
+  // genuinely delivered successful open, and with null on an acted Close --
+  // never on a watcher-triggered re-render of the same file, never on a
+  // failed open, never on an open discarded by a race with Close.
+  onOpenFileChanged(filePath: string | null): void;
 }
 
 export interface DocumentSession {
@@ -71,7 +77,14 @@ export function createDocumentSession(ports: DocumentSessionPorts): DocumentSess
       if (!deliver(token, message)) return;
       // Pre-existing behavior, preserved on purpose (Task 44 approval
       // condition 2): a failed open does not stop the previous file's watcher.
-      if (message.ok) startWatching(filePath);
+      if (message.ok) {
+        startWatching(filePath);
+        // Task 54 (#250): only on a genuinely delivered, successful open --
+        // never from the watcher's own re-render callback (startWatching's
+        // onChange above), so a file saved and re-rendered many times never
+        // re-writes this.
+        ports.onOpenFileChanged(filePath);
+      }
       await ports.establishTreeRootFor(filePath);
     },
 
@@ -81,6 +94,7 @@ export function createDocumentSession(ports: DocumentSessionPorts): DocumentSess
       stopWatching(); // zero watchers after Close (#147/#148)
       ports.sendDocumentClosed();
       ports.onOccupancyChanged();
+      ports.onOpenFileChanged(null); // Task 54 (#250): clears "which file is open"
     },
 
     shutdown(): void {

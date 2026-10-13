@@ -18,6 +18,8 @@ import { shouldCreateWhatsNewWindow, buildWhatsNewMarkdown } from './whatsNewWin
 import { prepareWhatsNew, recordVersionSeen } from './whatsNew';
 import type { WhatsNewPorts } from './whatsNew';
 import { loadAppState, writeAppStateFile } from './appStateStore';
+import { decideSessionRestore, persistAppStatePatch } from './appState';
+import type { AppState } from './appState';
 import { createDocumentSession } from './documentSession';
 import { filterAndSortEntries } from './fileTree';
 import { IPC_CHANNELS } from '../preload/api';
@@ -33,12 +35,23 @@ let mainWindow: BrowserWindow | null = null;
 let helpWindow: BrowserWindow | null = null;
 let whatsNewWindow: BrowserWindow | null = null;
 let aboutWindow: BrowserWindow | null = null;
-// In-flight "seen version" write started by the What's New window's 'closed'
-// handler; the 'will-quit' handler (bottom of file) holds the process until it
-// settles. recordVersionSeen never rejects, so this promise always settles.
-let pendingSeenWrite: Promise<void> | null = null;
+// In-flight state.json write, started by any of persistAppState's callers
+// (What's New's recordVersionSeen/prepareWhatsNew, a tree-root change, a
+// document open/close -- Task 54, ADR-015: one shared choke point, one
+// shared pending-write tracker). The 'will-quit' handler (bottom of file)
+// holds the process until it settles. persistAppState never rejects (its own
+// write failures are caught and console.warn'd, #252), so this promise
+// always settles.
+let pendingStateWrite: Promise<void> | null = null;
 let settingsFilePath: string;
 let skinsFilePath: string;
+let stateFilePath: string;
+// Task 54 (ADR-015): the single in-memory copy of state.json, loaded once
+// before createWindow() and kept for the rest of the process lifetime --
+// nothing re-reads state.json from disk mid-session. Defaults to {} on a
+// fresh install (loadAppState returned null), same posture prepareWhatsNew
+// already applied to a null load.
+let appState: AppState = {};
 
 // Task 51 (#213): skins.json is the only home of skin data; the active skin
 // is resolved from this in-memory copy (loaded strictly before createWindow(),
@@ -384,6 +397,32 @@ async function renderFile(filePath: string): Promise<FileRenderedMessage> {
   }
 }
 
+// Task 54 (ADR-015): the single merge-and-write choke point for state.json.
+// Every writer (What's New's saveState binding, establishTreeRoot's
+// lastFolderPath update, documentSession's onOpenFileChanged port) goes
+// through this -- never a second, parallel write path -- so one writer's
+// patch can never silently clobber another's already-recorded field (the
+// exact race ADR-015 documents). A thin binding of appState.ts's
+// persistAppStatePatch to the real stateFilePath/writeAppStateFile/
+// console.warn -- the merge-write-catch logic itself (and #252's
+// write-failure containment) lives there, unit-tested with a fake write
+// port. `appState` is updated synchronously inside the `write` callback,
+// before writeAppStateFile's own first await -- so a second, overlapping
+// persistAppState call still merges from the up-to-date in-memory state,
+// never blocking on the first call's disk write.
+function persistAppState(patch: Partial<AppState>): Promise<void> {
+  const write = persistAppStatePatch(appState, patch, async (next) => {
+    appState = next;
+    await writeAppStateFile(stateFilePath, next);
+  }).then(() => undefined);
+  pendingStateWrite = write;
+  // Once settled it no longer needs to hold the quit (see 'will-quit').
+  void write.finally(() => {
+    if (pendingStateWrite === write) pendingStateWrite = null;
+  });
+  return write;
+}
+
 export async function listDirectoryEntries(dirPath: string): Promise<DirectoryListResult> {
   try {
     const raw = await fs.readdir(dirPath, { withFileTypes: true });
@@ -425,6 +464,12 @@ async function establishTreeRoot(rawRootPath: string): Promise<void> {
   if (resolvedRootPath === currentTreeRoot) return; // no-op: no re-fetch, no event sent
   const result = await listDirectoryEntries(resolvedRootPath);
   currentTreeRoot = resolvedRootPath;
+  // Task 54 (#241/#245): fire-and-forget, same posture as the
+  // mainWindow?.webContents.send(...) two lines below -- persisting WHICH
+  // folder is at the root never implies forcing the tree panel open; that
+  // stays governed exclusively by the already-persisted
+  // ViewSettings.showTreePanel.
+  void persistAppState({ lastFolderPath: resolvedRootPath });
   const message: FolderTreeRootMessage = result.ok
     ? { ok: true, rootPath: resolvedRootPath, entries: result.entries }
     : { ok: false, rootPath: resolvedRootPath, error: result.error };
@@ -445,7 +490,56 @@ const documentSession = createDocumentSession({
   watch: (filePath, onChange) => watchFile(filePath, onChange),
   establishTreeRootFor: (filePath) => establishTreeRoot(path.dirname(filePath)),
   onOccupancyChanged: applyMenu,
+  // Task 54 (#250): fire-and-forget, same choke point as every other
+  // state.json writer.
+  onOpenFileChanged: (filePath) => {
+    void persistAppState({ lastFileOpenPath: filePath });
+  },
 });
+
+// Task 54 (#246): the REQUEST_OPEN_FILE handler's existing fs.stat-try/catch
+// idiom, reused rather than duplicated -- the two existence checks
+// restoreLastSession needs before ever calling establishTreeRoot/
+// documentSession.open with a remembered path.
+async function pathIsDirectory(p: string): Promise<boolean> {
+  try {
+    return (await fs.stat(p)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function pathIsFile(p: string): Promise<boolean> {
+  try {
+    return (await fs.stat(p)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+// Task 54 (#244): restores the last open file, THEN the last open folder --
+// in that fixed order, unconditionally, whenever both are present. This
+// reproduces the one real scenario where they diverge (a file open, with the
+// tree separately browsing an unrelated folder): opening the file first
+// would otherwise re-root the tree to the file's own directory
+// (documentSession.open's own establishTreeRootFor side effect) before the
+// seeded folder is applied, silently erasing the divergence on restart.
+// establishTreeRoot's own pre-existing no-op guard absorbs the common case
+// where the file's directory already equals the recorded folder.
+async function restoreLastSession(): Promise<void> {
+  const [folderExists, fileExists] = await Promise.all([
+    appState.lastFolderPath ? pathIsDirectory(appState.lastFolderPath) : Promise.resolve(false),
+    appState.lastFileOpenPath ? pathIsFile(appState.lastFileOpenPath) : Promise.resolve(false),
+  ]);
+  const { folderPath, filePath } = decideSessionRestore({
+    lastFolderPath: appState.lastFolderPath ?? null,
+    lastFileOpenPath: appState.lastFileOpenPath ?? null,
+    folderExists,
+    fileExists,
+  });
+  if (filePath) await documentSession.open(filePath); // #244: file first
+  if (folderPath) await establishTreeRoot(folderPath); // then folder (no-op if it already matches)
+}
 
 async function openFileViaDialog(): Promise<void> {
   const result = await dialog.showOpenDialog({
@@ -600,10 +694,14 @@ async function onOpenAbout(): Promise<void> {
 // behind ports; this only binds the concrete paths and Electron window.
 // Every failure is contained (guardrail #140): the caller also .catch()es.
 async function showWhatsNewIfDue(): Promise<void> {
-  const stateFilePath = path.join(app.getPath('userData'), 'state.json');
+  // Task 54 (ADR-015): both ports now go through the shared in-memory
+  // appState/persistAppState choke point instead of their own direct
+  // loadAppState/writeAppStateFile calls -- a first-launch or seen-version
+  // write can no longer silently clobber lastFolderPath/lastFileOpenPath
+  // (or vice versa).
   const ports: WhatsNewPorts = {
-    loadState: () => loadAppState(stateFilePath),
-    saveState: (state) => writeAppStateFile(stateFilePath, state),
+    loadState: () => Promise.resolve(appState),
+    saveState: (state) => persistAppState(state),
     readChangelog: () => fs.readFile(changelogPathFor(__dirname), 'utf8'),
   };
 
@@ -623,12 +721,10 @@ async function showWhatsNewIfDue(): Promise<void> {
   // un-acknowledged. recordVersionSeen never throws.
   win.on('closed', () => {
     whatsNewWindow = null;
-    const write = recordVersionSeen(ports, content.version);
-    pendingSeenWrite = write;
-    // Once settled it no longer needs to hold the quit (see 'will-quit').
-    void write.then(() => {
-      if (pendingSeenWrite === write) pendingSeenWrite = null;
-    });
+    // Task 54 (ADR-015): recordVersionSeen's own saveState call now goes
+    // through persistAppState, which owns the pendingStateWrite bookkeeping
+    // by itself -- nothing left to track here.
+    void recordVersionSeen(ports, content.version);
   });
 
   await loadStaticHtml(win, html);
@@ -647,6 +743,14 @@ app.whenReady().then(async () => {
   // corrupt skins.json is backed up to skins.json.bak and self-healed (#215).
   skinsFilePath = path.join(app.getPath('userData'), 'skins.json');
   skinsFile = await loadSkinsAtStartup(skinsFilePath);
+
+  // Task 54 (ADR-015): likewise strictly before createWindow(), same tier as
+  // settings/skins -- the restore decision (made later, in restoreLastSession)
+  // must be settled before the window is shown, with no flash of the wrong
+  // screen. Defaults to {} on a fresh install (loadAppState returned null),
+  // same posture prepareWhatsNew already applied to a null load.
+  stateFilePath = path.join(app.getPath('userData'), 'state.json');
+  appState = (await loadAppState(stateFilePath)) ?? {};
 
   createWindow();
 
@@ -671,6 +775,13 @@ app.whenReady().then(async () => {
     // the file from disk.
     mainWindow?.webContents.once('did-finish-load', () => {
       documentSession.open(filePath);
+    });
+  } else {
+    // Task 54 (#243): argv still wins outright -- this branch (launch-time
+    // session restore) only ever runs when there was no argv file at all,
+    // registered the same synchronous way for the same reason.
+    mainWindow?.webContents.once('did-finish-load', () => {
+      void restoreLastSession();
     });
   }
 
@@ -810,25 +921,28 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => documentSession.shutdown());
 
-// Guardrail #139 on the exit paths. The seen-version write is async, and the
-// What's New window can be the last one closed (window-all-closed ->
-// app.quit()) or the app can quit while it is still open (Electron then
-// destroys the window, firing 'closed', after 'before-quit'). In both cases
-// 'will-quit' is the first event after every 'closed' has run, so it is where
-// the process can still be held until the write has landed; otherwise the
-// process may exit first and the notes would replay on every launch. The
-// second app.quit() re-enters this handler with pendingSeenWrite already
-// cleared, so quitting proceeds. A write that has already settled is cleared
-// by its own completion, so it never holds a later, ordinary quit. The wait is bounded so a stalled disk can
+// Guardrail #139 on the exit paths (Task 54 #253: generalized to hold for
+// ANY pending state.json write, not only What's New's -- ADR-015's shared
+// pendingStateWrite tracker). A state write is async, and the What's New
+// window can be the last one closed (window-all-closed -> app.quit()) or the
+// app can quit while it is still open (Electron then destroys the window,
+// firing 'closed', after 'before-quit'). In both cases 'will-quit' is the
+// first event after every 'closed' has run, so it is where the process can
+// still be held until the write has landed; otherwise the process may exit
+// first and the notes would replay on every launch (or a folder/file opened
+// in the last instant before quitting would be silently lost). The second
+// app.quit() re-enters this handler with pendingStateWrite already cleared,
+// so quitting proceeds. A write that has already settled is cleared by its
+// own completion, so it never holds a later, ordinary quit. The wait is bounded so a stalled disk can
 // never make the app unquittable. With no pending write (no What's New
 // window, or Help only) this returns immediately: the normal quit path is
 // untouched.
 const SEEN_WRITE_QUIT_TIMEOUT_MS = 3000;
 app.on('will-quit', (event) => {
-  if (!pendingSeenWrite) return;
+  if (!pendingStateWrite) return;
   event.preventDefault();
-  const pending = pendingSeenWrite;
-  pendingSeenWrite = null;
+  const pending = pendingStateWrite;
+  pendingStateWrite = null;
   const timeout = new Promise<void>((resolve) => setTimeout(resolve, SEEN_WRITE_QUIT_TIMEOUT_MS));
   // Re-quit on a fresh tick, after this handler has returned to Electron: an
   // app.quit() issued synchronously from a microtask inside the handler is

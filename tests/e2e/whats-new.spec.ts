@@ -200,9 +200,17 @@ test.describe('seeded with an older version', () => {
 // would call app.close() again on an already-dead process (same raw-launch
 // pattern as window-chrome.spec.ts's "close button terminates the app").
 test.describe('the seen-version write survives process exit', () => {
-  async function withSeededApp(run: (app: ElectronApplication, userDataDir: string) => Promise<void>): Promise<void> {
+  // Task 54 (#253): seedVersion defaults to '0.0.1' (unchanged for the two
+  // existing What's-New-triggering tests below); the shared-pending-write
+  // test further down passes currentVersion instead, specifically so NO
+  // What's New window appears -- isolating the assertion to persistAppState's
+  // own (non-What's-New) write.
+  async function withSeededApp(
+    run: (app: ElectronApplication, userDataDir: string) => Promise<void>,
+    seedVersion: string = '0.0.1'
+  ): Promise<void> {
     const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-view-e2e-'));
-    fs.writeFileSync(stateFile(userDataDir), seededState('0.0.1'), 'utf8');
+    fs.writeFileSync(stateFile(userDataDir), seededState(seedVersion), 'utf8');
     const childEnv = { ...process.env };
     delete childEnv.ELECTRON_RUN_AS_NODE;
 
@@ -261,5 +269,46 @@ test.describe('the seen-version write survives process exit', () => {
 
       expect(JSON.parse(readState(userDataDir) ?? 'null')).toEqual({ lastSeenVersion: currentVersion });
     });
+  });
+
+  // Task 54 (#253): the pending-write hold is now shared by every
+  // state.json writer, not only What's New's. Seeded with the CURRENT
+  // version so no What's New window appears at all -- isolating this
+  // assertion to persistAppState's own write (opening a folder), proving
+  // 'will-quit' holds for it exactly as it already did for
+  // recordVersionSeen's write above.
+  test("quitting right after opening a folder (no What's New window involved) still records lastFolderPath", async () => {
+    await withSeededApp(async (app, userDataDir) => {
+      const window = await app.firstWindow();
+      await window.waitForLoadState('load');
+      await expect.poll(() => app.windows().length, { timeout: 10000 }).toBe(1); // no What's New window
+
+      // realpath.native (not the plain, non-native realpathSync): os.tmpdir()
+      // can be an 8.3 short path while main's own canonicalization
+      // (fs.promises.realpath, establishTreeRoot) resolves to the long form
+      // -- same fix already applied in close-document.spec.ts's `tree` fixture.
+      const folder = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'md-view-e2e-quit-folder-')));
+      try {
+        await app.evaluate(({ dialog }, target) => {
+          dialog.showOpenDialog = (async () => ({ canceled: false, filePaths: [target] })) as typeof dialog.showOpenDialog;
+        }, folder);
+
+        const exited = app.waitForEvent('close');
+        // Deliberately not awaited before quitting: the menu click's own
+        // openFolderViaDialog()/establishTreeRoot()/persistAppState() chain
+        // is still in flight when quit() is issued right after, same racing
+        // style as the two tests above -- that race is the point.
+        await app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('menu-open-folder')?.click());
+        await app.evaluate(({ app: electronApp }) => electronApp.quit()).catch(() => {});
+        await exited;
+
+        expect(JSON.parse(readState(userDataDir) ?? 'null')).toEqual({
+          lastSeenVersion: currentVersion,
+          lastFolderPath: folder,
+        });
+      } finally {
+        fs.rmSync(folder, { recursive: true, force: true });
+      }
+    }, currentVersion);
   });
 });

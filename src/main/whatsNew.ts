@@ -7,7 +7,12 @@ import { extractChangelogSection } from './changelog';
 // prepareWhatsNew is defensive about it anyway (guardrail #140).
 export interface WhatsNewPorts {
   loadState(): Promise<AppState | null>;
-  saveState(state: AppState): Promise<void>;
+  // Task 54 (ADR-015): widened from AppState to Partial<AppState> so this
+  // port can be bound to the shared persistAppState(patch) choke point
+  // without saveState's own callers (both below, always `{ lastSeenVersion:
+  // ... }`) needing any change -- covariant widening, zero behavior change
+  // in this file.
+  saveState(state: Partial<AppState>): Promise<void>;
   readChangelog(): Promise<string>;
 }
 

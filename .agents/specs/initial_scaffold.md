@@ -8926,3 +8926,412 @@ files must stay byte-identical.
 Branch: `feature/053-v1.3.0-release-docs`, cut from latest `main` (HEAD
 `80cd7e3`, Task 52 merged via PR #24). Task number 53 confirmed against
 RUN_LOG (last row is Task 52).
+
+---
+
+## Task 54: Remember last open folder/file (Step 1)
+
+### Code facts this plan rests on (verified by reading, not assumed)
+
+- `app.whenReady().then(async () => { ... })` already loads
+  `settings.json`/`skins.json` with `await` **before** `createWindow()`, and
+  registers every `did-finish-load` listener **synchronously**, before any
+  further `await`, specifically so a fast renderer load cannot race past a
+  not-yet-registered listener (existing comment on the argv-file branch,
+  `index.ts:667-675`).
+- `argvFilePath()` (`index.ts:359-363`) already decides file-vs-no-file from
+  CLI args; its `if (filePath !== null) { … }` branch is the only place that
+  currently opens a file at launch.
+- `establishTreeRoot(rawRootPath)` (`index.ts:401-432`) already
+  canonicalizes via `fs.realpath`, has a `resolvedRootPath ===
+  currentTreeRoot` no-op guard, and is the single function every "set the
+  tree root" call site (`openFolderViaDialog`, the dropped-directory branch
+  of `REQUEST_OPEN_FILE`, `documentSession`'s `establishTreeRootFor`, "Up one
+  level") already goes through.
+- `documentSession.open(filePath)` (`documentSession.ts:67-76`) already
+  calls `ports.establishTreeRootFor(filePath)` (bound to
+  `establishTreeRoot(path.dirname(filePath))`) unconditionally after a
+  successful delivery — opening a file always re-roots the tree to that
+  file's own directory, independent of how the file was opened.
+- `showWhatsNewIfDue()` (`index.ts:602-635`) computes its own
+  `stateFilePath` and calls `loadAppState`/`writeAppStateFile` directly,
+  fire-and-forget, as the **last** statement inside `app.whenReady()`, after
+  `createWindow()` and every `did-finish-load` registration.
+- `pendingSeenWrite: Promise<void> | null` (`index.ts:39`) plus the
+  `will-quit` handler (`index.ts:827-838`) already hold `app.quit()` for a
+  bounded 3000ms while a `state.json` write is in flight.
+- `AppState` (`appState.ts`) is `{ lastSeenVersion: string }.strict()`;
+  `appStateStore.ts` exposes `loadAppState`/`writeAppStateFile`, the latter
+  atomic via `writeFileAtomic` (`atomicWriteFile.ts`).
+- `REQUEST_OPEN_FILE`'s handler (`index.ts:685-706`) already does
+  `fs.stat(filePath)` wrapped in try/catch to classify
+  directory-vs-file-vs-missing — the idiom this task's two existence checks
+  reuse, not a new one.
+- No existing UI/IPC surface clears `currentTreeRoot` to `null` mid-session
+  (confirmed: grepped `currentTreeRoot = ` — the only assignment is inside
+  `establishTreeRoot`). A folder root, once set, is sticky for the rest of
+  the session; this task does not change that.
+
+### The Inward Dependency Rule
+
+```
+[ Domain: pure, zero imports ]       appState.ts (+mergeAppState, +decideSessionRestore,
+                                      alongside the existing schema/decideWhatsNew)
+                ^
+[ Use case: Electron-free, ports ]   documentSession.ts (+onOpenFileChanged port,
+                                      two new call sites in open()/close())
+                                     whatsNew.ts (saveState/loadState port TYPES widen;
+                                      zero logic change)
+                ^
+[ Adapters ]                         appStateStore.ts (unchanged: raw atomic read/write)
+                ^
+[ Composition root / Electron ]      index.ts (persistAppState() choke point; appState
+                                      loaded before createWindow(); pathIsDirectory/
+                                      pathIsFile existence checks; restoreLastSession()
+                                      orchestration in the did-finish-load else-branch;
+                                      establishTreeRoot gains one persistAppState call;
+                                      documentSession/whatsNew port bindings updated;
+                                      pendingSeenWrite generalized to pendingStateWrite)
+[ Bridge / Renderer ]                untouched — every restored state reaches the
+                                      renderer through the existing FOLDER_TREE_ROOT /
+                                      FILE_RENDERED / DOCUMENT_CLOSED channels, the same
+                                      way a live Open Folder/Open File already does
+```
+
+`appState.ts`'s two new functions import nothing (same posture as
+`decideWhatsNew`). `documentSession.ts` gains one new port entry, still
+Electron-/fs-/path-free. `whatsNew.ts` is not touched beyond one type
+annotation. No new file in the domain/use-case tiers — `decideSessionRestore`
+and `mergeAppState` are small enough that a dedicated module would be
+ceremony without removing any real complexity (same judgment Task 44 made
+rejecting GoF State for `documentSlot`).
+
+### SOLID Boundary Scan
+
+- **SRP:** `decideSessionRestore` answers one question ("of these two
+  remembered paths, which still exist to restore?"); `mergeAppState`
+  answers one question ("what does `state.json` look like after this
+  patch?"); `persistAppState` is the one place that turns a patch into an
+  actual merged write; `index.ts`'s new `restoreLastSession` only
+  *sequences* two already-existing calls (`documentSession.open`,
+  `establishTreeRoot`) — it contains no decision logic of its own beyond
+  calling `decideSessionRestore` and branching on its two nullable fields.
+- **OCP:** `DocumentSessionPorts` gains `onOpenFileChanged(filePath: string
+  | null): void` as a **required** field (not optional), so `tsc` refuses
+  any production binding of `createDocumentSession` that forgets it — same
+  enforcement posture Task 44 used for `buildMenuTemplate`'s third
+  parameter. `WhatsNewPorts.saveState`'s parameter type widens
+  (`AppState` → `Partial<AppState>`); this is covariant/widening, so it
+  cannot break `whatsNew.ts`'s own existing call sites.
+- **DIP:** `documentSession.ts` still only knows about a port function, never
+  `fs`/`state.json` — the same as every other port. `appState.ts`'s two new
+  functions take plain data in, return plain data out; no I/O dependency to
+  invert.
+- **ISP:** `onOpenFileChanged` is a new, narrow, single-purpose port — not
+  folded into `onOccupancyChanged` (which answers a different question,
+  "did empty↔occupied flip", and stays `false` when a second *different*
+  file replaces a first one while already occupied, per Task 44 #151 — the
+  wrong signal for "which file is this").
+- **LSP:** n/a (no inheritance introduced).
+
+### Pattern Application
+
+- **Facade** (extended): `persistAppState(patch)` hides the in-memory merge,
+  the atomic write, and the pending-write bookkeeping from every call site —
+  both Task 54's own and `showWhatsNewIfDue`'s, which no longer manages
+  `pendingSeenWrite` by hand at all.
+- **Ports & Adapters** (same shape as Task 43/44): `onOpenFileChanged` is a
+  new port on the existing `DocumentSessionPorts` adapter boundary;
+  `WhatsNewPorts` is reused, not duplicated, with a widened type.
+- **Strategy-by-data, not Strategy-the-pattern:** `decideSessionRestore`'s
+  four input facts collapse to a plain 2-field result object
+  (`{ folderPath, filePath }`), each independently nullable — no class
+  hierarchy, no visitor; a pure filter is the honest shape, same judgment
+  Task 44 applied to `documentSlot`.
+- **Considered and rejected: a dedicated `SessionRestore` ports/adapter
+  module, mirroring `documentSession.ts`/`whatsNew.ts`'s shape.** The actual
+  orchestration is two `if`s calling two already-existing functions
+  (`documentSession.open`, `establishTreeRoot`) in a fixed order — wrapping
+  that in its own ports interface would add a file and an indirection layer
+  without adding any testable surface that `decideSessionRestore`'s own
+  unit tests don't already cover; the thin sequencing itself is exercised
+  by the e2e suite below, not by a unit test of a trivial two-line function.
+
+### Concrete Plan
+
+**Pure domain (`appState.ts`)**
+1. Widen the schema: `lastSeenVersion`, `lastFolderPath`, `lastFileOpenPath`
+   all `z.string().min(1).nullable().optional()`; keep `.strict()`.
+2. `export function mergeAppState(current: AppState | null, patch:
+   Partial<AppState>): AppState { return { ...(current ?? {}), ...patch };
+   }`.
+3. `export function decideSessionRestore(input: { lastFolderPath: string |
+   null; lastFileOpenPath: string | null; folderExists: boolean; fileExists:
+   boolean }): { folderPath: string | null; filePath: string | null } {
+   return { folderPath: input.folderExists ? input.lastFolderPath : null,
+   filePath: input.fileExists ? input.lastFileOpenPath : null }; }`.
+
+**Use case (`documentSession.ts`)**
+4. `DocumentSessionPorts` gains `onOpenFileChanged(filePath: string | null):
+   void`.
+5. In `open()`: inside the existing `if (message.ok) { startWatching(filePath);
+   }` block, add `ports.onOpenFileChanged(filePath);` right after
+   `startWatching(filePath)` — only on a genuinely delivered, successful
+   open (the existing `if (!deliver(token, message)) return;` guard above it
+   already excludes a discarded/raced open, #251).
+6. In `close()`: inside the existing `if (!slot.close().acted) return;`
+   guard's surviving path, add `ports.onOpenFileChanged(null);` alongside
+   the existing `sendDocumentClosed()`/`onOccupancyChanged()` calls.
+
+**Use case (`whatsNew.ts`)**
+7. Widen `WhatsNewPorts.saveState`'s parameter type:
+   `saveState(state: Partial<AppState>): Promise<void>` (was `AppState`).
+   No other line in this file changes.
+
+**Composition root (`index.ts`)**
+8. Hoist `stateFilePath` to the top of `app.whenReady()`'s block (alongside
+   `settingsFilePath`/`skinsFilePath`), and `await loadAppState(stateFilePath)`
+   there, storing the result in a new module-level `let appState: AppState =
+   {}` (defaulted to `{}` when `loadAppState` returns `null` — fresh install,
+   same posture `prepareWhatsNew` already applies to a `null` load). This
+   happens **before** `createWindow()`, same tier as settings/skins.
+9. New `persistAppState(patch: Partial<AppState>): Promise<void>`:
+   ```ts
+   function persistAppState(patch: Partial<AppState>): Promise<void> {
+     appState = mergeAppState(appState, patch);
+     const write = writeAppStateFile(stateFilePath, appState).catch((error) => {
+       console.warn('md-view: state.json write failed', error);
+     });
+     pendingStateWrite = write;
+     void write.finally(() => {
+       if (pendingStateWrite === write) pendingStateWrite = null;
+     });
+     return write;
+   }
+   ```
+   (Mirrors the existing `recordVersionSeen`-adjacent `win.on('closed', ...)`
+   pending-write bookkeeping, now centralized here instead of duplicated at
+   each call site.)
+10. Rename `pendingSeenWrite` → `pendingStateWrite` (module-level `let`,
+    `index.ts:39`); update the `will-quit` handler's three references
+    (`index.ts:827-838`) to the renamed variable — logic byte-identical.
+11. Rebind `showWhatsNewIfDue`'s ports:
+    `loadState: () => Promise.resolve(appState)`,
+    `saveState: (state) => persistAppState(state)`. Remove the window's
+    `closed` handler's manual `pendingSeenWrite = write; …` bookkeeping
+    (lines 626-631) — `persistAppState` now owns that; the handler simply
+    calls `void recordVersionSeen(ports, content.version)` (fire-and-forget,
+    unchanged otherwise).
+12. In `establishTreeRoot`, right after `currentTreeRoot = resolvedRootPath;`,
+    add `void persistAppState({ lastFolderPath: resolvedRootPath });`
+    (fire-and-forget, same posture as the existing `mainWindow?.webContents.send(...)`
+    two lines below it).
+13. Bind the new `documentSession` port:
+    `onOpenFileChanged: (filePath) => { void persistAppState({ lastFileOpenPath: filePath }); }`.
+14. Two small existence-check helpers (reusing the `REQUEST_OPEN_FILE`
+    handler's existing `fs.stat`-try/catch idiom, not a new one):
+    ```ts
+    async function pathIsDirectory(p: string): Promise<boolean> {
+      try { return (await fs.stat(p)).isDirectory(); } catch { return false; }
+    }
+    async function pathIsFile(p: string): Promise<boolean> {
+      try { return (await fs.stat(p)).isFile(); } catch { return false; }
+    }
+    ```
+15. New `restoreLastSession(): Promise<void>`, called only from the
+    `argvFilePath() === null` branch (step 16):
+    ```ts
+    async function restoreLastSession(): Promise<void> {
+      const [folderExists, fileExists] = await Promise.all([
+        appState.lastFolderPath ? pathIsDirectory(appState.lastFolderPath) : Promise.resolve(false),
+        appState.lastFileOpenPath ? pathIsFile(appState.lastFileOpenPath) : Promise.resolve(false),
+      ]);
+      const { folderPath, filePath } = decideSessionRestore({
+        lastFolderPath: appState.lastFolderPath ?? null,
+        lastFileOpenPath: appState.lastFileOpenPath ?? null,
+        folderExists,
+        fileExists,
+      });
+      if (filePath) await documentSession.open(filePath); // #244: file first
+      if (folderPath) await establishTreeRoot(folderPath); // then folder (no-op if it already matches)
+    }
+    ```
+16. In `app.whenReady()`, change:
+    ```ts
+    const filePath = argvFilePath();
+    if (filePath !== null) {
+      mainWindow?.webContents.once('did-finish-load', () => { documentSession.open(filePath); });
+    }
+    ```
+    to add an `else` branch registering the restore the same
+    synchronous way:
+    ```ts
+    } else {
+      mainWindow?.webContents.once('did-finish-load', () => { void restoreLastSession(); });
+    }
+    ```
+    (#243: argv still wins outright — this task adds only the `else`.)
+
+### Test plan (what proves each guardrail)
+
+- #241/#242 (schema): `tests/unit/appState.test.ts` — a pre-Task-54 shaped
+  `state.json` string (`{"lastSeenVersion":"1.3.0"}`) still parses via
+  `parseAppState`, with `lastFolderPath`/`lastFileOpenPath` read as
+  `undefined`; an unknown extra key still invalidates the whole object
+  (`.strict()` regression check); each new field accepts a non-empty string
+  or `null`, rejects `""`/a number. Tier: unit.
+- `mergeAppState`: `tests/unit/appState.test.ts` — patch overwrites a key,
+  `null` in patch clears a key, `current: null` defaults to `{}`, keys not
+  present in patch are preserved from current. Tier: unit.
+- `decideSessionRestore` (#246-#248): `tests/unit/appState.test.ts` — the
+  four-cell truth table (`folderExists`×`fileExists`), each cell's expected
+  `{ folderPath, filePath }`. Tier: unit.
+- #249/#250/#251 (`documentSession.onOpenFileChanged`):
+  `tests/unit/documentSession.test.ts` — fake ports, assert: called with the
+  path on a successful `open()`; NOT called on a failed (`ok:false`) open;
+  NOT called a second time when the watcher callback re-delivers the *same*
+  path (simulate a watcher-triggered `deliver` after `open()` already
+  settled); called with `null` on an `acted` `close()`; NOT called on an
+  inert `close()` (nothing open); NOT called when `open()`'s delivery is
+  discarded by a race with an intervening `close()` (mirrors the existing
+  #149 fake-ports test shape). Tier: unit.
+- #252: `tests/unit/` — `persistAppState`-equivalent logic (or its
+  extraction, if the engineer finds a pure seam) handles a rejected
+  `writeAppStateFile` promise without throwing; `console.warn` called once.
+  Tier: unit (reuses the fake-fs-rejection shape already used for
+  `appStateStore.test.ts`'s write-failure case, if any — confirm during
+  implementation; add one if none exists today).
+- #253 (`will-quit` holds for any pending write): extend
+  `tests/e2e/whats-new.spec.ts` or the new spec below with a scenario where
+  a folder is opened immediately before quitting (no What's New window
+  involved) and `state.json` on disk, read back after the process has
+  exited, reflects the folder — proving the quit was held long enough for a
+  *non*-What's-New write. Tier: e2e.
+- #243 (argv wins): new `tests/e2e/session-restore.spec.ts` — launch with
+  both a seeded `state.json` (pointing at folder A / file A) **and** an argv
+  `.md` path pointing at file B; assert file B is what's rendered, and (if
+  cheaply observable) that `state.json`'s folder root is not what gets sent
+  to the tree panel. Tier: e2e.
+- #244/#245/#246/#247/#248 (the restore matrix itself): new
+  `tests/e2e/session-restore.spec.ts`, following `whats-new.spec.ts`'s
+  existing `userDataDir` fixture + hand-seeded `state.json` pattern, against
+  a small fixture folder/file tree created per-test in a temp dir:
+  1. Fresh `userData` (no `state.json`) → pristine empty-state, no tree root
+     sent, `File > Close` disabled (same assertions Task 44 #146 pins).
+  2. Seeded with a real, existing folder + a real, existing `.md` file
+     inside it → file rendered, tree rooted at that folder, watcher active
+     (save the file, confirm live reload fires), `File > Close` enabled.
+  3. Seeded with a real folder but a `lastFileOpenPath` that does not exist
+     → folder's tree shown, empty-state message shown, `File > Close`
+     disabled.
+  4. Seeded with a `lastFolderPath` that does not exist (file path
+     irrelevant/also missing) → pristine empty-state, no tree root sent.
+  5. Seeded with a real, existing file **and** a separate, real, existing
+     folder that is not that file's own directory (the divergence case,
+     #244) → after restore, the tree root is the *seeded folder*, not the
+     opened file's own directory — proving the file-then-folder order, not
+     just that both independently work.
+  6. `showTreePanel: false` in a seeded `settings.json` alongside a valid
+     seeded folder → tree root is restored (sent over `FOLDER_TREE_ROOT`)
+     but the panel itself stays closed per the user's own setting (#245).
+  Tier: e2e.
+
+### Verification plan (claim → code / test)
+
+| Claim | Code | Test |
+|---|---|---|
+| Old-shape `state.json` still parses after the schema widens | `src/main/appState.ts` (`parseAppState`) | `tests/unit/appState.test.ts` (backward-compat case) |
+| `state.json` writes never lose a field another writer owns | `src/main/index.ts` (`persistAppState`, `mergeAppState`) | `tests/unit/appState.test.ts` (`mergeAppState` cases) + e2e scenario 2/6 reading `state.json` back after a What's New-triggering launch *and* a folder open in the same run |
+| A live-reload save never re-writes `lastFileOpenPath` | `src/main/documentSession.ts` (`open()`'s `onOpenFileChanged` call site) | `tests/unit/documentSession.test.ts` (no second call on watcher re-delivery) |
+| Restore order reproduces the folder/file divergence | `src/main/index.ts` (`restoreLastSession`, #244) | `tests/e2e/session-restore.spec.ts` scenario 5 |
+| A missing folder never reaches `establishTreeRoot` | `src/main/index.ts` (`pathIsDirectory` pre-check, `decideSessionRestore`) | `tests/unit/appState.test.ts` (`decideSessionRestore` table) + e2e scenario 4 (no `FOLDER_TREE_ROOT` error payload observed) |
+| Tree-panel visibility is independent of folder restore | `src/main/index.ts` (`restoreLastSession` never calls `forceShowTreePanelAndRebuildMenu`) | `tests/e2e/session-restore.spec.ts` scenario 6 |
+| Argv still wins outright | `src/main/index.ts` (`if (filePath !== null) { … } else { restoreLastSession(); }`) | `tests/e2e/session-restore.spec.ts` scenario 1 of the argv set |
+
+The reviewer re-opens each cited line and reruns the cited test, not this
+table's paraphrase.
+
+### Gate
+
+- `git diff --stat` shows exactly: `src/main/appState.ts`,
+  `src/main/appStateStore.ts` (only if a write-failure test needs a new
+  fixture there — confirm, do not assume), `src/main/documentSession.ts`,
+  `src/main/whatsNew.ts`, `src/main/index.ts`, plus the new/extended test
+  files listed above.
+- `npm run build`, then `npm run test:unit` and `npm run test:integration`,
+  then the full `npm run test:e2e` (not a narrow subset — this task touches
+  the shared `app.whenReady()` startup sequence, which several existing e2e
+  specs assert against: `app-launch.spec.ts`, `close-document.spec.ts`,
+  `whats-new.spec.ts`, `tree-panel.spec.ts`, `file-tree.spec.ts` all launch
+  the real app and could be affected by a startup-ordering mistake).
+- Fault-injection (standing practice since Task 3/5): temporarily break the
+  file-then-folder order in `restoreLastSession` (swap the two lines) and
+  confirm e2e scenario 5 goes RED; revert and confirm GREEN. Temporarily
+  remove the `onOpenFileChanged(null)` call from `close()` and confirm a
+  "close, then relaunch" e2e case goes RED (the file wrongly reopens);
+  revert and confirm GREEN.
+- `grep -n "pendingSeenWrite" src/main/index.ts` returns nothing after the
+  rename (#253) — no stray reference left under the old name.
+
+### In-scope files
+
+- `src/main/appState.ts`
+- `src/main/appStateStore.ts` (touched only if the write-failure unit test
+  needs a seam that isn't already there — read it again before assuming a
+  change is needed)
+- `src/main/documentSession.ts`
+- `src/main/whatsNew.ts`
+- `src/main/index.ts`
+- `tests/unit/appState.test.ts`
+- `tests/unit/documentSession.test.ts`
+- `tests/e2e/session-restore.spec.ts` (new)
+- `tests/e2e/whats-new.spec.ts` (only if guardrail #253's shared-quit-hold
+  scenario is added here rather than to the new spec — engineer's call,
+  state the choice in the close-out report)
+
+### Expected output format
+
+Targeted diffs for all `src/main/*.ts` files (small, scattered edits across
+an already-large `index.ts` — a full rewrite of that file would make the
+diff far harder to review than the change actually is). Full new file for
+`tests/e2e/session-restore.spec.ts`. Targeted diffs for the two extended
+unit test files.
+
+### Spec section this closes
+
+`functional_domain.md` Task 54 section, guardrails #241-#254.
+
+### Stack declaration and calibration
+
+- **Stack:** `.claude/knowledge/nodejs/bibliography.md` and
+  `.claude/knowledge/nodejs/security.md` apply (Node `fs/promises`, async
+  I/O ordering, path handling — same modules Task 44/51 declared).
+  `.claude/knowledge/security/general.md` applies: this task reads two
+  user-controlled-at-rest paths from `state.json` and passes them to `fs`
+  operations — `pathIsDirectory`/`pathIsFile`'s try/catch-to-`false`
+  pattern and `establishTreeRoot`'s existing `realpath` canonicalization are
+  the containment, same as every other path this app already opens; no new
+  trust boundary is crossed (the paths originate from the app's own prior
+  writes, not from network/renderer-supplied input).
+- **`code_profile`: `hardened`.** Real architectural surface
+  (`state.json`'s one-writer invariant, the file-then-folder ordering, the
+  shared pending-write hold) with a genuine correctness risk if under-
+  tested (silent data loss across two features sharing a file) — not a
+  `fast-iteration` candidate.
+- **`docs_profile`: `delivery`.** ADR-015 is already drafted above (the one
+  decision with real, rejected alternatives); no further write-up
+  anticipated beyond the standard RUN_LOG entry at close-out.
+
+### Scope manifest (written only after approval)
+
+`src/main/appState.ts`, `src/main/documentSession.ts`,
+`src/main/whatsNew.ts`, `src/main/index.ts`,
+`tests/unit/appState.test.ts`, `tests/unit/documentSession.test.ts`,
+`tests/e2e/session-restore.spec.ts` (new) — plus `src/main/appStateStore.ts`
+and/or `tests/e2e/whats-new.spec.ts` if the engineer's close-out report
+says either was needed (flagged above as conditional, not assumed).
+
+Branch: `feature/054-remember-last-session`, cut from latest `main` (HEAD
+`0556d6e`, Task 53 merged via PR #25). Task number 54 confirmed against
+RUN_LOG (last row is Task 53) and against `.agents/current_scope.json`
+(absent — no stale manifest at session start).

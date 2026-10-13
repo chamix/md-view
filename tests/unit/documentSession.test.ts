@@ -31,6 +31,7 @@ function harness() {
   const sent: FileRenderedMessage[] = [];
   const watches: FakeWatch[] = [];
   const treeRoots: string[] = [];
+  const openFileChanges: (string | null)[] = [];
   let closedNotifications = 0;
   let occupancyCalls = 0;
 
@@ -60,6 +61,9 @@ function harness() {
     onOccupancyChanged: () => {
       occupancyCalls += 1;
     },
+    onOpenFileChanged: (filePath) => {
+      openFileChanges.push(filePath);
+    },
   };
 
   const session = createDocumentSession(ports);
@@ -78,6 +82,7 @@ function harness() {
     sent,
     watches,
     treeRoots,
+    openFileChanges,
     pendingRenders,
     resolveNext,
     activeWatches: () => watches.filter((w) => !w.closed),
@@ -135,6 +140,63 @@ describe('createDocumentSession: open', () => {
     expect(h.occupancyCalls()).toBe(1);
     expect(h.activeWatches()).toHaveLength(0);
     expect(h.treeRoots).toEqual(['/a/missing.md']);
+  });
+});
+
+describe('createDocumentSession: onOpenFileChanged (Task 54 #249-#251)', () => {
+  it('called with the path on a successful open, right after startWatching, exactly once', async () => {
+    const h = harness();
+    await openAndResolve(h, '/a/A.md');
+
+    expect(h.openFileChanges).toEqual(['/a/A.md']);
+  });
+
+  it('NOT called on a failed (ok:false) open', async () => {
+    const h = harness();
+    await openAndResolve(h, '/a/missing.md', fail);
+
+    expect(h.openFileChanges).toEqual([]);
+  });
+
+  it('NOT called a second time when the watcher re-delivers the same path (a live-reload save must not re-write it, #250)', async () => {
+    const h = harness();
+    await openAndResolve(h, '/a/A.md');
+    expect(h.openFileChanges).toEqual(['/a/A.md']);
+
+    h.watches[0].onChange();
+    await h.resolveNext((f) => ({ ...ok(f), html: '<p>changed</p>' } as FileRenderedMessage));
+
+    expect(h.openFileChanges).toEqual(['/a/A.md']); // still exactly one call
+  });
+
+  it('called with null on an acted close', async () => {
+    const h = harness();
+    await openAndResolve(h, '/a/A.md');
+
+    h.session.close();
+
+    expect(h.openFileChanges).toEqual(['/a/A.md', null]);
+  });
+
+  it('NOT called on an inert close (nothing open, #150)', () => {
+    const h = harness();
+
+    h.session.close();
+
+    expect(h.openFileChanges).toEqual([]);
+  });
+
+  it('NOT called when an open is discarded by a race with Close (#149/#251)', async () => {
+    const h = harness();
+    await openAndResolve(h, '/a/A.md');
+    expect(h.openFileChanges).toEqual(['/a/A.md']);
+
+    const inFlight = h.session.open('/b/B.md');
+    h.session.close(); // '/a/A.md' -> null recorded here
+    await h.resolveNext(ok); // the in-flight '/b/B.md' open resolves, but is discarded (#149)
+    await inFlight;
+
+    expect(h.openFileChanges).toEqual(['/a/A.md', null]); // '/b/B.md' never recorded
   });
 });
 
