@@ -979,3 +979,22 @@ packaging — not assumed fine just because Windows was.
 - [Pending, Task 51 review NB4] `src/main/index.ts` now also holds skin state, skin handlers and the skins focus re-read. Acceptable for the composition root; if it keeps growing, extract a `SkinController`.
 
 - [Pending, Task 51] Tokyo Night preset and the scaffold: `initial_scaffold.md` Task 51 palette table still shows `#787c99` for Tokyo Night dark text-muted; the shipped, user-approved value is `#7d82a0` (AA fix). Code is authoritative.
+
+- [Pending, Task 54 review] `index.ts`'s `persistAppState` (single-slot
+  `pendingStateWrite`, no write-queue) never serializes overlapping calls.
+  `restoreLastSession`'s file-then-folder sequencing legitimately triggers
+  two near-simultaneous `state.json` writes (`onOpenFileChanged` then
+  `establishTreeRoot`'s own persist call), and `atomicWriteFile.ts`'s own
+  comment documents a measured ~1% Windows `fs.rename` retry rate. The
+  in-memory `appState` merge always reflects the latest patch (confirmed
+  behavior-preserving across the Task 54 #252 fix's `persistAppStatePatch`
+  extraction, re-verified independently by the re-review), but if an
+  earlier write's `rename` retries and lands on disk *after* a later
+  write's `rename`, the final `state.json` can silently regress to the
+  earlier, less-complete snapshot. Not a literal guardrail violation (none
+  of #241-254 mandate serialization) and not a deviation from the approved
+  `initial_scaffold.md`/ADR-015 design — a latent gap in that design.
+  Low-probability, self-correcting on the next session-affecting change.
+  Candidate fix: chain each `persistAppState` call off the previous
+  `pendingStateWrite` (a simple write-queue) next time this file is
+  touched. Non-blocking per `review_report.md`.

@@ -353,7 +353,12 @@ test('(h) Open Folder never occupies the slot: menu-close stays disabled and the
   await expectPristineDocumentView(window);
 });
 
-test.describe('(h) Close persists nothing (#152)', () => {
+// #152 was amended by Task 54 (guardrail #250): an acted Close is no longer
+// a complete no-op on state.json -- it now clears lastFileOpenPath to null
+// via onOpenFileChanged(null), and nothing else. settings.json is untouched
+// either way, and an inert Close (nothing open) still leaves state.json
+// completely alone, bytes and mtime both.
+test.describe('(h) Close persists nothing except clearing the open file (#152 amended)', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf8')) as { version: string };
   test.use({
     initialUserDataFiles: {
@@ -366,26 +371,54 @@ test.describe('(h) Close persists nothing (#152)', () => {
     },
   });
 
-  test('Close writes neither settings.json nor state.json (content and mtime unchanged)', async ({
+  function readUserDataFile(userDataDir: string, name: string): { content: string; mtimeMs: number } {
+    const file = path.join(userDataDir, name);
+    return { content: fs.readFileSync(file, 'utf8'), mtimeMs: fs.statSync(file).mtimeMs };
+  }
+
+  test('an acted Close writes nothing to settings.json and clears only lastFileOpenPath in state.json', async ({
     electronApp,
     tree,
     userDataDir,
   }) => {
-    const snapshot = () =>
-      ['settings.json', 'state.json'].map((name) => {
-        const file = path.join(userDataDir, name);
-        return { name, content: fs.readFileSync(file, 'utf8'), mtimeMs: fs.statSync(file).mtimeMs };
-      });
-
     const window = await launchedWindow(electronApp);
     await openViaMenu(electronApp, tree.notes);
     await expect(window.locator('#content')).toContainText('Notes Heading', { timeout: 10000 });
 
-    const before = snapshot();
+    const settingsBefore = readUserDataFile(userDataDir, 'settings.json');
+    const stateBefore = readUserDataFile(userDataDir, 'state.json');
+    const stateBeforeParsed = JSON.parse(stateBefore.content) as Record<string, unknown>;
+    // The open itself already recorded the field this guardrail cares about;
+    // Close clearing it back to null is the behavior under test below.
+    expect(stateBeforeParsed.lastFileOpenPath).toBe(tree.notes);
+
     await clickMenuItem(electronApp, 'menu-close');
     await expectPristineDocumentView(window);
     await settle(500);
 
-    expect(snapshot()).toEqual(before);
+    // settings.json: byte-identical, mtime included -- unchanged half of #152 still holds.
+    expect(readUserDataFile(userDataDir, 'settings.json')).toEqual(settingsBefore);
+
+    // state.json: exactly one field changes (lastFileOpenPath -> null); every
+    // other field recorded before Close (lastSeenVersion, lastFolderPath) is
+    // untouched.
+    const stateAfter = readUserDataFile(userDataDir, 'state.json');
+    expect(JSON.parse(stateAfter.content)).toEqual({ ...stateBeforeParsed, lastFileOpenPath: null });
+    // This is the one field Close is now expected to write -- unlike
+    // settings.json above, state.json's mtime DOES change.
+    expect(stateAfter.mtimeMs).not.toBe(stateBefore.mtimeMs);
+  });
+
+  test('an inert Close (nothing open) still leaves state.json completely untouched', async ({
+    electronApp,
+    userDataDir,
+  }) => {
+    await launchedWindow(electronApp);
+    const stateBefore = readUserDataFile(userDataDir, 'state.json');
+
+    await clickMenuItem(electronApp, 'menu-close'); // nothing open: close() is inert (#150)
+    await settle(500);
+
+    expect(readUserDataFile(userDataDir, 'state.json')).toEqual(stateBefore);
   });
 });
