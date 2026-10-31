@@ -381,6 +381,10 @@ if (typeof document !== 'undefined') {
   window.mdview.onViewSettings((settings) => {
     lastViewSettings = settings;
     applyDarkMode(settings.darkMode);
+    // Task 55: font overrides are a session fact, same posture as Dark Mode
+    // -- applied straight from the pushed ViewSettings, no local tracking
+    // needed (unlike frontmatter visibility, this has no second input).
+    applyFonts(document.body, { uiFontFamily: settings.uiFontFamily, codeFontFamily: settings.codeFontFamily });
     // Task 45 #164: no-op unless darkMode actually changed.
     void diagramController.darkModeChanged(settings.darkMode);
     updateFrontmatterVisibility();

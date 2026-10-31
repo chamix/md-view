@@ -81,7 +81,9 @@ describe('loadSettingsAtStartup', () => {
   });
 
   it('returns the parsed content unchanged when the file is already valid', async () => {
-    const custom = { View: { 'Dark Mode': true, 'Show Frontmatter': false, 'Show File Tree': true } };
+    const custom = {
+      View: { 'Dark Mode': true, 'Show Frontmatter': false, 'Show File Tree': true, 'UI Font': '', 'Code Font': '' },
+    };
     fs.mkdirSync(tempDir, { recursive: true });
     fs.writeFileSync(settingsFilePath, JSON.stringify(custom), 'utf8');
 
@@ -125,7 +127,9 @@ describe('rereadSettingsOnFocus', () => {
   });
 
   it('returns the parsed content when the file is valid', async () => {
-    const custom = { View: { 'Dark Mode': true, 'Show Frontmatter': true, 'Show File Tree': false } };
+    const custom = {
+      View: { 'Dark Mode': true, 'Show Frontmatter': true, 'Show File Tree': false, 'UI Font': '', 'Code Font': '' },
+    };
     fs.mkdirSync(tempDir, { recursive: true });
     fs.writeFileSync(settingsFilePath, JSON.stringify(custom), 'utf8');
 
@@ -157,7 +161,9 @@ describe('ensureSettingsFileExists', () => {
 
 describe('writeSettingsFile', () => {
   it('writes the full pretty-printed object and round-trips through parseSettings', async () => {
-    const custom = { View: { 'Dark Mode': true, 'Show Frontmatter': false, 'Show File Tree': false } };
+    const custom = {
+      View: { 'Dark Mode': true, 'Show Frontmatter': false, 'Show File Tree': false, 'UI Font': '', 'Code Font': '' },
+    };
 
     await writeSettingsFile(settingsFilePath, custom);
 
@@ -179,7 +185,9 @@ describe('writeSettingsFile', () => {
 // cases only; every case above is unchanged.
 describe('Task 47: settings.json is replaced atomically', () => {
   const tmpFiles = () => fs.readdirSync(tempDir).filter((name) => name.endsWith('.tmp'));
-  const custom = { View: { 'Dark Mode': true, 'Show Frontmatter': false, 'Show File Tree': true } };
+  const custom = {
+    View: { 'Dark Mode': true, 'Show Frontmatter': false, 'Show File Tree': true, 'UI Font': '', 'Code Font': '' },
+  };
 
   afterEach(() => {
     task47.slowTruncatingWrite = false;

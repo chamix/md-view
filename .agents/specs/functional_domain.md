@@ -4402,3 +4402,89 @@ ways-of-working standing requirement):
   independently (Task 37/51) and are untouched by this task.
 - Reproducing the exact scroll position or active tab (Preview/Code) of the
   previously open file. Only "which file is open" is in scope.
+
+
+## Task 55: Independent font-override settings (UI font + Code font)
+
+> Numbering note: the request text says "Task 54," but RUN_LOG.md's last
+> entry is Task 54 (remember last open folder/file, commit f68d38f, just
+> merged). This is logged as **Task 55** and the branch is
+> `feature/055-font-settings` accordingly. Flagged to the user in the
+> blueprint presentation; not self-resolved silently.
+
+### Abstract Schema Contracts
+
+- Incoming data map (persisted, on-disk `settings.json`, `View` namespace):
+  two new string fields, `'UI Font'` and `'Code Font'`, sibling to the
+  existing `'Dark Mode'` / `'Show Frontmatter'` / `'Show File Tree'` boolean
+  fields. Each is either the empty string (`''`, meaning "no override") or a
+  free-text font family name the user typed by hand into the file.
+- In-memory/output state (`ViewSettings`, IPC payload shape): two new string
+  fields, `uiFontFamily` and `codeFontFamily`, camelCase siblings of
+  `darkMode` / `showFrontmatter` / `showTreePanel` / `currentTab`. Same
+  empty-string-means-unset convention carries through unchanged.
+- Renderer-applied state: two CSS custom properties on `document.body`,
+  `--font-ui` and `--font-code`, each either a single double-quoted CSS
+  string value (the user's font name) or absent (property removed) when
+  unset or unsafe.
+
+### Pure Transformation Logic
+
+- `'UI Font'` (persisted) <-> `uiFontFamily` (in-memory) and
+  `'Code Font'` (persisted) <-> `codeFontFamily` (in-memory): a straight,
+  symmetric rename, identical in shape to the existing
+  `'Dark Mode'` <-> `darkMode` mapping already performed by
+  `toPersistedViewSettings` / `fromViewSettings`.
+  `uiFontFamily` / `codeFontFamily` (in-memory, validated-safe or empty) ->
+  `--font-ui` / `--font-code` (DOM custom property): if the value is
+  non-empty and passes the renderer-local safety re-check, set the property
+  to a double-quoted CSS string of that value, with no fallback stack
+  appended (the fallback lives only in the CSS `var()` second argument, not
+  in the applied value); otherwise remove the property so the CSS `var()`
+  fallback takes over.
+- This is the exact Dark Mode mechanism (settings.json edit -> focus ->
+  re-read -> validate -> broadcast over the existing `VIEW_SETTINGS` channel
+  -> renderer applies) carrying two more fields. No new channel, window, menu
+  item, or storage file.
+
+### Edge-Case Invariant Guardrails
+
+1. **Whole-file pass/fail collapse (guardrail #104, confirmed, not assumed):**
+   `settingsSchema` is `.strict()` at both the outer and the `View` level,
+   and `parseSettings` returns `result.success ? result.data : null` with no
+   partial recovery path. An invalid font string in either new field makes
+   the entire `settings.json` parse fail (`null`), identical to an invalid
+   `'Dark Mode'` value today — same code path, no per-field exemption. This
+   must be asserted by a new test, not merely inherited by assumption.
+2. **Closed-grammar safety, not a function-level allowlist:** font names are
+   free text (unlike `SYNTAX_THEME_ALLOWLIST`'s closed filename catalog).
+   Safety is enforced by a character-class denylist regex (reject control
+   chars, `'`, `"`, `\`, `;`, `(`, `)`, `<`, `>`, `{`, `}`; allow Unicode
+   letters, digits, spaces, hyphens), anchored, same posture as
+   `isSafeColorValue` — not a hand-picked list of font names.
+3. **Max length 80** (mirrors `MAX_NAME_LENGTH`'s existing-constant style in
+   `skins.ts`, but as its own independent constant — this task does not
+   touch `skins.ts`).
+4. **Empty string is a valid, meaningful value** (unset), not a validation
+   failure — distinct from `isValidCustomSkinName`'s `length >= 1` floor.
+5. **Defence in depth, not blind trust:** the renderer re-validates with its
+   own local regex before calling `style.setProperty`, mirroring
+   `skin.js`'s `isSafeColorText`/`isSafeTokenName` posture — it must not
+   import or require the main-process validator.
+6. **No DOM injection surface:** only `style.setProperty` /
+   `style.removeProperty` touch the DOM for this feature; never `innerHTML`
+   or `cssText`.
+7. **CSS fallback lives in `var()`'s second argument only** — `--font-ui` /
+   `--font-code` must NOT get a `:root` default, unlike every `--color-*`
+   token. This is a deliberate asymmetry: skins replace a whole palette
+   (needs a root default), fonts are an optional partial override (needs the
+   absence of a root default so `var()`'s fallback arm activates when unset).
+8. **No installed-font detection/enumeration, no bundled font files, no
+   picker UI, no new menu item, no new window, no new IPC channel.** These
+   are explicit non-goals, not merely unaddressed scope.
+9. **Fault-injection discipline** applies to the new validator exactly as it
+   does to every existing security-relevant guardrail in this repo
+   (`isSafeColorValue`, `isValidCustomSkinName`, etc.): the test suite must
+   prove the test itself would catch an unsafe value by temporarily
+   weakening the regex (RED), then restoring it (GREEN), then confirming the
+   restore.

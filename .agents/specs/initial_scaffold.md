@@ -9335,3 +9335,117 @@ Branch: `feature/054-remember-last-session`, cut from latest `main` (HEAD
 `0556d6e`, Task 53 merged via PR #25). Task number 54 confirmed against
 RUN_LOG (last row is Task 53) and against `.agents/current_scope.json`
 (absent — no stale manifest at session start).
+
+## Task 55: Independent font-override settings (UI font + Code font)
+
+Maps [functional_domain.md](functional_domain.md)'s Task 55 section to a
+concrete plan. Numbering note: the user's request text called this
+"Task 54"; RUN_LOG's last row is already Task 54 (remember last open
+folder/file, merged, commit f68d38f). This plan uses **Task 55** and
+branch `feature/055-font-settings` instead — flagged for explicit user
+confirmation alongside the rest of this blueprint, not silently corrected.
+
+### The Inward Dependency Rule
+
+No new layer boundary. This task adds two fields along an existing, already
+inward-correct path: persisted file (outer) -> zod-validated `SettingsFile`
+(outer/adapter) -> `ViewSettings` (the app's one shared in-memory view-state
+shape, read by main's menu/IPC layer) -> IPC broadcast (outer) -> renderer
+DOM application (outermost). Domain logic (what the two fields *mean*) stays
+fully described by `functional_domain.md`'s transformation rules; nothing
+here introduces a new inward dependency or lets an outer concern (file
+format, IPC wire shape, CSS custom-property mechanics) leak into a layer
+that shouldn't know about it. `settings.ts`'s adapter functions
+(`toPersistedViewSettings`/`fromViewSettings`) remain the single seam where
+persisted-shape and in-memory-shape are each other's only concern.
+
+### SOLID Boundary Scan
+
+- **SRP:** validation (`isSafeFontName` in `settings.ts`), persistence
+  mapping (`toPersistedViewSettings`/`fromViewSettings`), and DOM
+  application (`applyFonts` in the new `fonts.js`) stay three separate
+  functions in three separate files, exactly mirroring how Dark Mode
+  already splits these concerns — no new field collapses two
+  responsibilities into one function.
+- **DIP:** the renderer does not call into or import anything from
+  `src/main/settings.ts`. It re-derives its own safety check locally
+  (`isSafeFontText` in `fonts.js`), the same defence-in-depth posture
+  `skin.js` already uses for colors/tokens — the renderer depends on the
+  *shape* of `ViewSettings` (a contract, `src/preload/api.ts`), never on
+  main's concrete validator.
+- **OCP:** adding `uiFontFamily`/`codeFontFamily` extends `ViewSettings`,
+  the `View` schema object, and the two adapter functions by adding fields
+  — none of Dark Mode's/Show Frontmatter's/Show File Tree's existing code
+  paths are modified, only read alongside the new ones.
+
+### Pattern Application
+
+No new GoF pattern is warranted. This is a **parallel extension of an
+existing Adapter** (`toPersistedViewSettings`/`fromViewSettings` already
+adapt between the on-disk Title-Case shape and the in-memory camelCase
+shape; two more fields ride the same adapter, not a new one) plus a
+**parallel extension of the existing Observer-ish push** (`VIEW_SETTINGS`
+IPC broadcast -> `onViewSettings` renderer callback already observes main's
+state; no new channel/subject is introduced). Introducing a Strategy,
+Factory, or any other pattern here would be over-engineering for two
+sibling string fields following an established shape.
+
+### Stack declaration
+
+JavaScript/TypeScript (Electron main + classic-script renderer), per
+`.claude/knowledge/nodejs/**` — already declared for this project in prior
+tasks (Task 51/54's own scaffold entries). No new stack-knowledge directory
+needed.
+
+### Calibration suggestion (ADR-007)
+
+- **`code_profile`: `hardened`.** This task adds a new security-relevant
+  guardrail (`isSafeFontName`/`isSafeFontText`, a closed-grammar denylist
+  feeding `style.setProperty`) with an explicit fault-injection
+  requirement (functional_domain.md guardrail #9) and a whole-file
+  pass/fail invariant that must be *confirmed*, not assumed
+  (guardrail #1). That is exactly the review-worthy surface Step 2.5
+  exists for — not a `fast-iteration` candidate.
+- **`docs_profile`: `delivery`.** No blog-detailed write-up requested or
+  warranted; standard RUN_LOG entry at close-out is sufficient.
+
+### Scope manifest (written only after approval)
+
+- `src/preload/api.ts` — add `uiFontFamily`/`codeFontFamily` to
+  `ViewSettings`.
+- `src/main/settings.ts` — `isSafeFontName`, `fontNameSchema`, extend
+  `settingsSchema`'s `View` object, `defaultSettingsFile`,
+  `toPersistedViewSettings`, `fromViewSettings`.
+- `src/renderer/fonts.js` (new) — `FONT_TOKEN_NAMES`, `isSafeFontText`,
+  `applyFonts`, Node/Vitest `module.exports` guard mirroring `skin.js`.
+- `src/renderer/app.css` — swap the 7 fixed `font-family` declarations at
+  (current) lines 38, 240, 340, 348, 360, 376, 417 for `var(--font-ui, ...)`
+  / `var(--font-code, ...)` forms; no `:root` entries added.
+- `src/renderer/renderer.js` — wire `applyFonts` into the existing
+  `onViewSettings` callback (confirmed: this is the *only* apply path;
+  there is no separate synchronous bootstrap apply for Dark Mode or any
+  other `ViewSettings` field to mirror).
+- `index.html` — add `<script src="fonts.js">` after `skin.js`, before
+  `renderer.js`.
+- `src/main/index.ts` — read-only confirmation that `viewSettings`'s
+  startup assignment (`{ ...viewSettings, ...toPersistedViewSettings(startupSettings) }`)
+  already carries the two new fields with no code change required; touched
+  only if that confirmation turns out false.
+- `tests/unit/settings.test.ts` — extend (shape confirmed: existing file,
+  Dark Mode-style cases to mirror for the two new fields plus the
+  whole-file-collapse and round-trip cases).
+- `tests/unit/skin.test.ts` — **not edited**; `tests/unit/fonts.test.ts`
+  (new) mirrors its shape for `fonts.js`'s own exports.
+- `tests/e2e/skins-persistence.spec.ts` — **not edited** (Skins-only, out
+  of scope per functional_domain.md guardrail #8); its focus-re-read
+  pattern (`main?.emit('focus')`, around line 54/169) is the shape a new
+  `tests/e2e/font-settings.spec.ts` (new) follows, not a file it touches.
+
+Explicitly NOT in scope, confirmed untouched: `src/main/skins.ts`,
+`src/main/skinPresets.ts`, `src/main/skinsStore.ts`, `src/renderer/skin.js`,
+any `SKIN` IPC channel code, `skins.json`.
+
+Branch: `feature/055-font-settings`, cut from latest `main` (HEAD
+`f68d38f`, Task 54 merged via PR #26). Task number 55 confirmed against
+RUN_LOG (last row is Task 54) and against `.agents/current_scope.json`
+(absent — no stale manifest at session start).

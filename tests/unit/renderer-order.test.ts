@@ -43,7 +43,7 @@ describe('Task 51: skin.js script order and renderer wiring', () => {
 
   it('loads skin.js after copy.js and before renderer.js (renderer.js is the composition root)', () => {
     const scripts = [...html.matchAll(/<script src="\.\/([a-z.-]+)"><\/script>/g)].map((m) => m[1]);
-    expect(scripts).toEqual(['diagrams.js', 'copy.js', 'skin.js', 'renderer.js']);
+    expect(scripts).toEqual(['diagrams.js', 'copy.js', 'skin.js', 'fonts.js', 'renderer.js']);
   });
 
   it('re-applies the skin from both entry points: the skin push and every Dark Mode application (#226)', () => {
@@ -53,5 +53,15 @@ describe('Task 51: skin.js script order and renderer wiring', () => {
 
   it('resolves theme hrefs against initialBaseURI, never the retargeted document.baseURI', () => {
     expect(rendererSrc).toMatch(/baseUri: initialBaseURI/);
+  });
+
+  // Task 55: onViewSettings is the only apply path for ViewSettings fields
+  // (functional_domain.md Task 55) -- a future refactor that silently
+  // dropped the applyFonts(...) call here would otherwise pass
+  // npm run test:unit undetected, with only the e2e spec catching it.
+  it('wires applyFonts(document.body, ...) into the onViewSettings callback', () => {
+    expect(rendererSrc).toMatch(
+      /window\.mdview\.onViewSettings\(\(settings\) => \{[\s\S]*?applyFonts\(document\.body,/
+    );
   });
 });

@@ -63,6 +63,10 @@ export interface ViewSettings {
   showFrontmatter: boolean;
   showTreePanel: boolean;
   currentTab: DocumentTab;
+  // Task 55: free-text font overrides, '' meaning "no override" (same
+  // empty-string-means-unset convention as the rest of ViewSettings).
+  uiFontFamily: string;
+  codeFontFamily: string;
 }
 
 export interface TreeEntry {

@@ -70,6 +70,10 @@ let viewSettings: ViewSettings = {
   showFrontmatter: true,
   showTreePanel: true,
   currentTab: 'preview',
+  // Task 55: overwritten (like the three keys above) by
+  // toPersistedViewSettings(startupSettings) before createWindow() runs.
+  uiFontFamily: '',
+  codeFontFamily: '',
 };
 
 // Session-scoped, never persisted — same explicit precedent as viewSettings's
@@ -263,7 +267,12 @@ async function rereadSettingsIfChanged(): Promise<void> {
   const unchanged =
     persisted.darkMode === viewSettings.darkMode &&
     persisted.showFrontmatter === viewSettings.showFrontmatter &&
-    persisted.showTreePanel === viewSettings.showTreePanel;
+    persisted.showTreePanel === viewSettings.showTreePanel &&
+    // Task 55: the two font fields ride the same persisted/in-memory split
+    // as the three above -- omitting them here would silently swallow a
+    // focus re-read that changed only a font override.
+    persisted.uiFontFamily === viewSettings.uiFontFamily &&
+    persisted.codeFontFamily === viewSettings.codeFontFamily;
   if (unchanged) return;
 
   viewSettings = { ...viewSettings, ...persisted };

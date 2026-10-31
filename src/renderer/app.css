@@ -35,7 +35,7 @@ body {
   height: 100%;
   display: flex;
   align-items: center;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  font-family: var(--font-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif);
   font-size: 0.85rem;
   color: var(--color-text-primary);
   cursor: default;
@@ -237,7 +237,7 @@ body.dark-mode {
   box-sizing: border-box;
   overflow-y: auto;
   background: var(--color-bg-chrome);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  font-family: var(--font-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif);
   font-size: 0.85rem;
 }
 
@@ -337,7 +337,7 @@ body.tree-panel-hidden #main-panel {
    #frontmatter, same lateral padding as #content so the two tabs' content
    areas line up visually. */
 #code-content {
-  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-family: var(--font-code, ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace);
   white-space: pre-wrap;
   padding-inline: 2rem;
 }
@@ -345,7 +345,7 @@ body.tree-panel-hidden #main-panel {
 #empty-state {
   padding: 2rem;
   color: var(--color-text-muted);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  font-family: var(--font-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif);
 }
 
 #status-bar {
@@ -357,7 +357,7 @@ body.tree-panel-hidden #main-panel {
   background: var(--color-bg-chrome);
   border-top: 1px solid var(--color-border);
   color: var(--color-text-muted);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  font-family: var(--font-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif);
   font-size: 0.85rem;
   white-space: nowrap;
   overflow: hidden;
@@ -373,7 +373,7 @@ body.tree-panel-hidden #main-panel {
   border: 1px solid var(--color-border);
   border-radius: 6px;
   color: var(--color-text-primary);
-  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-family: var(--font-code, ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace);
   font-size: 0.85rem;
   white-space: pre-wrap;
   overflow-wrap: break-word;
@@ -414,7 +414,7 @@ body.tree-panel-hidden #main-panel {
   padding: 0.65rem 0.75rem;
   margin: 0;
   color: var(--color-text-primary);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  font-family: var(--font-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif);
   font-size: 0.9rem;
   cursor: pointer;
 }
