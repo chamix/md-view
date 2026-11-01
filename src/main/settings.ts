@@ -45,8 +45,16 @@ const settingsSchema = z
         'Dark Mode': z.boolean(),
         'Show Frontmatter': z.boolean(),
         'Show File Tree': z.boolean(),
-        'UI Font': fontNameSchema,
-        'Code Font': fontNameSchema,
+        // Task 55 backward-compat fix: a settings.json written before Task
+        // 55 has neither key at all. Mirrors appState.ts's posture for the
+        // same situation (new persisted field added to an existing file) --
+        // .optional().default('') lets a legacy file parse successfully with
+        // both fields read as '' (no override), instead of invalidating the
+        // whole file and triggering loadSettingsAtStartup's self-heal
+        // overwrite. .strict() on the object is unchanged: a genuinely
+        // unknown/extra key still invalidates everything.
+        'UI Font': fontNameSchema.optional().default(''),
+        'Code Font': fontNameSchema.optional().default(''),
       })
       .strict(),
   })

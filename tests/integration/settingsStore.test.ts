@@ -91,6 +91,33 @@ describe('loadSettingsAtStartup', () => {
 
     expect(result).toEqual(custom);
   });
+
+  // Backward-compat regression (Task 55 fix): a settings.json written by
+  // any build through Task 54 has only these three keys -- neither 'UI
+  // Font' nor 'Code Font' exists on disk at all. Must parse successfully
+  // (old values intact, new fields defaulted to '') and must NOT trigger
+  // the self-heal overwrite path, which would otherwise discard the user's
+  // saved Dark Mode/Show Frontmatter/Show File Tree preferences on upgrade.
+  it('preserves a pre-Task-55 (legacy, 3-key) settings.json without rewriting it', async () => {
+    const legacyContent = JSON.stringify({
+      View: { 'Dark Mode': true, 'Show Frontmatter': false, 'Show File Tree': true },
+    });
+    fs.mkdirSync(tempDir, { recursive: true });
+    fs.writeFileSync(settingsFilePath, legacyContent, 'utf8');
+
+    const result = await loadSettingsAtStartup(settingsFilePath);
+
+    expect(result).toEqual({
+      View: {
+        'Dark Mode': true,
+        'Show Frontmatter': false,
+        'Show File Tree': true,
+        'UI Font': '',
+        'Code Font': '',
+      },
+    });
+    expect(fs.readFileSync(settingsFilePath, 'utf8')).toBe(legacyContent);
+  });
 });
 
 describe('rereadSettingsOnFocus', () => {

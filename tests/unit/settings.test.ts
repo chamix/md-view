@@ -51,6 +51,28 @@ describe('parseSettings (pure JSON+schema validation)', () => {
     expect(result).toBeNull();
   });
 
+  // Backward-compat regression (Task 55 fix): a settings.json written by
+  // any build through Task 54 has neither 'UI Font' nor 'Code Font' at
+  // all -- it predates both keys entirely, unlike the "missing a required
+  // key" case above where one of the pre-existing three keys is dropped.
+  it('parses a pre-Task-55 settings.json (no UI Font/Code Font keys at all), defaulting both to "" and leaving the old values unchanged', () => {
+    const raw = JSON.stringify({
+      View: { 'Dark Mode': true, 'Show Frontmatter': true, 'Show File Tree': true },
+    });
+
+    const result = parseSettings(raw);
+
+    expect(result).toEqual({
+      View: {
+        'Dark Mode': true,
+        'Show Frontmatter': true,
+        'Show File Tree': true,
+        'UI Font': '',
+        'Code Font': '',
+      },
+    });
+  });
+
   it('returns null for valid JSON with an extra/unknown key', () => {
     const raw = JSON.stringify({
       View: {
