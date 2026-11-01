@@ -3,6 +3,12 @@ import * as path from 'node:path';
 import type { ElectronApplication } from '@playwright/test';
 import { test, expect } from './support/fixtures';
 
+// Task 56: same clickItem/itemChecked helpers as skins-menu.spec.ts /
+// skins-persistence.spec.ts -- clicking a native menu item by id via the
+// real application menu, never a second hand-built invoker.
+const clickItem = (app: ElectronApplication, id: string) =>
+  app.evaluate(({ Menu }, itemId) => Menu.getApplicationMenu()?.getMenuItemById(itemId)?.click(), id);
+
 // Task 55 (functional_domain.md #52-#58; initial_scaffold.md Task 55).
 // Mirrors tests/e2e/skins-persistence.spec.ts's "focus re-read (#216)"
 // shape: hand-edit settings.json, emit the main window's real 'focus'
@@ -94,5 +100,31 @@ test.describe('focus re-read (#216 posture, Task 55)', () => {
     expect(await fontVar(window, '--font-code')).toBe('');
     expect(fs.readFileSync(settingsPath, 'utf8')).toBe(unsafe);
     expect(fs.existsSync(`${settingsPath}.bak`)).toBe(false);
+  });
+});
+
+// Task 56 (#255-#259): the discoverable View > UI Font path. Selecting a
+// preset from the native menu applies it immediately (--font-ui) and
+// persists the raw preset string (never the 'Default' label) to
+// settings.json, the same choke point setDarkMode/onSelectSkin already use.
+test.describe('View > UI Font menu selection (Task 56)', () => {
+  test.use({ initialUserDataFiles: { 'settings.json': settingsJson(), 'state.json': STATE_JSON } });
+
+  test("selecting 'Segoe UI' from the UI Font menu updates --font-ui and persists 'UI Font': 'Segoe UI' (never 'Default')", async ({
+    electronApp,
+    userDataDir,
+  }) => {
+    const window = await electronApp.firstWindow();
+    const settingsPath = path.join(userDataDir, 'settings.json');
+
+    expect(await fontVar(window, '--font-ui')).toBe('');
+
+    // UI_FONT_PRESETS = ['Default', 'Segoe UI', ...] -- index 1.
+    await clickItem(electronApp, 'menu-ui-font-1');
+
+    await expect.poll(() => fontVar(window, '--font-ui')).toBe('"Segoe UI"');
+    await expect
+      .poll(() => (JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>).View)
+      .toMatchObject({ 'UI Font': 'Segoe UI' });
   });
 });

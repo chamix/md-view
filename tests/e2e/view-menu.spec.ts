@@ -205,7 +205,7 @@ test('(g) toggling a View setting immediately persists the full settings object 
 
   const onDisk = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
   expect(onDisk).toEqual({
-    View: { 'Dark Mode': false, 'Show Frontmatter': false, 'Show File Tree': true },
+    View: { 'Dark Mode': false, 'Show Frontmatter': false, 'Show File Tree': true, 'UI Font': '', 'Code Font': '' },
   });
 });
 

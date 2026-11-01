@@ -180,3 +180,114 @@ Read `.claude/knowledge/architecture/principles.md`. This is a narrow schema-def
 - **Nit:** none — the fix is minimal, precedent-consistent with Task 54's `appState.ts`, fully test-covered, and the regression tests were verified to fail for the exact claimed reason before the fix and pass after.
 
 **Recommendation to Lead:** clear to proceed to Step 3 (log run, delete `current_scope.json`, deliver per branching strategy on `feature/055-font-settings`).
+
+---
+
+## Review: Task 56 (UI Font / Code Font preset menus)
+
+Branch `feature/056-font-presets-menu`, uncommitted working-tree changes reviewed via `git diff`.
+
+### Evidence trail
+
+**Scope check (`.agents/current_scope.json` vs. `git status --porcelain`):**
+```
+ M src/main/index.ts
+ M src/main/menu.ts
+ M tests/e2e/font-settings.spec.ts
+ M tests/e2e/window-chrome.spec.ts
+ M tests/unit/menu.test.ts
+?? src/main/fontPresets.ts
+```
+Exactly the 6 declared in-scope files. The additional modified files in the full `git status` (`.agents/metrics/test-tier-invocations.ndjson`, `.agents/specs/functional_domain.md`, `.agents/specs/initial_scaffold.md`, `.agents/current_scope.json`) are the Lead's spec/governance files and the auto-appended hook metrics file — informational, not an engineer scope violation, consistent with prior-task precedent.
+
+**Guardrail #259 (zero-diff files) — confirmed:**
+```
+git diff --stat -- src/main/settings.ts src/renderer/fonts.js src/renderer/app.css src/main/skins.ts src/main/skinPresets.ts src/main/skinsStore.ts src/renderer/skin.js
+```
+→ empty output. Zero diff confirmed on all seven named files.
+
+**fontPresets.ts (new file) — read in full.** Zero `electron`/`node` imports. Contains only `UI_FONT_PRESETS`, `CODE_FONT_PRESETS` (two literal string arrays, `'Default'` first in each), `presetToStored` (`name === 'Default' ? '' : name`), `storedToPreset` (`stored === '' ? 'Default' : stored`). No validation logic — correctly deferred to the caller per its own comment. This is a pure, leaf, peripheral-boundary data module — matches `skinPresets.ts`'s posture exactly.
+
+**menu.ts diff (hunks cited):**
+- New `FontMenu` interface (`uiNames`, `uiActiveName`, `codeNames`, `codeActiveName`) — `buildMenuTemplate` depends on this abstraction, not on `fontPresets.ts` directly (DIP preserved, mirrors `SkinMenu`).
+- Two new submenus, each built as a `.map((name, index) => ...)` over the relevant preset list, producing items with `id: menu-ui-font-<index>` / `menu-code-font-<index>`, `checked: name === fontMenu.uiActiveName` (or `codeActiveName`), and `click: () => handlers.onSelectUiFont(name)` (or `onSelectCodeFont`). IDs are strictly index-derived (guardrail #257 satisfied — confirmed by reading the literal template code, not inferred).
+- No `Edit…` item added to either submenu — confirmed by `grep -n "Edit" src/main/menu.ts` returning only the pre-existing `menu-skin-edit` line (guardrail #258 partially confirmed this way).
+
+**index.ts diff (hunks cited):**
+- `fontMenuState()` added, mirrors `skinMenuState()`, maps stored values through `storedToPreset` before comparison.
+- `onSelectUiFont`/`onSelectCodeFont` follow a guard-then-mutate shape identical to `onSelectSkin`'s `listSkinNames(...).includes(name)` guard: reject (typeof check plus `UI_FONT_PRESETS.includes(name)` / `CODE_FONT_PRESETS.includes(name)`) with an early return — no state change, no broadcast, no write (guardrail #256 confirmed by direct code read); on acceptance, assign `viewSettings = { ...viewSettings, uiFontFamily: presetToStored(name) }` (or `codeFontFamily`), then `broadcastViewSettings()` and `await persistCurrentViewSettings()`. `presetToStored(name)` is the only value ever assigned to `viewSettings.uiFontFamily`/`codeFontFamily` — `'Default'` itself is never assigned, so it cannot reach `ViewSettings`/the `VIEW_SETTINGS` broadcast/settings.json (guardrail #255 confirmed).
+- Both `buildMenuTemplate(...)` call sites (`applyMenu()` at the `Menu.setApplicationMenu` line, and the `POPUP_MENU` `ipcMain.on` handler) updated to pass `fontMenuState()`. Grepped `buildMenuTemplate(` across `src/` — confirmed exactly 2 call sites, both updated, no third site missed.
+- Grepped `IPC_CHANNELS.` usage in `index.ts` — no new IPC channel introduced for fonts (guardrail #258 confirmed).
+
+### Boundary/scope compliance
+
+Matches `.agents/current_scope.json` exactly (see git status above). No out-of-scope file touched by the engineer.
+
+### Architecture / SOLID / GoF scan (per `.claude/knowledge/architecture/principles.md`)
+
+- **Inward dependency rule:** `fontPresets.ts` is a leaf — nothing imports it except `index.ts` (confirmed: only `src/main/index.ts` imports from `./fontPresets`), and it imports nothing. `menu.ts` continues to depend only on the `FontMenu` abstraction, not on `fontPresets.ts` — consistent with the Skin pattern.
+- **SRP:** cleanly split — `fontPresets.ts` (catalog+mapping), `menu.ts` (shape), `index.ts` (orchestration/persistence). No bleed observed in the diff.
+- **DIP:** confirmed above — `buildMenuTemplate` takes `FontMenu` as a parameter rather than importing the preset module.
+- **GoF/pattern fit:** agree with the scaffold's judgment that no new pattern (Factory/Observer/etc.) is warranted here. Reusing the `includes()`-guard-then-mutate shape verbatim for two radio groups is appropriate reuse, not under-engineering disguised as laziness — the two handlers are genuinely structurally identical to `onSelectSkin`, and introducing an abstraction over two call sites would be premature. No objection to the "verbatim reuse of Task 51's Skin-submenu pattern" judgment call.
+
+One **Nit**: `onSelectUiFont`/`onSelectCodeFont` in `index.ts` are near-duplicate functions (identical shape, different field name and constant). This is the same duplication Task 51's single `onSelectSkin` didn't have to face (only one skin field existed). Two near-identical 4-line functions is not yet a DRY violation worth blocking on, but if a third font category is ever added (as the scaffold's OCP note hypothesizes), a shared `selectFontPreset(presets, field, name)` helper would be the natural next refactor. Not blocking — flagging for awareness only.
+
+### Test suite runs (performed directly by reviewer)
+
+**Unit:**
+```
+npm run test:unit
+ Test Files  39 passed (39)
+      Tests  724 passed (724)
+```
+
+**Integration:**
+```
+npm run test:integration
+ Test Files  10 passed (10)
+      Tests  119 passed (119)
+```
+(One stderr line from a pre-existing, intentionally-mocked failure-capture test in `whatsNew`-related integration coverage — not a failure, matches the pre-existing pattern noted in the Task 55 review above this section.)
+
+**Type check:**
+```
+npx tsc --noEmit -p .
+```
+→ no output, exit clean.
+
+**Targeted e2e (after `npm run build`, confirming the dist bundle reflects this diff):**
+```
+npx playwright test tests/e2e/font-settings.spec.ts tests/e2e/window-chrome.spec.ts
+24 passed (25.6s)
+```
+Includes the new Task 56 test (selecting 'Segoe UI' from the UI Font menu updates `--font-ui` and persists `'UI Font': 'Segoe UI'`, never `'Default'`) and both updated window-chrome full-array assertions (ids ending `..., 'menu-skin', 'menu-ui-font', 'menu-code-font'`), all passing.
+
+### Menu-ID-test grep sweep (per session memory: grep every test file for menu IDs after a menu-shape change)
+
+Grepped `menu-skin` and `menu-dark-mode` across `tests/` to find any other file asserting a full View-submenu-id array that might have gone stale. Only `tests/e2e/window-chrome.spec.ts` contains such full-array assertions (2 occurrences, both in the `(d)` and `(g)` describe blocks) — both were updated in this diff. `tests/e2e/skins-menu.spec.ts` and `tests/e2e/skins-persistence.spec.ts` reference `menu-skin-<index>` ids but only within the Skin submenu's own item list, which is unaffected by this change — correctly left untouched.
+
+### Engineer's claim of 3 pre-existing, unrelated full-e2e-suite failures — spot-checked
+
+Engineer's report claims `settings-locked.spec.ts`, `view-menu.spec.ts`, `whats-new.spec.ts` fail identically on a clean main-equivalent tree. I independently ran one of the three directly:
+```
+npx playwright test tests/e2e/settings-locked.spec.ts
+```
+→ 1 failed: "a View toggle while settings.json is held open is contained, and the next write persists the full object (condition 3e)". Raw diff from the failure showed the expected object missing `"Code Font": ""` and `"UI Font": ""` keys that the actual result includes.
+
+Root cause: the test's expected object predates Task 55's addition of the `'UI Font'`/`'Code Font'` persisted fields — it has nothing to do with Task 56's menu-layer changes. Confirmed via history: `git diff --stat -- tests/e2e/settings-locked.spec.ts tests/e2e/view-menu.spec.ts tests/e2e/whats-new.spec.ts` on this branch returns empty (zero diff — the engineer did not touch these files), and `git log --oneline -1` on each shows last modification predating Task 55 (`eec0a09`), which is where the `'UI Font'`/`'Code Font'` fields were introduced into the persisted schema (`src/main/settings.ts`, also zero-diff on this branch). This is consistent with the engineer's claim: a Task-55-era pre-existing gap, not something Task 56 caused.
+
+Not independently re-run by the reviewer: `view-menu.spec.ts` and `whats-new.spec.ts` — relying on the same zero-diff + pre-Task-55-last-touch evidence for those two, which is consistent with but not identical to directly observing their failure output. Flagged explicitly as a verification gap, not swept under the rug.
+
+### ADR-010 test-correction check: `tests/unit/menu.test.ts`'s "View submenu has exactly N entries" test
+
+The diff changes this test's literal count from 8 to 10, with a new comment following the same "Task N expectation change (disclosed)" convention Task 51 itself established in this exact test (whose own prior comment, documenting its 6-to-8 change, remains visible above it in the diff context). This is not a correction of a previously-wrong assertion discovered after RED — it is a disclosed, pattern-consistent expectation update forced by an intentional structural addition (two new top-level View items). ADR-010's "not skippable" trigger (a test correction after RED) does not apply here — moot in this case regardless, since `code_profile: hardened` was already in effect and Step 2.5 was never skipped.
+
+### Verdict
+
+**PASS.**
+
+- **Blocking:** none.
+- **Should-fix:** none.
+- **Nit:** `onSelectUiFont`/`onSelectCodeFont` in `src/main/index.ts` are structurally identical 4-line functions differing only by field name and preset-list constant; worth factoring into a shared helper if/when a third font category is ever added, not before. Not blocking.
+
+**Recommendation to Lead:** clear to proceed to Step 3 (log run, delete `current_scope.json`, deliver per branching strategy on `feature/056-font-presets-menu`).

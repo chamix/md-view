@@ -255,6 +255,10 @@ test.describe('(d) title-bar menu labels popup the real, shared buildMenuTemplat
       // Task 51: forced expectation change (Skin submenu appended to View).
       'separator',
       'menu-skin',
+      // Task 56: forced expectation change (UI Font / Code Font submenus
+      // appended directly after Skin, no new separator).
+      'menu-ui-font',
+      'menu-code-font',
     ]);
 
     await window.locator('#menu-label-help').click();
@@ -550,6 +554,10 @@ test.describe('(g) #title-bar stays fixed and remains functional while the page 
       // Task 51: forced expectation change (Skin submenu appended to View).
       'separator',
       'menu-skin',
+      // Task 56: forced expectation change (UI Font / Code Font submenus
+      // appended directly after Skin, no new separator).
+      'menu-ui-font',
+      'menu-code-font',
     ]);
 
     await window.locator('#menu-label-help').click();
