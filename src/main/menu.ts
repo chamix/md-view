@@ -15,6 +15,11 @@ export interface MenuHandlers {
   // Task 51: one receiver behind the native menu and the title-bar popup.
   onSelectSkin: (name: string) => void;
   onEditSkins: () => void;
+  // Task 56: receives the raw preset-list string (e.g. 'Default'). The
+  // Default -> '' mapping happens in index.ts's handler, not here -- mirrors
+  // how menu.ts never does the skin-name validation either.
+  onSelectUiFont: (name: string) => void;
+  onSelectCodeFont: (name: string) => void;
 }
 
 // Task 51: the Skin submenu's inputs. Names are user data (custom skins), so
@@ -22,6 +27,17 @@ export interface MenuHandlers {
 export interface SkinMenu {
   names: string[];
   activeName: string;
+}
+
+// Task 56: the UI Font / Code Font submenus' inputs. Both lists are the
+// fixed curated presets (fontPresets.ts); activeName is already mapped
+// through storedToPreset, so 'Default' compares correctly against the
+// preset-list entries.
+export interface FontMenu {
+  uiNames: string[];
+  uiActiveName: string;
+  codeNames: string[];
+  codeActiveName: string;
 }
 
 // '&' is the accelerator marker in Windows/Linux menu labels; doubling it
@@ -38,7 +54,8 @@ export function buildMenuTemplate(
   handlers: MenuHandlers,
   initialViewSettings: ViewSettings,
   documentOpen: boolean,
-  skinMenu: SkinMenu
+  skinMenu: SkinMenu,
+  fontMenu: FontMenu
 ): MenuItemConstructorOptions[] {
   return [
     {
@@ -121,6 +138,32 @@ export function buildMenuTemplate(
             { type: 'separator' },
             { id: 'menu-skin-edit', label: 'Edit Skins…', click: handlers.onEditSkins },
           ],
+        },
+        {
+          id: 'menu-ui-font',
+          label: 'UI Font',
+          submenu: fontMenu.uiNames.map(
+            (name, index): MenuItemConstructorOptions => ({
+              id: `menu-ui-font-${index}`,
+              label: menuLabelText(name),
+              type: 'radio',
+              checked: name === fontMenu.uiActiveName,
+              click: () => handlers.onSelectUiFont(name),
+            })
+          ),
+        },
+        {
+          id: 'menu-code-font',
+          label: 'Code Font',
+          submenu: fontMenu.codeNames.map(
+            (name, index): MenuItemConstructorOptions => ({
+              id: `menu-code-font-${index}`,
+              label: menuLabelText(name),
+              type: 'radio',
+              checked: name === fontMenu.codeActiveName,
+              click: () => handlers.onSelectCodeFont(name),
+            })
+          ),
         },
       ],
     },

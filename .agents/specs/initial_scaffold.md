@@ -9449,3 +9449,102 @@ Branch: `feature/055-font-settings`, cut from latest `main` (HEAD
 `f68d38f`, Task 54 merged via PR #26). Task number 55 confirmed against
 RUN_LOG (last row is Task 54) and against `.agents/current_scope.json`
 (absent — no stale manifest at session start).
+
+## Task 56: UI Font / Code Font Preset Menus
+
+### The Inward Dependency Rule
+
+- `fontPresets.ts` is a new peripheral-boundary leaf: pure data, zero
+  `electron`/`node` imports, same posture as `skinPresets.ts`. It sits
+  beside, not inside, the menu-construction layer.
+- `menu.ts` (pure template builder) depends only on its own types plus the
+  `ViewSettings`/`DocumentTab` types it already imports — no new inward
+  dependency direction introduced. `index.ts` (composition root /
+  peripheral boundary: Electron APIs, IPC, filesystem via `settingsStore`)
+  is the only layer allowed to import `fontPresets.ts`'s mapping functions
+  *and* call into Electron — consistent with where `skinPresets.ts` is
+  consumed today (only via `skins.ts`, itself only consumed by `index.ts`).
+- No dependency points outward from `fontPresets.ts` back toward
+  `menu.ts`/`index.ts` — it is a leaf.
+
+### SOLID Boundary Scan
+
+- **SRP:** `fontPresets.ts` owns exactly one responsibility — the preset
+  catalogs and the display<->stored mapping. `menu.ts` continues to own
+  only menu *shape*; `index.ts` continues to own orchestration (state
+  mutation, broadcast, persistence). No responsibility bleeds across these
+  three files.
+- **OCP:** adding a third font category later (hypothetical) would mean
+  adding a new preset array + a third pair of menu/handler functions
+  mirroring this task's shape — it would not require changing the
+  `presetToStored`/`storedToPreset` functions' own logic, since they're
+  parameterized by which list to check against, not hardcoded to UI/Code.
+- **DIP:** `menu.ts`'s `buildMenuTemplate` depends on the `FontMenu`
+  abstraction (names + active name, passed in), not on `fontPresets.ts`
+  directly — mirrors `SkinMenu`'s existing role as the interface that
+  decouples the pure template builder from where its data actually comes
+  from.
+
+### Pattern Application (GoF)
+
+- **Strategy-shaped validation, not a new pattern:** the existing
+  `includes()`-guard-then-mutate shape (`onSelectSkin`) is reapplied
+  verbatim for two independent radio groups — this is pattern *reuse*
+  within an established convention, not a new GoF pattern introduction.
+  No Factory, no Observer, no new abstraction is warranted for two fixed
+  literal arrays and two mirrored handler functions; introducing one here
+  would be over-engineering relative to the problem's actual shape (per
+  `principles.md`'s "prefer composition... not over-engineered" review
+  criterion).
+
+### Stack declaration
+This project uses `.claude/knowledge/nodejs/` (bibliography.md,
+security.md) — both already exist, no new stack file needed.
+
+### Scope manifest (written only after approval)
+
+- `src/main/fontPresets.ts` (new) — `UI_FONT_PRESETS`, `CODE_FONT_PRESETS`,
+  `presetToStored`, `storedToPreset`.
+- `src/main/menu.ts` — `MenuHandlers.onSelectUiFont`/`onSelectCodeFont`,
+  new `FontMenu` interface, `buildMenuTemplate`'s new parameter, two new
+  View submenus placed after the existing Skin submenu.
+- `src/main/index.ts` — `fontMenuState()`, `onSelectUiFont`/`onSelectCodeFont`
+  (mirroring `setDarkMode`'s three-line shape with the `onSelectSkin`-style
+  guard), wiring into `menuHandlers()` and both `buildMenuTemplate(...)`
+  call sites (`applyMenu()` and the `POPUP_MENU` IPC handler).
+- `tests/unit/menu.test.ts` — unit test for `presetToStored`/`storedToPreset`
+  (valid preset, `'Default'`, unknown name) and extension of the existing
+  Skin-submenu-shaped checked-state tests for both new submenus, including
+  the View submenu's now-10-entry count (was 8; Task 51's #120 test must be
+  updated in place, not duplicated).
+- `tests/e2e/font-settings.spec.ts` — new Playwright case: select a UI Font
+  preset from the menu, assert `--font-ui` changes on `body` (reusing Task
+  55's existing assertion helper), assert settings.json reflects the choice.
+
+**Scope amendment identified during Step 1 (flagged for approval, not
+silently added):** `tests/e2e/window-chrome.spec.ts` must also be added to
+`in_scope`. Two exact-array assertions in that file's "(d) title-bar menu
+labels popup the real, shared buildMenuTemplate() sections" describe block
+(the full `View` popup item-id list, asserted twice, ending `..., 'separator',
+'menu-skin'`) will go stale the moment two more top-level View items exist —
+each needs exactly two more entries appended (`'menu-ui-font'`,
+`'menu-code-font'`, the new submenus' own wrapper ids). This is a
+grep-verified, scoped, mechanical two-line fix in an existing file, not a
+behavior change to that suite. (Per this session's own prior-task memory:
+menu-shape changes require grepping every test file for menu ids before
+delegating, not just the primary menu test file.)
+
+Explicitly NOT in scope, confirmed untouched: `src/main/settings.ts`,
+`src/renderer/fonts.js`, `src/renderer/app.css`, `src/main/skins.ts`,
+`src/main/skinPresets.ts`, `src/main/skinsStore.ts`, `src/renderer/skin.js`,
+any `SKIN` IPC channel code, `skins.json`, any new IPC channel.
+
+Branch: `feature/056-font-presets-menu`, cut from latest `main` (HEAD
+`0dbb87a`, Task 55 + its backward-compat correction merged via PR #27/#28).
+
+**Calibration (ADR-007):** suggested `code_profile: hardened` (this touches
+the native menu template and a selection-validation guard — same risk
+class as Task 51's Skin submenu, which was reviewed under `hardened`; no
+property of this task argues for `fast-iteration`'s lighter 2-cycle cap).
+No documentation deliverable is in this task's definition of done, so no
+`docs_profile` is proposed.

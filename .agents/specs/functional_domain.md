@@ -4488,3 +4488,72 @@ ways-of-working standing requirement):
    prove the test itself would catch an unsafe value by temporarily
    weakening the regex (RED), then restoring it (GREEN), then confirming the
    restore.
+
+## Task 56: UI Font / Code Font Preset Menus
+
+### Abstract Schema Contracts
+
+- **No new persisted or wire schema.** This task adds zero new fields to
+  any data contract. It is purely a second *input surface* (View menu radio
+  selection) feeding the exact same `uiFontFamily`/`codeFontFamily` strings
+  on `ViewSettings` that Task 55's free-text mechanism already defined and
+  validates (`isSafeFontName`/`fontNameSchema`). The settings.json shape,
+  the `VIEW_SETTINGS` broadcast payload, and the renderer's font-apply path
+  are all unchanged.
+- **A fixed, curated name catalog** (two short string lists, UI and Code)
+  is the only new data this task introduces, and it is compile-time
+  literal data, not a schema — mirrors `skinPresets.ts`'s `BUILT_IN_SKINS`
+  posture (Task 51) of "pure catalog data, no validation logic of its own;
+  validation is the existing choke point's job."
+- **Display-label vs. stored-value duality.** `'Default'` is a menu-only
+  display label for "no override" (`''`). This is the same duality
+  `activeSkinName()`/`resolveSkin()` already resolve for Skins (an
+  unknown/empty `activeSkin` resolves to the `Default` skin's *name* for
+  display), but inverted in direction here: Skins resolves stored->display
+  only; fonts need both display->stored (on selection) and stored->display
+  (for the checked-radio comparison), so both directions of the mapping
+  must be defined, in one place, not reimplemented at each of the two call
+  sites.
+
+### Pure Transformation Logic
+
+- `presetToStored('Default') -> ''`; `presetToStored(anyOtherListedName) -> anyOtherListedName` (identity).
+- `storedToPreset('') -> 'Default'`; `storedToPreset(anyOtherListedName) -> anyOtherListedName` (identity).
+- Selection guard: a selected name must appear in the relevant preset list
+  (`UI_FONT_PRESETS`/`CODE_FONT_PRESETS`) before `presetToStored` runs;
+  anything else is rejected with no state change — same shape as
+  `onSelectSkin`'s existing `listSkinNames(...).includes(name)` guard
+  (#134 region of `index.ts`), applied to a fixed literal list instead of a
+  dynamic skins-file-derived one.
+
+### Edge-Case Invariant Guardrails
+
+255. **The literal string `'Default'` must never reach `settings.json` or
+     the `ViewSettings`/`VIEW_SETTINGS` payload.** It exists only inside
+     the menu layer (`fontPresets.ts`'s mapping + the two menu-state
+     builders in `index.ts`) as a display label. Any code path that could
+     write it to disk or broadcast it is a defect, not a style choice.
+256. **An unknown/forged font name reaching `onSelectUiFont`/
+     `onSelectCodeFont` (e.g. from a popup-menu IPC replay, mirroring the
+     threat model `onSelectSkin`'s guard already defends against) is
+     rejected with no state change, no broadcast, no write** — identical
+     posture to `onSelectSkin`'s `includes()` guard, applied against the
+     fixed preset list rather than the dynamic skin-name list.
+257. **Menu item ids for both new submenus are index-derived
+     (`menu-ui-font-${index}` / `menu-code-font-${index}`), never derived
+     from the preset strings** — same rule as `menu-skin-${index}` (#211
+     region), applied here as a consistency/convention matter only: unlike
+     Skins' user-authored names, these preset strings are fixed source
+     literals already under this repo's control, so there is no actual
+     injection surface at this call site — but a second, differently-built
+     id-generation rule in the same file would be a maintenance hazard and
+     an unexplained asymmetry for a future reader.
+258. **No new IPC channel, no installed-font detection/enumeration, no new
+     window, no `Edit…` entry for either new submenu.** Explicit non-goals
+     carried forward unchanged from Task 55's #8 posture and the delegation
+     brief: arbitrary font names outside the two preset lists remain
+     reachable only via File -> Settings' existing hand-edit path.
+259. **`src/main/settings.ts`, `src/renderer/fonts.js`, `src/renderer/app.css`,
+     and every Skins file are zero-diff for this task.** This task is
+     additive at the menu layer only; the font-apply/validate/persist
+     mechanism Task 55 built is consumed, not modified.

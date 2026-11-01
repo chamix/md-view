@@ -109,7 +109,7 @@ test('a View toggle while settings.json is held open is contained, and the next 
         return null;
       }
     }, { timeout: 10000 })
-    .toEqual({ View: { 'Dark Mode': true, 'Show Frontmatter': false, 'Show File Tree': true } });
+    .toEqual({ View: { 'Dark Mode': true, 'Show Frontmatter': false, 'Show File Tree': true, 'UI Font': '', 'Code Font': '' } });
 
   const after = await readProbe(electronApp);
   expect(after.rejections).toEqual([]);

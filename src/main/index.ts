@@ -29,7 +29,8 @@ import { toPersistedViewSettings, fromViewSettings } from './settings';
 import { loadSkinsAtStartup, rereadSkinsOnFocus, ensureSkinsFileExists, writeSkinsFile, canPersistSkinChange } from './skinsStore';
 import { defaultSkinsFile, resolveSkin, listSkinNames, toSkinPayload } from './skins';
 import type { SkinsFile } from './skins';
-import type { SkinMenu } from './menu';
+import type { SkinMenu, FontMenu } from './menu';
+import { UI_FONT_PRESETS, CODE_FONT_PRESETS, presetToStored, storedToPreset } from './fontPresets';
 
 let mainWindow: BrowserWindow | null = null;
 let helpWindow: BrowserWindow | null = null;
@@ -116,6 +117,18 @@ function skinMenuState(): SkinMenu {
   return { names: listSkinNames(skinsFile), activeName: activeSkinName() };
 }
 
+// Task 56: mirrors skinMenuState(). The stored value ('' meaning "no
+// override") is mapped through storedToPreset so the comparison against the
+// fixed preset list's entries (including the 'Default' label) lines up.
+function fontMenuState(): FontMenu {
+  return {
+    uiNames: [...UI_FONT_PRESETS],
+    uiActiveName: storedToPreset(viewSettings.uiFontFamily),
+    codeNames: [...CODE_FONT_PRESETS],
+    codeActiveName: storedToPreset(viewSettings.codeFontFamily),
+  };
+}
+
 // toSkinPayload is the choke point (#211): every color and filename is
 // re-validated here, immediately before leaving main.
 function broadcastSkin(): void {
@@ -158,6 +171,26 @@ async function onEditSkins(): Promise<void> {
     warnSkinsWriteFailed(error);
   }
   await shell.openPath(skinsFilePath);
+}
+
+// Task 56 (#255-#259): selection guard mirrors onSelectSkin's -- only names
+// from the fixed preset list are accepted (never renderer- or id-derived
+// input); an unknown/forged name is rejected with no state change, no
+// broadcast, no write. On a valid name, presetToStored() maps the
+// display-only 'Default' label to '' before it ever reaches viewSettings/the
+// VIEW_SETTINGS payload/settings.json (#255), then persists like setDarkMode.
+async function onSelectUiFont(name: string): Promise<void> {
+  if (typeof name !== 'string' || !UI_FONT_PRESETS.includes(name)) return;
+  viewSettings = { ...viewSettings, uiFontFamily: presetToStored(name) };
+  broadcastViewSettings();
+  await persistCurrentViewSettings();
+}
+
+async function onSelectCodeFont(name: string): Promise<void> {
+  if (typeof name !== 'string' || !CODE_FONT_PRESETS.includes(name)) return;
+  viewSettings = { ...viewSettings, codeFontFamily: presetToStored(name) };
+  broadcastViewSettings();
+  await persistCurrentViewSettings();
 }
 
 async function setDarkMode(checked: boolean): Promise<void> {
@@ -209,6 +242,8 @@ function menuHandlers(): MenuHandlers {
     onOpenSettings,
     onSelectSkin,
     onEditSkins,
+    onSelectUiFont,
+    onSelectCodeFont,
     // Task 44: one receiver behind three invokers (native menu, title-bar
     // popup, CmdOrCtrl+W), never three implementations.
     onClose: () => documentSession.close(),
@@ -282,7 +317,9 @@ async function rereadSettingsIfChanged(): Promise<void> {
 
 function applyMenu(): void {
   Menu.setApplicationMenu(
-    Menu.buildFromTemplate(buildMenuTemplate(menuHandlers(), viewSettings, documentSession.isOpen(), skinMenuState()))
+    Menu.buildFromTemplate(
+      buildMenuTemplate(menuHandlers(), viewSettings, documentSession.isOpen(), skinMenuState(), fontMenuState())
+    )
   );
 }
 
@@ -880,7 +917,13 @@ app.whenReady().then(async () => {
   // a second, hand-duplicated menu description.
   ipcMain.on(IPC_CHANNELS.POPUP_MENU, (_e, section: 'file' | 'view' | 'help', x: number, y: number) => {
     const index = menuSectionIndex(section);
-    const template = buildMenuTemplate(menuHandlers(), viewSettings, documentSession.isOpen(), skinMenuState());
+    const template = buildMenuTemplate(
+      menuHandlers(),
+      viewSettings,
+      documentSession.isOpen(),
+      skinMenuState(),
+      fontMenuState()
+    );
     Menu.buildFromTemplate(template[index].submenu as MenuItemConstructorOptions[]).popup({
       window: mainWindow ?? undefined,
       x,
