@@ -429,3 +429,6 @@
 {"ts":"2026-10-31T22:09:25.897Z","path":"src/renderer/index.html","scripts":[{"script":"test:unit","exitCode":1,"durationMs":9844}],"ok":false}
 {"ts":"2026-10-31T22:11:19.893Z","path":"tests/unit/renderer-order.test.ts","scripts":[{"script":"test:unit","exitCode":0,"durationMs":6811}],"ok":true}
 {"ts":"2026-10-31T22:18:28.958Z","path":"tests/unit/renderer-order.test.ts","scripts":[{"script":"test:unit","exitCode":0,"durationMs":6145}],"ok":true}
+{"ts":"2026-11-01T12:56:32.757Z","path":"src/main/settings.ts","scripts":[{"script":"test:unit","exitCode":0,"durationMs":9409},{"script":"test:integration","exitCode":0,"durationMs":5642}],"ok":true}
+{"ts":"2026-11-01T12:56:44.534Z","path":"tests/unit/settings.test.ts","scripts":[{"script":"test:unit","exitCode":0,"durationMs":5869}],"ok":true}
+{"ts":"2026-11-01T12:57:22.465Z","path":"tests/integration/settingsStore.test.ts","scripts":[{"script":"test:unit","exitCode":0,"durationMs":6220},{"script":"test:integration","exitCode":0,"durationMs":3933}],"ok":true}

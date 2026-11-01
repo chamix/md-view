@@ -80,3 +80,103 @@ Confirmed by direct line counts: `git show main:.agents/specs/functional_domain.
 **Post-fix status: RESOLVED.** The Blocking item has been corrected by the Lead directly (see Resolution above) and independently re-verified via `git diff --stat` showing a clean, append-only change. The Should-fix item has been routed back to `full-stack-engineer` for a one-line wiring-assertion addition to `tests/unit/renderer-order.test.ts`, within its already-granted scope.
 
 **Everything else checked — the font feature itself (validator, renderer re-check, CSS wiring, no-`:root`-default asymmetry, Skins non-interference, fault-injection-proven test strength, Clean Architecture/SOLID/GoF posture, and all three test tiers run) — passes with direct evidence as cited above.**
+
+---
+
+## Review: Task 55 Backward-Compatibility Correction (feature/055-font-settings)
+**Date:** 2026-11-01
+**Scope:** src/main/settings.ts, tests/unit/settings.test.ts, tests/integration/settingsStore.test.ts
+
+### 1. Diff verification (`git diff`)
+
+Ran `git diff --name-only`: touched tracked files are exactly `src/main/settings.ts`, `tests/unit/settings.test.ts`, `tests/integration/settingsStore.test.ts`, plus `.agents/metrics/test-tier-invocations.ndjson` (auto-appended by the test-tier hook on every `npm run test:*` invocation — informational only, not a manual source edit, not flagged as a scope violation).
+
+`src/main/settings.ts` hunk:
+```diff
+-        'UI Font': fontNameSchema,
+-        'Code Font': fontNameSchema,
++        'UI Font': fontNameSchema.optional().default(''),
++        'Code Font': fontNameSchema.optional().default(''),
+```
+`fontNameSchema` and `isSafeFontName` are byte-identical to before (confirmed by reading the full file — no changes above or below the `View` object fields). `.strict()` remains on both the `View` object and the root object.
+
+Test diffs are purely additive: `tests/unit/settings.test.ts` adds one new `it(...)` block (lines 54-75 of the diff); `tests/integration/settingsStore.test.ts` adds one new `it(...)` block (lines 94-120 of the diff). No existing test body, assertion, or `it(...)` title was modified — confirmed directly from the diff hunks reproduced above having only `+` lines inserted between unchanged context. This satisfies ADR-010: no test correction occurred, so Step 2.5's "not skippable" exception is not triggered, and the engineer's claim of no correction is corroborated by the diff itself rather than merely accepted.
+
+### 2. Scope compliance
+
+`.agents/current_scope.json`'s `in_scope` list is exactly `["src/main/settings.ts", "tests/unit/settings.test.ts", "tests/integration/settingsStore.test.ts"]`. `git diff --name-only` for tracked source/test files matches this exactly. No out-of-scope changes.
+
+### 3. Fix correctness vs. appState.ts (Task 54) precedent
+
+Read `src/main/appState.ts`: its Task 54 fix for the same class of problem (new persisted field on an existing file) uses `.nullable().optional()` on `lastSeenVersion`/`lastFolderPath`/`lastFileOpenPath`, with `.strict()` unchanged on the object. `settings.ts`'s fix is the same family of solution — `fontNameSchema.optional().default('')` — making the key optional at parse time (so a legacy file lacking it still validates) while supplying a concrete default (`''`, meaning "no override," consistent with `isSafeFontName`'s treatment of `''` as always-safe) rather than `null`. `.strict()` is untouched on both the `View` object and the root object — confirmed by reading lines 43-61 of the current `settings.ts`.
+
+### 4. `.strict()` guardrail regression check
+
+Ran the existing "extra/unknown key" test in isolation:
+```
+npx vitest run tests/unit/settings.test.ts -t "extra/unknown key"
+✓ tests/unit/settings.test.ts (32 tests | 31 skipped)
+  Tests  1 passed | 31 skipped (32)
+```
+The unknown-key rejection guardrail still passes — unaffected by the optional/default change on the two font keys.
+
+### 5. Full test suite — raw output
+
+```
+npx vitest run tests/unit/settings.test.ts tests/integration/settingsStore.test.ts
+✓ tests/unit/settings.test.ts (32 tests) 11ms
+✓ tests/integration/settingsStore.test.ts (17 tests) 789ms
+Test Files  2 passed (2)
+     Tests  49 passed (49)
+```
+```
+npm run test:unit
+Test Files  39 passed (39)
+     Tests  713 passed (713)
+```
+```
+npm run test:integration
+Test Files  10 passed (10)
+     Tests  119 passed (119)
+```
+(One stderr line logged inside `tests/integration/watcher`/`dist-about` run — `app.getVersion is not a function` from `showWhatsNewIfDue` — is an intentionally-exercised error path inside a passing test, not a failure; the file's own `✓` status and the aggregate 119/119 count confirm this.)
+
+The new unit test asserts a literal pre-Task-55 3-key `View` JSON parses successfully with both font fields defaulted to `''` and the three old boolean values intact — matches the task's required assertion exactly (verified by reading the test body, `tests/unit/settings.test.ts` lines 54-75 of diff).
+
+The new integration test asserts `loadSettingsAtStartup()` on a real pre-Task-55 3-key file on disk (a) returns old values intact with defaulted font fields via `toEqual`, and (b) does not rewrite the file, via `expect(fs.readFileSync(settingsFilePath, 'utf8')).toBe(legacyContent)`. This is the identical assertion technique already used by the pre-existing "valid file, no self-heal" test at line 264 of the same file (`expect(fs.readFileSync(settingsFilePath, 'utf8')).toBe(before)`) — not a weaker substitute (e.g. not an mtime check or a partial-content check).
+
+### 6. Causal verification (RED/GREEN)
+
+Captured the `src/main/settings.ts` hunk as a patch, reverted it, reran the two new tests:
+
+**RED** (patch reverted, required-field schema restored):
+```
+❯ tests/unit/settings.test.ts > parses a pre-Task-55 settings.json ...
+  → expected null to deeply equal { View: { 'Dark Mode': true, …(4) } }
+❯ tests/integration/settingsStore.test.ts > preserves a pre-Task-55 (legacy, 3-key) settings.json without rewriting it
+  → expected { View: { 'Dark Mode': false, …(4) } } to deeply equal { View: { 'Dark Mode': true, …(4) } }
+Test Files  2 failed (2)
+     Tests  2 failed | 47 passed (49)
+```
+This is exactly the claimed failure mode: the unit test shows `parseSettings` returning `null` (schema rejection of the legacy file), and the integration test shows the self-heal path overwrote the user's `Dark Mode: true`/`Show Frontmatter: false` with defaults (`false`/`true`) — precisely the silent-discard bug this fix targets.
+
+**GREEN** (patch restored):
+```
+✓ tests/unit/settings.test.ts (32 tests) 12ms
+✓ tests/integration/settingsStore.test.ts (17 tests) 710ms
+Test Files  2 passed (2)
+     Tests  49 passed (49)
+```
+Confirmed `git diff --stat` and `git status --porcelain` afterward show the working tree restored exactly to its pre-revert state (same 3 modified files, same insertion/deletion counts as the original diff).
+
+### 7. Architecture (Clean Architecture / SOLID / GoF)
+
+Read `.claude/knowledge/architecture/principles.md`. This is a narrow schema-definition change confined to the zod schema at the persistence boundary (`src/main/settings.ts`, already an outer-layer I/O/serialization concern, unchanged in that respect). No new dependency direction introduced, no new abstraction needed — reusing the existing `fontNameSchema` building block with zod's own `.optional().default()` combinator is the minimal-complexity fix; introducing a new GoF pattern here would be over-engineering for a single-line schema modifier change. No SRP/DIP concerns — `parseSettings`'s shape and callers (`toPersistedViewSettings`, `fromViewSettings`) are untouched.
+
+### Verdict
+
+- **Blocking:** none.
+- **Should-fix:** none.
+- **Nit:** none — the fix is minimal, precedent-consistent with Task 54's `appState.ts`, fully test-covered, and the regression tests were verified to fail for the exact claimed reason before the fix and pass after.
+
+**Recommendation to Lead:** clear to proceed to Step 3 (log run, delete `current_scope.json`, deliver per branching strategy on `feature/055-font-settings`).
