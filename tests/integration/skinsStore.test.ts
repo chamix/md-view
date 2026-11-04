@@ -174,6 +174,32 @@ describe('loadSkinsAtStartup', () => {
     expect(fs.readFileSync(bakPath)).toEqual(bytes);
   });
 
+  it('Task 57 (#261): zod v4 still rejects a malformed skins.json (RED) and a restored valid file recovers normal operation (GREEN)', async () => {
+    // RED: an unsafe color value (CSS injection shape rejected by
+    // isSafeColorValue's .refine()) must still fail validation and heal to
+    // defaults under the zod v3->v4 bump -- same boundary as before, only
+    // the internal error-map/issue-shape may differ (#260).
+    const malformed = {
+      activeSkin: 'Mine',
+      customSkins: { Mine: { light: half('#abcdef'), dark: { ...half('#123456'), '--color-accent': 'red;}</style><script>' } } },
+    };
+    fs.writeFileSync(skinsFilePath, JSON.stringify(malformed, null, 2), 'utf8');
+
+    const redResult = await loadSkinsAtStartup(skinsFilePath);
+
+    expect(redResult).toEqual(defaultSkinsFile);
+    expect(parseSkins(fs.readFileSync(skinsFilePath, 'utf8'))).toEqual(defaultSkinsFile);
+
+    // GREEN: restoring a genuinely valid file recovers normal operation --
+    // the file is parsed and returned as-is, not silently re-healed.
+    const valid = customFile();
+    fs.writeFileSync(skinsFilePath, JSON.stringify(valid, null, 2), 'utf8');
+
+    const greenResult = await loadSkinsAtStartup(skinsFilePath);
+
+    expect(greenResult).toEqual(valid);
+  });
+
   it('a second corrupt launch replaces the stale .bak with the newer original', async () => {
     fs.writeFileSync(skinsFilePath, '{ first', 'utf8');
     await loadSkinsAtStartup(skinsFilePath);

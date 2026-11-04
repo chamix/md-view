@@ -1,4 +1,15 @@
-import chokidar, { type FSWatcher } from 'chokidar';
+import type { FSWatcher } from 'chokidar' with { 'resolution-mode': 'import' };
+// chokidar 6 publishes ESM-only (no "require" export condition in its
+// package.json), which trips TS1479/TS1471 under `module: Node16` for a
+// static `import` of the default export: TS only allows a real ESM
+// `import` statement or a dynamic `import()` for an ESM-only module, and
+// this file is compiled as CommonJS. Node 24's require() can load a
+// synchronous (non-top-level-await) ESM module directly though, so a
+// plain runtime `require('chokidar')` call (not TS's `import ... =
+// require(...)` sugar, which TS rejects the same way as a static import
+// for an ESM-only target) still works and keeps watchFile's existing
+// synchronous return contract intact.
+const chokidar: typeof import('chokidar', { with: { 'resolution-mode': 'import' } }) = require('chokidar');
 
 export type WatchAction = 'render' | 'error' | 'ignore';
 

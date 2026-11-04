@@ -12,16 +12,18 @@ const distRenderer = path.join(repoRoot, 'dist', 'renderer');
 const EXPECTED_CSP =
   "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' file: data: http: https:; connect-src 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'self' file:";
 
-// The runtime `dependencies` exactly as of Task 44 (main @ 8e80fa0). Task 45
-// must leave it unchanged: electron-builder packs production dependencies into
-// app.asar, and mermaid is only a build-time source for the copied
-// dist/renderer/mermaid.min.js (review B3: 12.1 MB -> 142.8 MB otherwise).
-const TASK44_DEPENDENCIES: Record<string, string> = {
-  chokidar: '^4.0.1',
+// The runtime `dependencies` as of Task 57 (dependency security upgrade):
+// chokidar 4->6 and zod 3->4 are CVE/currency-driven major bumps (see
+// functional_domain.md #260-266). electron-builder still packs production
+// dependencies into app.asar, and mermaid remains only a build-time source
+// for the copied dist/renderer/mermaid.min.js (review B3: 12.1 MB -> 142.8 MB
+// otherwise) -- it must never appear here.
+const TASK57_DEPENDENCIES: Record<string, string> = {
+  chokidar: '^6.0.0',
   'github-markdown-css': '^5.8.1',
   'highlight.js': '^11.11.1',
   'markdown-it': '^14.1.0',
-  zod: '^3.23.8',
+  zod: '^4.6.7',
 };
 
 function requireBuilt(filePath: string): void {
@@ -46,18 +48,18 @@ describe('Task 45: built dist/ ships the Mermaid bundle, the diagram pass and th
     expect(fs.readFileSync(shipped).equals(source)).toBe(true);
   });
 
-  it('the installed mermaid is exactly 11.17.2', () => {
-    expect(readPackageJson(path.join(repoRoot, 'node_modules', 'mermaid', 'package.json')).version).toBe('11.17.2');
+  it('the installed mermaid is exactly 12.3.0', () => {
+    expect(readPackageJson(path.join(repoRoot, 'node_modules', 'mermaid', 'package.json')).version).toBe('12.3.0');
   });
 
-  it('package.json pins mermaid as a devDependency, exactly "11.17.2" (no ^ or ~) (#167 as amended)', () => {
+  it('package.json pins mermaid as a devDependency, exactly "12.3.0" (no ^ or ~) (#167 as amended)', () => {
     const pkg = readPackageJson(path.join(repoRoot, 'package.json'));
-    expect(pkg.devDependencies.mermaid).toBe('11.17.2');
+    expect(pkg.devDependencies.mermaid).toBe('12.3.0');
     expect(Object.prototype.hasOwnProperty.call(pkg.dependencies, 'mermaid')).toBe(false);
   });
 
-  it('runtime dependencies are unchanged relative to Task 44 (nothing new packed into app.asar)', () => {
-    expect(readPackageJson(path.join(repoRoot, 'package.json')).dependencies).toEqual(TASK44_DEPENDENCIES);
+  it('runtime dependencies reflect the Task 57 bump (nothing new packed into app.asar)', () => {
+    expect(readPackageJson(path.join(repoRoot, 'package.json')).dependencies).toEqual(TASK57_DEPENDENCIES);
   });
 
   it('dist/renderer/diagrams.js is byte-equal to src/renderer/diagrams.js', () => {

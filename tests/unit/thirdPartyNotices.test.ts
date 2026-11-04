@@ -36,8 +36,13 @@ describe('computeShippedClosure over the real lockfile (#173)', () => {
   const names = new Set(closure.map((e) => e.name));
   const ids = new Set(keys(closure));
 
-  it('has exactly 125 packages', () => {
-    expect(closure).toHaveLength(125);
+  it('has exactly 128 packages', () => {
+    // Task 57: grew from 125 -> 128 after the chokidar 4->6 / zod 3->4
+    // bumps and mermaid's 11->12 transitive-dependency changes (notably
+    // elkjs and its own closure). Recomputed from the real post-bump
+    // lockfile, not guessed -- see scripts/third-party-notices.mjs's own
+    // CLI output ("128 packages -> dist\third-party-notices.json").
+    expect(closure).toHaveLength(128);
   });
 
   it("includes mermaid's transitive dependencies (dompurify, nested d3-array@2.12.1 and top-level d3-array@3.x)", () => {

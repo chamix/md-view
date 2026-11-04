@@ -4557,3 +4557,75 @@ ways-of-working standing requirement):
      and every Skins file are zero-diff for this task.** This task is
      additive at the menu layer only; the font-apply/validate/persist
      mechanism Task 55 built is consumed, not modified.
+
+## Task 57: Dependency security upgrade (full batch, single pass)
+
+This task carries no new user-facing business logic — there is no new
+input schema, output state, or traversal rule to invent. The relevant
+"pure domain" content is the set of **behavioral invariants that must
+survive the dependency bump unchanged**, since a security upgrade that
+silently loosens validation or widens the IPC/process-trust boundary
+would be a regression even though no test currently names it as such.
+
+**Abstract schema contracts that must remain bit-for-bit equivalent
+after the zod v3->v4 bump** (inputs: raw JSON read from disk at
+`settings.json` / `state.json` / `skins.json`; outputs: either a typed,
+validated in-memory object or a rejection that triggers the existing
+self-heal/default-overwrite path — unchanged from the Task 55-correction
+precedent of preferring an explicit optional+default over a required
+field for backward compatibility):
+
+260. `settingsSchema`, `appStateSchema`, `skinsFileSchema` must reject
+     every input they rejected before (extra keys via `.strict()`,
+     wrong types, unsafe color/font strings via `.refine()`) and accept
+     every input they accepted before. A zod major bump changing *how*
+     an error is reported (error map / issue shape) must not change
+     *whether* `safeParse(...).success` is true or false for any fixture
+     already covered by `tests/unit/settings.test.ts`,
+     `tests/unit/appState.test.ts`, `tests/unit/skins.test.ts`, or their
+     integration-level store counterparts.
+261. The malformed-`skins.json` fault-injection check (RED: a hand-edited
+     invalid file is rejected the same way as before -> GREEN: restoring
+     a valid file recovers normal operation) is itself a domain invariant
+     for this task, not just a test-writing instruction: it is the
+     acceptance criterion that the validation *boundary*, not merely its
+     call signature, survived the bump.
+262. The live-reload watch contract (chokidar major bump): "a change to
+     the watched file produces exactly one re-render event, debounced
+     through `awaitWriteFinish`, with no event before the watcher is
+     ready and no event storm from editors that write via rename" must
+     hold identically after the bump. This is `watcher.ts`'s existing
+     contract (see its Task 47 comment on duplicate-event suppression) —
+     the upgrade must not reopen that class of bug.
+263. The main-process trust boundary — `contextIsolation: true`,
+     `nodeIntegration: false`, `sandbox: true`, and the preload
+     `BridgeApi` as the only channel between renderer and main — is a
+     standing invariant of this entire codebase, not something this task
+     introduces. No dependency bump in this batch has a legitimate reason
+     to touch it; if any upgrade's migration guide suggests relaxing one
+     of these to keep working, that is a signal to stop and report to the
+     Lead, not to adapt the code to the dependency.
+
+**Edge-case invariant guardrails:**
+
+264. `markdown-it` stays configured with `html: false` after its bump —
+     this is the XSS boundary for untrusted Markdown content and is
+     non-negotiable regardless of what the new minor version changes
+     elsewhere.
+265. `mermaid`'s major bump (11.x -> 12.x) must not change the on-disk
+     asset path the build script copies by hand
+     (`node_modules/mermaid/dist/mermaid.min.js` -> `dist/renderer/`,
+     `package.json`'s `build` script) without that script being updated
+     in lockstep — a renamed bundle filename inside the new major would
+     silently break diagram rendering in a packaged build while unit
+     tests stay green, since nothing currently asserts the source path
+     exists.
+266. TypeScript's major bump must not surface new `strict: true` errors
+     that get silenced by relaxing `tsconfig.json` — any new compiler
+     error is a real type-safety gap to fix in source, not a tsconfig
+     knob to loosen, per this project's standing posture (strict mode is
+     a floor, not a target).
+
+No new output state, no new persisted field, no new IPC channel — this
+task's "domain" is entirely about proving old behavior is preserved
+under new dependency versions.

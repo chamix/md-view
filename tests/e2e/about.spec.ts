@@ -302,10 +302,11 @@ test('#177: the notices open with no script and show the real license texts, cho
   await dompurify.locator('summary').click();
   await expect(dompurify).toContainText('(MPL-2.0 OR Apache-2.0)');
 
-  // fastdom: its pinned citation URL.
-  const fastdomCitation = notices.packages.find((p) => p.name === 'fastdom')?.citation?.url as string;
-  expect(fastdomCitation).toBeTruthy();
-  const fastdom = entry('fastdom');
-  await fastdom.locator('summary').click();
-  await expect(fastdom).toContainText(fastdomCitation);
+  // khroma: its pinned citation URL (Task 57: fastdom/strictdom dropped by
+  // mermaid 12's dependency tree; khroma is the one remaining override).
+  const khromaCitation = notices.packages.find((p) => p.name === 'khroma')?.citation?.url as string;
+  expect(khromaCitation).toBeTruthy();
+  const khroma = entry('khroma');
+  await khroma.locator('summary').click();
+  await expect(khroma).toContainText(khromaCitation);
 });

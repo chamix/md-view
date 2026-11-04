@@ -450,3 +450,14 @@
 {"ts":"2026-11-01T16:43:54.357Z","path":"tests/e2e/window-chrome.spec.ts","scripts":[],"reason":"e2e-path-never-auto-run","ok":true}
 {"ts":"2026-11-01T16:44:00.086Z","path":"tests/e2e/font-settings.spec.ts","scripts":[],"reason":"e2e-path-never-auto-run","ok":true}
 {"ts":"2026-11-01T16:44:10.097Z","path":"tests/e2e/font-settings.spec.ts","scripts":[],"reason":"e2e-path-never-auto-run","ok":true}
+{"ts":"2026-11-04T03:34:09.318Z","path":"src/main/watcher.ts","scripts":[{"script":"test:unit","exitCode":1,"durationMs":5784}],"ok":false}
+{"ts":"2026-11-04T03:35:18.395Z","path":"src/main/watcher.ts","scripts":[{"script":"test:unit","exitCode":1,"durationMs":9865}],"ok":false}
+{"ts":"2026-11-04T03:35:41.993Z","path":"src/main/watcher.ts","scripts":[{"script":"test:unit","exitCode":1,"durationMs":9408}],"ok":false}
+{"ts":"2026-11-04T03:36:03.143Z","path":"src/main/watcher.ts","scripts":[{"script":"test:unit","exitCode":1,"durationMs":6939}],"ok":false}
+{"ts":"2026-11-04T03:37:49.550Z","path":"tests/integration/dist-mermaid.test.ts","scripts":[{"script":"test:unit","exitCode":1,"durationMs":5103}],"ok":false}
+{"ts":"2026-11-04T03:38:02.367Z","path":"tests/integration/dist-mermaid.test.ts","scripts":[{"script":"test:unit","exitCode":1,"durationMs":5185}],"ok":false}
+{"ts":"2026-11-04T03:39:46.144Z","path":"tests/integration/skinsStore.test.ts","scripts":[{"script":"test:unit","exitCode":1,"durationMs":5803}],"ok":false}
+{"ts":"2026-11-04T10:33:17.631Z","path":"tests/unit/thirdPartyNotices.test.ts","scripts":[{"script":"test:unit","exitCode":1,"durationMs":4969}],"ok":false}
+{"ts":"2026-11-04T10:33:33.847Z","path":"tests/integration/dist-about.test.ts","scripts":[{"script":"test:unit","exitCode":1,"durationMs":4911}],"ok":false}
+{"ts":"2026-11-04T10:34:09.186Z","path":"tests/integration/dist-about.test.ts","scripts":[{"script":"test:unit","exitCode":1,"durationMs":5068}],"ok":false}
+{"ts":"2026-11-04T10:56:04.872Z","path":"tests/e2e/about.spec.ts","scripts":[],"reason":"e2e-path-never-auto-run","ok":true}
