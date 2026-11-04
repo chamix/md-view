@@ -28,6 +28,11 @@ export const LICENSE_ALLOWLIST = Object.freeze([
   'Apache-2.0',
   'Python-2.0',
   'Unlicense',
+  // Task 57: elkjs (a transitive dep of mermaid 12.x) is dual-licensed
+  // "EPL-2.0 OR GPL-3.0-or-later". Per Lead/user decision, only the
+  // permissive side of that OR is allowlisted -- GPL-3.0-or-later stays
+  // rejected on purpose.
+  'EPL-2.0',
 ]);
 
 // Root list (b): every package whose files the `build` script copies from

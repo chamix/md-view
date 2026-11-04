@@ -291,3 +291,102 @@ The diff changes this test's literal count from 8 to 10, with a new comment foll
 - **Nit:** `onSelectUiFont`/`onSelectCodeFont` in `src/main/index.ts` are structurally identical 4-line functions differing only by field name and preset-list constant; worth factoring into a shared helper if/when a third font category is ever added, not before. Not blocking.
 
 **Recommendation to Lead:** clear to proceed to Step 3 (log run, delete `current_scope.json`, deliver per branching strategy on `feature/056-font-presets-menu`).
+
+---
+
+# Independent Review Report — Task 57: Dependency Security Upgrade
+
+**Scope:** `.agents/current_scope.json` (task "Task 57: Dependency security upgrade (full batch, single pass)"), spec `functional_domain.md #260-266`, branch `feature/057-dependency-security-upgrade` (uncommitted working-tree diff — HEAD still equals `main` at `24230d0`, consistent with branching.md's "user performs every commit" rule).
+
+**VERDICT: APPROVED** — zero Blocking findings. Two Should-fix (process-hygiene, non-blocking) items noted below.
+
+## Evidence Trail
+
+### 1. Scope compliance
+
+`git diff --name-only` (working tree vs. `HEAD`):
+```
+.agents/metrics/test-tier-invocations.ndjson
+.agents/specs/functional_domain.md
+.agents/specs/initial_scaffold.md
+CHANGELOG.md
+build/third-party/overrides.json
+package-lock.json
+package.json
+scripts/third-party-notices.mjs
+src/main/watcher.ts
+tests/e2e/about.spec.ts
+tests/integration/dist-about.test.ts
+tests/integration/dist-mermaid.test.ts
+tests/integration/skinsStore.test.ts
+tests/unit/thirdPartyNotices.test.ts
+```
+Every file (apart from Lead-authored `.agents/specs/*` and the auto-generated `.agents/metrics/test-tier-invocations.ndjson`) is present in `.agents/current_scope.json`'s `in_scope` array. Zero exceptions.
+
+Confirmed-unchanged claim verified directly:
+```
+$ git diff -- src/main/skins.ts src/main/appState.ts src/main/settings.ts src/main/thirdPartyNotices.ts src/main/aboutWindow.ts tsconfig.json
+(no output)
+```
+All six files byte-identical to `main`. `src/preload/api.ts` and `src/main/index.ts` likewise untouched.
+
+### 2. `npm audit` closure
+```
+$ npm audit --package-lock-only
+found 0 vulnerabilities
+```
+48 → 0 confirmed independently.
+
+### 3. Guardrail #260 (zod v3→v4 schema equivalence)
+Read `settings.ts`/`appState.ts`/`skins.ts` directly. API surface used (`.strict()`, `.refine(fn,{message})`, two-arg `z.record()`, `safeParse(...).success`) is stable across the major. `zod@4.6.7` confirmed installed. 724/724 unit tests pass including the schema-fixture-heavy suites.
+
+### 4. Guardrail #262 (chokidar live-reload contract) — causal RED/GREEN verification
+Diff:
+```diff
+-import chokidar, { type FSWatcher } from 'chokidar';
++import type { FSWatcher } from 'chokidar' with { 'resolution-mode': 'import' };
++const chokidar: typeof import('chokidar', { with: { 'resolution-mode': 'import' } }) = require('chokidar');
+```
+Reverted the hunk, confirmed TS1479 RED (`require` against an ESM-only package); restored, confirmed `npx tsc -p tsconfig.json --noEmit` exits 0, GREEN. Confirmed at runtime that `require('chokidar')` resolves and `watch()` functions under Node 24. `chokidar/package.json` confirmed genuinely ESM-only (no `require` export condition). `tests/unit/watcher.test.ts` + `tests/integration/watcher.test.ts`: 13/13 passed. Sound, contained pattern — not a fragile hack.
+
+### 5. Guardrail #261 (fault injection, skinsStore)
+New test (`Task 57 (#261)`) feeds an unsafe-color-injection payload, confirms heal-to-default (RED-equivalent), then a valid file round-trips unmodified (GREEN). Genuine behavior assertion, verified passing in isolation.
+
+### 6. Guardrail #263 (main-process trust boundary)
+`windowConfig.ts`: `contextIsolation: true`, `nodeIntegration: false`, `sandbox: true` confirmed present. `git diff` on `windowConfig.ts`/`preload/api.ts`/`main/index.ts` empty. `markdown.ts`'s `html: false` untouched (not in the changed-files list).
+
+### 7. Guardrail #265 (mermaid asset path)
+Build script's `copyFileSync` path unchanged; `npm run build` run directly, confirmed `node_modules/mermaid/dist/mermaid.min.js` and `dist/renderer/mermaid.min.js` both present post-build under mermaid 12.3.0.
+
+### 8. Guardrail #266 (TypeScript strict mode)
+`tsconfig.json` diff empty. `npx tsc -p tsconfig.json --noEmit` exits 0 under typescript@7.0.2 with `strict: true` unmodified.
+
+### 9. Licensing resolution
+`overrides.json`: `fastdom`/`strictdom` removed, `khroma` retained. `LICENSE_ALLOWLIST` gains `EPL-2.0` only — `GPL-3.0-or-later` confirmed absent. `node scripts/third-party-notices.mjs` → 0 violations, 128 packages. `dist-about.test.ts`'s elkjs/`chosenLicense: 'EPL-2.0'` assertions match this policy exactly.
+
+### 10. Full-suite re-run (independent)
+```
+npm run test:unit        -> 724/724 passed (39/39 files)
+npm run test:integration -> 121/121 passed (10/10 files)
+npm run test:all (incl. fresh build + e2e) -> 223 e2e passed (6.2m), exit 0
+```
+Matches the engineer's final report exactly, independently reproduced. No flake observed this run.
+
+### 11. `overrides` block necessity (unplanned-addition scrutiny)
+Confirmed `app-builder-lib@26.18.0`'s own declared ranges pin vulnerable `@electron/asar@3.4.1`/`@electron/universal@2.0.3`/`minimatch@^10.2.5`. The `overrides` block is load-bearing, not gratuitous — without it, resolution would silently fall back to the vulnerable versions.
+
+### 12. CHANGELOG.md accuracy
+New `## [Unreleased]` / `### Security` entry, format-consistent with existing `[1.3.0]`/`[1.2.0]` sections; all six version pairs and the 48→0 closure independently confirmed accurate.
+
+### 13. ADR-010 test-correction discipline
+All four touched test files (`dist-mermaid.test.ts`, `thirdPartyNotices.test.ts`, `dist-about.test.ts`, `about.spec.ts`) reviewed hunk-by-hunk: every change is a literal-value update tied to an independently-confirmed dependency-tree fact. `dist-about.test.ts`'s change is a strengthening (adds explicit negative assertions + a new elkjs-license assertion), not a loosening. No ADR-010 event occurred.
+
+## Findings
+
+**Blocking:** none.
+
+**Should-fix (non-blocking):**
+1. `.agents/metrics/RUN_LOG.md` has no Task 57 row yet — expected; `/log-run` is a Step 3 action occurring after this Step 2.5 review.
+2. `.agents/current_scope.json` is still present at review time — should be deleted once the task closes (Step 3), per the Scope Contract.
+
+**Nit:** none.

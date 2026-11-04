@@ -129,14 +129,19 @@ describe('#173/#176 dist/third-party-notices.json', () => {
     expect(notice?.text).toBe(fs.readFileSync(path.join(repoRoot, 'node_modules', 'es-toolkit', 'NOTICE'), 'utf8'));
   });
 
-  it('the three overrides carry pinned citations', () => {
+  it('the one remaining override carries a pinned citation (#261/Task 57: fastdom/strictdom dropped by mermaid 12)', () => {
     const byName = new Map(notices().packages.map((p) => [`${p.name}@${p.version}`, p]));
-    for (const key of ['khroma@2.1.0', 'fastdom@1.0.12', 'strictdom@1.0.1']) {
-      expect(byName.get(key)?.citation?.url, key).toMatch(/^https:\/\/github\.com\/.+\/blob\/[0-9a-f]{40}\//);
-    }
+    expect(byName.get('khroma@2.1.0')?.citation?.url).toMatch(/^https:\/\/github\.com\/.+\/blob\/[0-9a-f]{40}\//);
     expect(byName.get('khroma@2.1.0')?.source).toBe('package');
-    expect(byName.get('fastdom@1.0.12')?.source).toBe('override');
-    expect(byName.get('strictdom@1.0.1')?.source).toBe('override');
+    expect(byName.has('fastdom@1.0.12')).toBe(false);
+    expect(byName.has('strictdom@1.0.1')).toBe(false);
+  });
+
+  it('elkjs (new in mermaid 12 via Task 57) chooses the allowlisted EPL-2.0 side of its dual license', () => {
+    const elkjs = notices().packages.find((p) => p.name === 'elkjs');
+    expect(elkjs?.license).toBe('EPL-2.0 OR GPL-3.0-or-later');
+    expect(elkjs?.chosenLicense).toBe('EPL-2.0');
+    expect(elkjs?.source).toBe('package');
   });
 
   it('two CLI runs into two temp dirs are byte-identical, and both equal dist/', () => {

@@ -9548,3 +9548,90 @@ class as Task 51's Skin submenu, which was reviewed under `hardened`; no
 property of this task argues for `fast-iteration`'s lighter 2-cycle cap).
 No documentation deliverable is in this task's definition of done, so no
 `docs_profile` is proposed.
+
+## Task 57: Dependency security upgrade (full batch, single pass)
+
+**Confirmed latest versions at execution time (2026-11-04, via `npm view`):**
+chokidar 6.0.0 (current ^4.0.1 — the major jump skips v5 entirely), typescript
+7.0.2 (current ^5.6.0 — the "Go-native compiler" generation, skipping the 6.x
+line), zod 4.6.7, mermaid 12.3.0, electron-builder 26.18.0, vitest 5.1.0.
+`npm audit --package-lock-only` currently reports 48 vulnerabilities (5
+critical / 21 high / 20 moderate / 2 low) — confirmed via direct run, matching
+the brief.
+
+**The Inward Dependency Rule:** unaffected by this task — no new module
+boundary is introduced. The zod schemas in `settings.ts`/`appState.ts`/
+`skins.ts`/`thirdPartyNotices.ts`/`aboutWindow.ts` stay at the same
+outer-adapter layer they already occupy (I/O-adjacent validation, not core
+domain logic); `chokidar` stays wrapped behind `watcher.ts`'s existing
+`ports.watch` seam so the dependency itself never leaks past that file.
+
+**SOLID Boundary Scan:** no interface changes. `watcher.ts` already
+isolates chokidar behind a narrow function signature — this is why a
+chokidar major bump is contained to one file plus its two test files
+(`tests/unit/watcher.test.ts`, `tests/integration/watcher.test.ts`) rather
+than every caller of `documentSession.ts`'s `ports.watch`.
+
+**Pattern Application:** none newly applied — this is a dependency-currency
+and vulnerability-remediation task, not a design task. The existing
+Adapter-at-the-boundary pattern (watcher.ts wrapping chokidar, the zod
+schemas wrapping raw JSON) is what keeps the blast radius contained; no GoF
+pattern needs to be introduced or changed.
+
+**Stack declaration:** `.claude/knowledge/nodejs/bibliography.md` and
+`.claude/knowledge/nodejs/security.md` apply (both already exist — no new
+stack folder needed). `.claude/knowledge/security/general.md` also applies:
+this task is explicitly security-relevant (CVE remediation + the
+contextIsolation/sandbox/nodeIntegration invariant check in step 6 of the
+brief).
+
+**In-scope files for the Scope Contract:**
+- `package.json`, `package-lock.json`
+- `src/main/skins.ts`, `src/main/appState.ts`, `src/main/settings.ts`,
+  `src/main/thirdPartyNotices.ts`, `src/main/aboutWindow.ts` (zod v3->v4)
+- `src/main/watcher.ts` (chokidar v4->v6)
+- `tests/unit/settings.test.ts`, `tests/unit/appState.test.ts`,
+  `tests/unit/skins.test.ts`, `tests/unit/watcher.test.ts`
+- `tests/integration/settingsStore.test.ts`,
+  `tests/integration/appStateStore.test.ts`,
+  `tests/integration/skinsStore.test.ts`,
+  `tests/integration/watcher.test.ts`,
+  `tests/integration/dist-mermaid.test.ts` (asserts the copied mermaid
+  bundle path — directly load-bearing for guardrail #265)
+- `tests/e2e/mermaid.spec.ts`, `tests/e2e/skins-persistence.spec.ts`,
+  `tests/e2e/settings-locked.spec.ts` (exercise the validation/self-heal
+  paths touched by the zod bump)
+- `tsconfig.json` — read/verify only; any edit here must be reported to the
+  Lead before being made (guardrail #266 — no loosening `strict`)
+
+Explicitly NOT in scope: any `.claude/**`, `CLAUDE.md`, or `.agents/specs/**`
+file (governance, hook-enforced read-only); `src/main/menu.ts`,
+`src/main/index.ts`, `src/renderer/**` (no renderer or menu-layer change is
+needed for this upgrade); `src/main/fontPresets.ts`,
+`src/main/skinPresets.ts` (untouched by any of the six dependency bumps).
+
+**Calibration (ADR-007):** suggested `code_profile: hardened`. This is a
+batch of five majors including two CVE-forced criticals (tinypool RCE-class
+prototype pollution, zod memory-exhaustion DoS) touching the validation
+boundary directly — the exact risk class `hardened`'s 3-cycle cap and
+mandatory independent review exist for. `fast-iteration` is not proposed;
+nothing about this task argues for the lighter cap. `docs_profile: delivery`
+— per user decision at blueprint approval, add a `CHANGELOG.md` entry
+documenting the six dependency bumps and the CVEs closed; `CHANGELOG.md` is
+added to the Scope Contract's `in_scope` list accordingly.
+
+**Branch:** per `branching.md`, cut `feature/057-dependency-security-upgrade`
+from latest `main` (HEAD `24230d0`, Task 56 merged via PR #29) before
+delegating.
+
+**Review-gate note (ADR-010 interaction):** step 7 of the brief (fault
+injection against a malformed `skins.json`, confirming zod v4 still rejects
+it) is itself evidence for guardrail #261, not a test correction — no
+existing `it(...)` assertion is being relaxed. If the zod v3->v4 migration
+does force an actual *existing* test's expectation to change (e.g. an
+error-shape assertion that genuinely cannot survive the new error-map API),
+that is the ADR-010 case: it must be disclosed in the engineer's report and
+re-enables the Step 2.5 review gate for this diff even though `hardened`
+already mandates that gate — i.e. ADR-010 is not load-bearing here unless
+`code_profile` were `fast-iteration`, but the disclosure obligation itself
+still applies.

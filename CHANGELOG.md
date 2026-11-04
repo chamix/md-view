@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Security
+
+- Dependency security upgrade (Task 57): closed all 48 `npm audit` findings (5 critical, 21 high, 20 moderate, 2 low) down to 0. Upgraded `chokidar` (4→6), `zod` (3→4), `mermaid` (11.17.2→12.3.0), `electron-builder` (25→26), and the `vitest`/`@vitest/coverage-v8`/`esbuild` chain (2/2/0.24→5/5/0.28), plus a currency-only bump of `typescript` (5→7). Added `overrides` for `@electron/asar`, `@electron/universal`, `minimatch`, and `glob` to close transitive vulnerabilities nested inside `electron-builder`'s own dependency tree. No change to validated data formats, the live-reload contract, or the Electron process-trust boundary (`contextIsolation`/`nodeIntegration`/`sandbox`, the preload `BridgeApi` contract, and `markdown-it`'s `html: false` setting all verified unchanged).
+
 ## [1.3.0] - 2026-10-09
 
 ### Added
